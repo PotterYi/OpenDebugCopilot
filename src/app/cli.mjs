@@ -5,9 +5,10 @@ import { fileURLToPath } from 'node:url';
 import { loadConfig } from '../core/config.mjs';
 import { loadScenario, resolveScenarioPaths } from '../core/scenario.mjs';
 import { selectDriver } from '../driver/index.mjs';
-import { NotImplementedError, UsageError, toErrorPayload } from '../core/errors.mjs';
+import { UsageError, toErrorPayload } from '../core/errors.mjs';
 import { runDiagnosis } from '../diagnose/run.mjs';
 import { createMockAgent } from '../agent/mock.mjs';
+import { createClaudeAgent } from '../agent/claude.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '../..');
@@ -21,6 +22,8 @@ Usage:
 Options:
   --check           Validate the scenario and stop (no request is fired)
   --mock            Run with the deterministic mock diagnoser
+  --model <name>    Model for the live Claude agent
+  --budget-usd <n>  Cost cap for one live diagnosis (SDK maxBudgetUsd)
   --recheck <n>     Run consistency recheck n times (default: 1)
   -q, --question    Symptom description used by the diagnoser
   --runs-dir <dir>  Directory for run artifacts (default: runs)
@@ -52,7 +55,7 @@ function parseArgv(argv) {
     throw new UsageError(`Unknown command: ${command}`);
   }
 
-  const opts = { command: 'run', scenarioPath: undefined, mock: false, check: false, recheck: 1, json: false, question: '', runsDir: undefined };
+  const opts = { command: 'run', scenarioPath: undefined, mock: false, check: false, recheck: 1, json: false, question: '', runsDir: undefined, model: undefined, budgetUsd: undefined };
   for (let i = 1; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '-h' || arg === '--help') return { command: 'help' };
@@ -69,6 +72,26 @@ function parseArgv(argv) {
       opts.question = value;
     } else if (arg.startsWith('--question=')) {
       opts.question = arg.slice('--question='.length);
+    } else if (arg === '--model') {
+      const value = argv[i + 1];
+      if (value === undefined) throw new UsageError('--model requires a value');
+      i += 1;
+      opts.model = value;
+    } else if (arg.startsWith('--model=')) {
+      opts.model = arg.slice('--model='.length);
+    } else if (arg === '--budget-usd') {
+      const value = argv[i + 1];
+      if (value === undefined) throw new UsageError('--budget-usd requires a value');
+      i += 1;
+      opts.budgetUsd = Number(value);
+      if (!Number.isFinite(opts.budgetUsd) || opts.budgetUsd <= 0) {
+        throw new UsageError('--budget-usd must be a positive number');
+      }
+    } else if (arg.startsWith('--budget-usd=')) {
+      opts.budgetUsd = Number(arg.slice('--budget-usd='.length));
+      if (!Number.isFinite(opts.budgetUsd) || opts.budgetUsd <= 0) {
+        throw new UsageError('--budget-usd must be a positive number');
+      }
     } else if (arg === '--runs-dir') {
       const value = argv[i + 1];
       if (value === undefined) throw new UsageError('--runs-dir requires a value');
@@ -138,12 +161,14 @@ function printDiagnosis(result, runDir, root) {
     'DebugCopilot · diagnosis',
     `  Run ID     : ${result.meta.runId}`,
     `  Scenario   : ${result.meta.scenario} (${result.target.driver})`,
+    `  Agent      : ${result.meta.agent} (${result.meta.mode})`,
     `  Question   : ${result.meta.question || '(none)'}`,
     `  Status     : ${result.gates.ok ? 'gates ok' : 'gates failed'}`,
     `  Conclusion : ${result.agent.conclusion}`,
     `  Logs       : ${logs.count} record(s), marker ${logs.markerMatched ? 'matched' : `not matched (${logs.waitedMs}ms)`}`,
     `  Recheck    : ${result.recheck ? `${result.recheck.verdict} (${result.recheck.runs} runs, 一致不等于正确)` : 'off'}`,
     `  Result     : ${relative}/result.json`,
+    `  Report     : ${relative}/report.md`,
   ];
   console.log(lines.join('\n'));
 }
@@ -197,18 +222,16 @@ export async function main(argv = process.argv.slice(2), { root = ROOT } = {}) {
       return 0;
     }
 
-    if (!parsed.mock) {
-      throw new NotImplementedError(
-        'LIVE_AGENT_NOT_IMPLEMENTED',
-        'Live Claude agent will be wired in S5; re-run with --mock or use --check',
-      );
-    }
+    const paths = resolveScenarioPaths(scenario);
+    const agent = parsed.mock
+      ? createMockAgent()
+      : createClaudeAgent({ model: parsed.model, cwd: paths.sourceRoot ?? undefined, maxBudgetUsd: parsed.budgetUsd });
 
     const { result, runDir } = await runDiagnosis(scenario, {
       runsDir: parsed.runsDir ? path.resolve(parsed.runsDir) : path.resolve(root, config.runsDir ?? 'runs'),
       question: parsed.question,
       recheck: parsed.recheck,
-      agent: createMockAgent(),
+      agent,
     });
 
     if (parsed.json) {

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import http from 'node:http';
 import { once } from 'node:events';
-import { mkdir, rm, writeFile, appendFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile, appendFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -91,15 +91,13 @@ test('mock run executes the full loop through the CLI', async (t) => {
     assert.equal(parsed.marker.injected, true);
     assert.equal(parsed.gates.ok, true);
     assert.ok(parsed.logs.count >= 1);
+    const reportPath = path.join(TMP, 'runs', parsed.meta.runId, 'report.md');
+    const report = await readFile(reportPath, 'utf8');
+    assert.match(report, /# DebugCopilot 诊断报告/);
+    assert.match(report, /## 结论/);
   } finally {
     server.close();
   }
-});
-
-test('run without --mock reports not implemented with exit code 4', () => {
-  const result = runCli(['run', path.join(FIXTURES, 'browser.json')]);
-  assert.equal(result.status, 4);
-  assert.match(result.stderr, /LIVE_AGENT_NOT_IMPLEMENTED/);
 });
 
 test('mock run fails preflight on missing logfiles with exit code 3', async (t) => {

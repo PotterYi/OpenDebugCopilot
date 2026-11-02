@@ -134,19 +134,33 @@ export function createTools({
     };
   }
 
-  async function safe(fn, args = {}) {
+  /** @type {Array<{ name: string, args: any, result: any, durationMs: number, error?: boolean }>} */
+  const calls = [];
+
+  function summarizeCallResult(value) {
+    const text = JSON.stringify(value);
+    if (typeof text !== 'string') return String(value);
+    return text.length > 4000 ? `${text.slice(0, 4000)}… (${text.length} chars)` : value;
+  }
+
+  async function safe(name, fn, args = {}) {
+    const started = Date.now();
     try {
-      return await fn(args);
+      const result = await fn(args);
+      calls.push({ name, args, result: summarizeCallResult(result), durationMs: Date.now() - started });
+      return result;
     } catch (err) {
       if (err instanceof AppError) {
-        return { error: true, code: err.code, message: err.message };
+        const payload = { error: true, code: err.code, message: err.message };
+        calls.push({ name, args, result: payload, durationMs: Date.now() - started, error: true });
+        return payload;
       }
       throw err;
     }
   }
 
   const tools = {
-    get_logs: (args = {}) => safe(async () => {
+    get_logs: (args = {}) => safe('get_logs', async () => {
       const result = await readLogs({
         logfiles: files,
         parser: scenario.parser,
@@ -163,7 +177,7 @@ export function createTools({
       return spill('get_logs', result);
     }, args),
 
-    list_threads: (args = {}) => safe(async () => {
+    list_threads: (args = {}) => safe('list_threads', async () => {
       const result = await listThreads({
         logfiles: files,
         parser: scenario.parser,
@@ -174,7 +188,7 @@ export function createTools({
       return spill('list_threads', result);
     }, args),
 
-    search_log: (args = {}) => safe(async () => {
+    search_log: (args = {}) => safe('search_log', async () => {
       const result = await searchAll({
         logfiles: files,
         parser: scenario.parser,
@@ -185,17 +199,18 @@ export function createTools({
       return spill('search_log', result);
     }, args),
 
-    read_source: (args = {}) => safe(async () => {
+    read_source: (args = {}) => safe('read_source', async () => {
       const result = await readSource({
         sourceRoot: root,
         target: args.target,
         startLine: args.startLine,
         endLine: args.endLine,
       });
-      return spill('read_source', result);
+      const { path: _absolutePath, ...safeResult } = result;
+      return spill('read_source', safeResult);
     }, args),
 
-    search_source: (args = {}) => safe(async () => {
+    search_source: (args = {}) => safe('search_source', async () => {
       const result = await searchSource({
         sourceRoot: root,
         keyword: args.keyword,
@@ -204,7 +219,7 @@ export function createTools({
       return spill('search_source', result);
     }, args),
 
-    read: (args = {}) => safe(async () => {
+    read: (args = {}) => safe('read', async () => {
       const relative = args.file;
       if (!relative || typeof relative !== 'string') {
         throw new AppError('READ_FILE_REQUIRED', 'read requires a file path from a spilled result', { exitCode: 2 });
@@ -229,5 +244,5 @@ export function createTools({
     }, args),
   };
 
-  return { tools, specs: toolSpecs(), spillDir };
+  return { tools, specs: toolSpecs(), spillDir, calls };
 }

@@ -1,0 +1,129 @@
+/**
+ * Whitelist projection + Markdown rendering for the redacted report.
+ * The report deliberately excludes: absolute paths, header values, log/source raw text.
+ */
+
+const REDACTIONS = [
+  [/[A-Za-z]:\\[^\s"'`<>|，。；：、！？,;:)\]}]+/g, '<path>'],
+  [/\/(?:Users|home|var|opt|tmp|mnt|g)\/[^\s"'`<>|，。；：、！？,;:)\]}]*/g, '<path>'],
+  [/\bBearer\s+[A-Za-z0-9._-]+/gi, 'Bearer <redacted>'],
+  [/\b(?:sk-ant-|ghp_|github_pat_)[A-Za-z0-9_-]+/g, '<redacted>'],
+];
+
+function scrubText(value) {
+  if (typeof value !== 'string') return value;
+  return REDACTIONS.reduce((text, [pattern, replacement]) => text.replace(pattern, replacement), value);
+}
+
+function requestPath(url) {
+  if (!url) return '(unknown)';
+  try {
+    const parsed = new URL(url);
+    return `${parsed.pathname}${parsed.search}`;
+  } catch {
+    return '(unknown)';
+  }
+}
+
+/**
+ * @param {any} result DiagnosisResult
+ */
+export function buildReport(result) {
+  const logs = result.logs ?? {};
+  const agent = result.agent ?? {};
+  return {
+    target: {
+      scenario: result.meta?.scenario ?? '(unknown)',
+      driver: result.target?.driver ?? '(unknown)',
+    },
+    symptom: scrubText(result.meta?.question?.trim() ? result.meta.question : '(未提供描述)'),
+    durationMs: result.meta?.durationMs ?? 0,
+    conclusion: scrubText(agent.conclusion ?? ''),
+    request: {
+      method: result.request?.method ?? null,
+      path: requestPath(result.request?.url),
+      status: result.response?.status ?? null,
+      durationMs: result.response?.durationMs ?? null,
+    },
+    summary: {
+      logs: logs.count ?? 0,
+      markerMatched: Boolean(logs.markerMatched),
+      threads: result.threads?.total ?? 0,
+      sourceFiles: result.source?.files?.length ?? 0,
+      toolCalls: agent.toolCalls?.length ?? 0,
+      confidence: agent.confidence ?? null,
+    },
+    selfCheck: (result.gates?.checks ?? []).map((check) => ({ name: check.name, ok: check.ok })),
+    recheck: result.recheck
+      ? { verdict: result.recheck.verdict, runs: result.recheck.runs, note: result.recheck.note }
+      : null,
+    meta: {
+      runId: result.meta?.runId ?? null,
+      agent: result.meta?.agent ?? null,
+      mode: result.meta?.mode ?? null,
+      startedAt: result.meta?.startedAt ?? null,
+      endedAt: result.meta?.endedAt ?? null,
+    },
+  };
+}
+
+function yesNo(value) {
+  return value ? '通过' : '失败';
+}
+
+/**
+ * @param {ReturnType<typeof buildReport>} report
+ * @returns {string}
+ */
+export function renderMarkdown(report) {
+  const lines = [
+    '# DebugCopilot 诊断报告',
+    '',
+    `- 场景：${report.target.scenario}（${report.target.driver}）`,
+    `- 症状：${report.symptom}`,
+    `- 耗时：${report.durationMs} ms`,
+    `- Run ID：${report.meta.runId ?? '(unknown)'}`,
+    '',
+    '## 结论',
+    '',
+    report.conclusion || '(无结论)',
+    '',
+    '## 请求摘要',
+    '',
+    `- 方法：${report.request.method ?? '(unknown)'}`,
+    `- 路径：${report.request.path}`,
+    `- 状态码：${report.request.status ?? '(no response)'}`,
+    `- 响应耗时：${report.request.durationMs ?? '-'} ms`,
+    '',
+    '## 证据摘要',
+    '',
+    `- 日志命中：${report.summary.logs} 条（marker ${report.summary.markerMatched ? '已匹配' : '未匹配'}）`,
+    `- 线程数：${report.summary.threads}`,
+    `- 源码片段：${report.summary.sourceFiles} 处`,
+    `- 工具调用：${report.summary.toolCalls} 次`,
+    '',
+    '## 自检',
+    '',
+    ...report.selfCheck.map((check) => `- ${check.name}：${yesNo(check.ok)}`),
+  ];
+
+  if (report.recheck) {
+    lines.push(
+      '',
+      '## 多次复核',
+      '',
+      `- 运行次数：${report.recheck.runs}`,
+      `- 判定：${report.recheck.verdict}`,
+      `- 说明：${report.recheck.note}`,
+    );
+  }
+
+  lines.push(
+    '',
+    '---',
+    '',
+    '> 本报告经过白名单投影：不包含绝对路径、请求头值、日志与源码原文。',
+    '',
+  );
+  return lines.join('\n');
+}

@@ -9,6 +9,7 @@ import { readSource } from '../evidence/source.mjs';
 import { createTools } from '../tools/index.mjs';
 import { runPreflight } from '../doctor/preflight.mjs';
 import { createMockAgent } from '../agent/mock.mjs';
+import { buildReport, renderMarkdown } from '../report/report.mjs';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const DEFAULT_MARKER_TIMEOUT_MS = 2000;
@@ -333,12 +334,14 @@ export async function runDiagnosis(scenario, options = {}) {
     recheck: recheckInfo,
   };
 
+  const report = buildReport(result);
   await writeFile(path.join(runDir, 'result.json'), JSON.stringify(result, null, 2), 'utf8');
+  await writeFile(path.join(runDir, 'report.md'), renderMarkdown(report), 'utf8');
   await writeFile(
     path.join(runDir, 'meta.json'),
     JSON.stringify({ ...result.meta, preflight }, null, 2),
     'utf8',
   );
 
-  return { result, runDir, runId };
+  return { result, runDir, runId, report };
 }
