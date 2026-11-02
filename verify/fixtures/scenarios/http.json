@@ -1,0 +1,9 @@
+{
+  "name": "order-api",
+  "baseUrl": "http://127.0.0.1:8080",
+  "method": "post",
+  "path": "/api/order/create",
+  "headers": { "Content-Type": "application/json" },
+  "body": { "qty": 2 },
+  "logfiles": ["logs/app.log"]
+}

@@ -1,0 +1,10 @@
+{
+  "name": "example-http",
+  "baseUrl": "http://127.0.0.1:8080",
+  "method": "GET",
+  "path": "/api/health",
+  "logfiles": ["../logs/app.log"],
+  "source": { "root": ".." },
+  "parser": { "preset": "auto" },
+  "marker": { "mode": "none" }
+}

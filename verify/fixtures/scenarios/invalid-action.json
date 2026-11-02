@@ -1,0 +1,8 @@
+{
+  "name": "select-action",
+  "browser": {
+    "path": "/order",
+    "match": "/api/order",
+    "actions": [{ "select": "#qty" }]
+  }
+}

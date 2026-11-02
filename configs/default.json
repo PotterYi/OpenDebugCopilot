@@ -1,0 +1,6 @@
+{
+  "window": { "beforeMs": 3000, "afterMs": 2000 },
+  "parser": { "preset": "auto" },
+  "marker": { "header": "X-DC-Probe" },
+  "runsDir": "runs"
+}

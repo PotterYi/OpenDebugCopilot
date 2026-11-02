@@ -1,0 +1,9 @@
+2026-11-02 19:30:00.000  INFO 1001 --- [http-nio-8080-exec-1] c.e.demo.OrderController : request received traceNo=dcprobeaaa111
+2026-11-02 19:30:02.000 ERROR 1001 --- [http-nio-8080-exec-1] c.e.demo.OrderService : create order failed
+java.lang.IllegalStateException: inventory not enough
+	at com.demo.OrderService.create(OrderService.java:42)
+	at com.demo.OrderController.create(OrderController.java:20)
+Caused by: java.lang.IllegalArgumentException: qty must be positive
+	at com.demo.Inventory.check(Inventory.java:88)
+2026-11-02 19:30:03.500  WARN 1001 --- [http-nio-8080-exec-2] c.e.demo.Gateway : degraded: fallback to legacy path
+2026-11-02 19:31:00.000  INFO 1001 --- [scheduling-1] c.e.demo.Job : tick

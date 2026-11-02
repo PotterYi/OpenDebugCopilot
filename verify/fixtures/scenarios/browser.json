@@ -1,0 +1,16 @@
+{
+  "name": "order-create",
+  "baseUrl": "http://localhost:5173",
+  "browser": {
+    "path": "/order/create",
+    "match": "/api/order",
+    "actions": [
+      { "click": "#submit" },
+      { "fill": { "selector": "#qty", "value": "2" } }
+    ]
+  },
+  "logfiles": ["logs/app.log"],
+  "source": { "root": "../../../.." },
+  "marker": { "mode": "body", "bodyField": "traceNo" },
+  "window": { "beforeMs": 1000, "afterMs": 500 }
+}

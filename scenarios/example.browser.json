@@ -1,0 +1,14 @@
+{
+  "name": "example-browser",
+  "baseUrl": "http://localhost:5173",
+  "browser": {
+    "path": "/",
+    "match": "/api",
+    "actions": [{ "click": "#submit" }]
+  },
+  "logfiles": ["../logs/app.log"],
+  "source": { "root": ".." },
+  "parser": { "preset": "auto" },
+  "marker": { "mode": "none" },
+  "window": { "beforeMs": 3000, "afterMs": 2000 }
+}

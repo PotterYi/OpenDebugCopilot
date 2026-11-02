@@ -1,0 +1,6 @@
+{
+  "name": "marker-missing-field",
+  "method": "GET",
+  "path": "/api/ping",
+  "marker": { "mode": "body" }
+}

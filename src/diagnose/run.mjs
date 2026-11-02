@@ -1,0 +1,344 @@
+import { mkdir, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import { AppError } from '../core/errors.mjs';
+import { newRunId } from '../core/ids.mjs';
+import { resolveScenarioPaths } from '../core/scenario.mjs';
+import { fireScenario } from '../driver/index.mjs';
+import { readLogs, listThreads } from '../evidence/logs.mjs';
+import { readSource } from '../evidence/source.mjs';
+import { createTools } from '../tools/index.mjs';
+import { runPreflight } from '../doctor/preflight.mjs';
+import { createMockAgent } from '../agent/mock.mjs';
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const DEFAULT_MARKER_TIMEOUT_MS = 2000;
+const DEFAULT_POLL_INTERVAL_MS = 250;
+const MAX_BODY_CHARS = 8000;
+const MAX_SOURCE_CHARS = 4000;
+
+const JAVA_FRAME = /^\s*at ([\w.$]+)\(([^():]+):(\d+)\)/;
+const NODE_FRAME = /^\s*at .*\((.+):(\d+):(\d+)\)/;
+const PY_FRAME = /^\s*File "(.+)", line (\d+)/;
+const GO_FRAME = /^\s*[^\s(]+\(.*\)\s+(\S+\.go):(\d+)/;
+
+function truncate(value, max = MAX_BODY_CHARS) {
+  if (typeof value !== 'string' || value.length <= max) return value;
+  return `${value.slice(0, max)}… (${value.length} chars)`;
+}
+
+function compactRecord(record) {
+  return {
+    ts: record.ts,
+    level: record.level,
+    thread: record.thread,
+    message: record.message,
+    stack: (record.stack ?? []).slice(0, 30),
+    file: record.file ? path.basename(record.file) : null,
+    lineNo: record.lineNo,
+  };
+}
+
+function extractSourceHints(records) {
+  const hints = new Map();
+  for (const record of records) {
+    for (const line of record.stack ?? []) {
+      let match = line.match(JAVA_FRAME);
+      if (match) {
+        hints.set(`${match[1]}:${match[3]}`, { target: match[1], line: Number(match[3]) });
+        continue;
+      }
+      match = line.match(NODE_FRAME);
+      if (match) {
+        hints.set(`${match[1]}:${match[2]}`, { target: match[1], line: Number(match[2]) });
+        continue;
+      }
+      match = line.match(PY_FRAME);
+      if (match) {
+        hints.set(`${match[1]}:${match[2]}`, { target: match[1], line: Number(match[2]) });
+        continue;
+      }
+      match = line.match(GO_FRAME);
+      if (match) {
+        hints.set(`${match[1]}:${match[2]}`, { target: match[1], line: Number(match[2]) });
+      }
+    }
+  }
+  return [...hints.values()].slice(0, 3);
+}
+
+async function collectSource(sourceRoot, records) {
+  if (!sourceRoot) return { available: false, reason: 'source.root not declared', files: [] };
+  const hints = extractSourceHints(records);
+  if (hints.length === 0) return { available: true, files: [], hints: [] };
+  const files = [];
+  for (const hint of hints) {
+    try {
+      const result = await readSource({
+        sourceRoot,
+        target: hint.target,
+        startLine: Math.max(1, hint.line - 5),
+        endLine: hint.line + 20,
+        maxLines: 40,
+      });
+      if (result.found) {
+        files.push({
+          target: hint.target,
+          path: result.relativePath,
+          startLine: result.startLine,
+          endLine: result.endLine,
+          content: truncate(result.content, MAX_SOURCE_CHARS),
+        });
+      } else {
+        files.push({
+          target: hint.target,
+          found: false,
+          reason: result.reason,
+          candidates: (result.candidates ?? []).slice(0, 5),
+        });
+      }
+    } catch (err) {
+      files.push({ target: hint.target, found: false, reason: err?.code ?? 'read-failed' });
+    }
+  }
+  return { available: true, hints, files };
+}
+
+async function waitForMarker({ logfiles, parser, encoding, anchor, window, marker, timeoutMs, intervalMs }) {
+  if (!marker) return { matched: false, waitedMs: 0, result: null };
+  const started = Date.now();
+  let result = null;
+  for (;;) {
+    result = await readLogs({ logfiles, parser, encoding, anchor, window, marker, limit: 200 });
+    if (result.records.length > 0) {
+      return { matched: true, waitedMs: Date.now() - started, result };
+    }
+    if (Date.now() - started >= timeoutMs) {
+      return { matched: false, waitedMs: Date.now() - started, result };
+    }
+    await sleep(intervalMs);
+  }
+}
+
+function evaluateGates(fired, agentResult) {
+  const refs = Array.isArray(agentResult?.evidenceRefs) ? agentResult.evidenceRefs : [];
+  const checks = [
+    { name: 'request-captured', ok: Boolean(fired?.request), detail: fired?.request?.url ?? 'missing request' },
+    {
+      name: 'response-settled',
+      ok: Boolean(fired?.response) && !fired.response.pending,
+      detail: String(fired?.response?.status ?? 'pending'),
+    },
+    {
+      name: 'conclusion-present',
+      ok: typeof agentResult?.conclusion === 'string' && agentResult.conclusion.trim() !== '',
+      detail: truncate(agentResult?.conclusion ?? '', 200),
+    },
+    {
+      name: 'evidence-refs',
+      ok:
+        refs.length > 0 &&
+        refs.every((ref) => ref && typeof ref.type === 'string' && typeof ref.ref === 'string' && ref.type && ref.ref),
+      detail: `${refs.length} ref(s)`,
+    },
+  ];
+  return { ok: checks.every((check) => check.ok), checks };
+}
+
+function judgeRecheck(results) {
+  const conclusions = results.map((result) => (result?.conclusion ?? '').trim());
+  if (conclusions.some((text) => !text)) return 'undetermined';
+  return new Set(conclusions).size === 1 ? 'consistent' : 'inconsistent';
+}
+
+/**
+ * Run one diagnosis: preflight -> fire -> marker wait -> evidence -> agent -> gates -> persist.
+ *
+ * @param {Readonly<Record<string, any>>} scenario
+ * @param {{
+ *   runId?: string, runsDir?: string, question?: string, agent?: any, recheck?: number,
+ *   markerTimeoutMs?: number, pollIntervalMs?: number, driverContext?: Record<string, any>,
+ *   window?: { beforeMs: number, afterMs: number }, preflight?: { ok: boolean, checks: any[] }
+ * }} [options]
+ */
+export async function runDiagnosis(scenario, options = {}) {
+  const {
+    runId = newRunId(),
+    runsDir = path.resolve('runs'),
+    question = '',
+    agent = createMockAgent(),
+    recheck = 1,
+    markerTimeoutMs = DEFAULT_MARKER_TIMEOUT_MS,
+    pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
+    driverContext = {},
+    window,
+    preflight: preflightOverride,
+  } = options;
+
+  const startedAt = Date.now();
+  const preflight = preflightOverride ?? (await runPreflight(scenario));
+  if (!preflight.ok) {
+    const failed = preflight.checks.filter((check) => !check.ok && check.severity === 'error');
+    throw new AppError(
+      'PREFLIGHT_FAILED',
+      `Preflight failed: ${failed.map((check) => `${check.name}(${check.detail})`).join('; ')}`,
+      { exitCode: 3, details: { checks: preflight.checks } },
+    );
+  }
+
+  const runDir = path.resolve(runsDir, runId);
+  await mkdir(runDir, { recursive: true });
+
+  const paths = resolveScenarioPaths(scenario);
+  const timeWindow = window ?? scenario.window;
+  const fired = await fireScenario(scenario, driverContext);
+
+  const marker = fired.marker?.injected ? fired.marker.value : null;
+  const wait = await waitForMarker({
+    logfiles: paths.logfiles,
+    parser: scenario.parser,
+    encoding: scenario.logEncoding,
+    anchor: fired.firedAt,
+    window: timeWindow,
+    marker,
+    timeoutMs: markerTimeoutMs,
+    intervalMs: pollIntervalMs,
+  });
+
+  let logsResult = wait.result;
+  if (!logsResult || (!wait.matched && logsResult.records.length === 0)) {
+    logsResult = await readLogs({
+      logfiles: paths.logfiles,
+      parser: scenario.parser,
+      encoding: scenario.logEncoding,
+      anchor: fired.firedAt,
+      window: timeWindow,
+      limit: 200,
+    });
+  }
+
+  const threads = await listThreads({
+    logfiles: paths.logfiles,
+    parser: scenario.parser,
+    encoding: scenario.logEncoding,
+    anchor: fired.firedAt,
+    window: timeWindow,
+  });
+
+  const source = await collectSource(paths.sourceRoot, logsResult.records);
+  const toolsBundle = createTools({
+    scenario,
+    anchor: fired.firedAt,
+    runDir,
+    logfiles: paths.logfiles,
+    sourceRoot: paths.sourceRoot,
+    window: timeWindow,
+  });
+
+  const evidence = {
+    symptom: { question, pageUrl: fired.request?.url ?? null },
+    request: {
+      method: fired.request?.method,
+      url: fired.request?.url,
+      headers: fired.request?.headers ?? {},
+      body: truncate(fired.request?.body),
+      startedAt: fired.request?.startedAt,
+    },
+    response: {
+      status: fired.response?.status ?? null,
+      statusText: fired.response?.statusText ?? '',
+      ok: fired.response?.ok ?? false,
+      headers: fired.response?.headers ?? {},
+      body: truncate(fired.response?.body),
+      truncated: fired.response?.truncated ?? false,
+      error: fired.response?.error ?? null,
+      durationMs: fired.response?.durationMs ?? null,
+    },
+    marker: {
+      value: fired.marker?.value ?? null,
+      mode: fired.marker?.mode ?? 'none',
+      injected: Boolean(fired.marker?.injected),
+      targets: fired.marker?.targets ?? { header: false, body: false },
+      reason: fired.marker?.reason,
+    },
+    logs: {
+      count: logsResult.records.length,
+      markerMatched: wait.matched,
+      waitedMs: wait.waitedMs,
+      stats: logsResult.stats,
+      parser: logsResult.parser,
+      records: logsResult.records.slice(0, 50).map(compactRecord),
+    },
+    threads: { total: threads.total, threads: threads.threads.slice(0, 10) },
+    source,
+  };
+
+  const agentResult = await agent.diagnose({
+    question,
+    evidence,
+    tools: toolsBundle,
+    budget: { maxRounds: 24 },
+  });
+  const agentRuns = [agentResult];
+  for (let i = 1; i < recheck; i += 1) {
+    agentRuns.push(await agent.diagnose({ question, evidence, tools: toolsBundle, budget: { maxRounds: 24 } }));
+  }
+
+  const gates = evaluateGates(fired, agentResult);
+  const recheckInfo = recheck > 1
+    ? {
+        runs: recheck,
+        verdict: judgeRecheck(agentRuns),
+        conclusions: agentRuns.map((run) => run?.conclusion ?? ''),
+        note: '一致不等于正确',
+      }
+    : null;
+
+  const endedAt = Date.now();
+  const target = scenario.driverKind === 'browser'
+    ? {
+        driver: 'browser',
+        path: scenario.browser.path,
+        match: scenario.browser.match,
+        actions: scenario.browser.actions.length,
+      }
+    : { driver: 'http', method: scenario.http.method, path: scenario.http.path };
+
+  const result = {
+    meta: {
+      runId,
+      scenario: scenario.name,
+      scenarioPath: scenario.filePath ?? null,
+      driver: scenario.driverKind,
+      agent: agent.id,
+      mode: agent.id === 'mock' ? 'mock' : 'live',
+      startedAt,
+      endedAt,
+      durationMs: endedAt - startedAt,
+      question,
+    },
+    target,
+    request: evidence.request,
+    response: evidence.response,
+    marker: evidence.marker,
+    window: {
+      anchor: fired.firedAt,
+      beforeMs: timeWindow.beforeMs,
+      afterMs: timeWindow.afterMs,
+    },
+    logs: evidence.logs,
+    threads: evidence.threads,
+    source: evidence.source,
+    agent: agentResult,
+    gates,
+    recheck: recheckInfo,
+  };
+
+  await writeFile(path.join(runDir, 'result.json'), JSON.stringify(result, null, 2), 'utf8');
+  await writeFile(
+    path.join(runDir, 'meta.json'),
+    JSON.stringify({ ...result.meta, preflight }, null, 2),
+    'utf8',
+  );
+
+  return { result, runDir, runId };
+}

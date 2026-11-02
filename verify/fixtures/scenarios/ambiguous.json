@@ -1,0 +1,6 @@
+{
+  "name": "ambiguous",
+  "browser": { "path": "/", "match": "/api", "actions": [] },
+  "method": "GET",
+  "path": "/api/ping"
+}

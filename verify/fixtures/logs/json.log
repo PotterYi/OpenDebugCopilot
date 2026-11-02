@@ -1,0 +1,3 @@
+{"@timestamp":"2026-11-02T19:30:00.000Z","level":"info","thread":"main","logger":"app","message":"boot"}
+{"@timestamp":"2026-11-02T19:30:02.000Z","level":"ERROR","thread":"http-1","logger":"app","message":"failed","stack":"Error: boom\n  at foo (x.js:1:2)\n  at bar (y.js:3:4)"}
+{"@timestamp":"2026-11-02T19:31:00.000Z","level":"WARN","thread":"main","message":"single warning"}

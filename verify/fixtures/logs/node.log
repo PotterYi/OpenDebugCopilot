@@ -1,0 +1,3 @@
+2026-11-02T19:30:00.000Z INFO [main] service started
+2026-11-02T19:30:02.000Z ERROR [worker-1] job failed
+2026-11-02T19:30:03.000Z WARN single warning without thread
