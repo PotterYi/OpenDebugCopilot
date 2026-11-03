@@ -172,11 +172,13 @@ test('routes local targets through the proxy when proxyBaseUrl is set', () => {
   assert.equal(parsed.pathname, '/__dcproxy');
   assert.equal(parsed.searchParams.get('target'), 'http://127.0.0.1:8080');
   assert.equal(parsed.searchParams.get('url'), '/api/order/1?x=1');
+  assert.equal(parsed.searchParams.get('kind'), 'local');
 
   const sit = new URL(buildRedirectUrl(rules[1], 'https://api.example.com/api/user/2', 'http://localhost:9999'));
   assert.equal(sit.pathname, '/__dcproxy');
   assert.equal(sit.searchParams.get('target'), 'https://sit.example.com');
   assert.equal(sit.searchParams.get('url'), '/api/user/2');
+  assert.equal(sit.searchParams.get('kind'), 'sit');
 });
 
 test('router uses the proxy for local rules', () => {
@@ -227,7 +229,7 @@ test('echoes the actual request Origin, including null', () => {
   router.dispose();
 });
 
-test('adds CORS headers for SIT targets too', () => {
+test('does not touch CORS headers for SIT targets', () => {
   const handlers = {};
   const session = {
     webRequest: {
@@ -243,10 +245,12 @@ test('adds CORS headers for SIT targets too', () => {
   handlers.send({ id: 7, requestHeaders: { Origin: 'http://localhost:5173' } }, () => {});
   let received = null;
   handlers.headers(
-    { id: 7, method: 'GET', statusCode: 200, url: 'https://sit.example.com/api/user/1', responseHeaders: {} },
+    { id: 7, method: 'GET', statusCode: 401, url: 'https://sit.example.com/api/user/1', responseHeaders: {} },
     (result) => { received = result; },
   );
-  assert.deepEqual(received.responseHeaders['Access-Control-Allow-Origin'], ['http://localhost:5173']);
+  assert.equal(received.statusLine, undefined);
+  assert.equal(received.responseHeaders['Access-Control-Allow-Origin'], undefined);
+  assert.deepEqual(received.responseHeaders, {});
   router.dispose();
 });
 

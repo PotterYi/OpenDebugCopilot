@@ -67,3 +67,34 @@ test('local proxy answers preflight and forwards requests', async (t) => {
   });
   assert.equal(invalid.status, 400);
 });
+
+test('SIT proxy passes through gateway status and CORS headers untouched', async (t) => {
+  const backend = http.createServer((req, res) => {
+    if (req.method === 'OPTIONS') {
+      res.statusCode = 405;
+      res.end('options not allowed');
+      return;
+    }
+    res.statusCode = 401;
+    res.setHeader('Access-Control-Allow-Origin', 'http://localhost:5173');
+    res.setHeader('Content-Type', 'application/json');
+    res.end('{"code":401}');
+  });
+  backend.listen(0);
+  await once(backend, 'listening');
+  t.after(() => new Promise((resolve) => backend.close(resolve)));
+
+  const proxy = await startLocalProxy();
+  t.after(() => proxy.close());
+
+  const target = `http://127.0.0.1:${backend.address().port}`;
+  const proxyUrl = `${proxy.url}/__dcproxy?kind=sit&target=${encodeURIComponent(target)}&url=%2Fsystem%2Fuser%2Flist`;
+
+  const preflight = await fetch(proxyUrl, { method: 'OPTIONS', headers: { Origin: 'http://localhost:5173' } });
+  assert.equal(preflight.status, 405, 'SIT preflight status must not be rewritten');
+  assert.equal(preflight.headers.get('access-control-allow-origin'), null);
+
+  const response = await fetch(proxyUrl, { method: 'GET', headers: { Origin: 'http://localhost:5173' } });
+  assert.equal(response.status, 401, 'SIT status must not be masked');
+  assert.equal(response.headers.get('access-control-allow-origin'), 'http://localhost:5173');
+});

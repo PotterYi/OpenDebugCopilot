@@ -104,7 +104,7 @@ npm run dev        # http://127.0.0.1:5173
 | --- | --- |
 | RuoYi 登录（直连） | 200，跳转 `/index` |
 | 内嵌浏览器登录 POST | 经本地代理 → 8080，返回 200 + token |
-| 用户列表 `/system/user/list` | 经代理 → 8081（SIT），200，返回 2 行 |
+| 用户列表 `/system/user/list` | 经代理 → 8081（SIT），**透传网关 CORS**，200，返回 2 行 |
 | Authorization | 浏览器跨源重定向会剥离；已由 CDP 原始请求头恢复后转发 |
 | 预检 | 由内置代理 204 应答，后端无需处理 OPTIONS |
 | 日志解析 | 新增 `spring-boot` 预设，RuoYi 日志可解析 |

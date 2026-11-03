@@ -73,6 +73,7 @@ export function buildRedirectUrl(rule, requestUrl, proxyBaseUrl = null) {
     const proxy = new URL('/__dcproxy', proxyBaseUrl);
     proxy.searchParams.set('target', rule.target.baseUrl);
     proxy.searchParams.set('url', `${source.pathname}${source.search}`);
+    proxy.searchParams.set('kind', rule.target.kind);
     return proxy.toString();
   }
   const target = new URL(rule.target.baseUrl);
@@ -89,26 +90,31 @@ export function buildRedirectUrl(rule, requestUrl, proxyBaseUrl = null) {
  * @param {Array<any>} rules
  * @param {string} url
  */
-export function isTargetUrl(rules, url) {
+export function findTargetRule(rules, url) {
   let parsed;
   try {
     parsed = new URL(url);
   } catch {
-    return false;
+    return null;
   }
   const portOf = (value) => value.port || (value.protocol === 'https:' ? '443' : '80');
-  return (rules ?? []).some((rule) => {
-    if (rule.enabled === false) return false;
+  for (const rule of rules ?? []) {
+    if (rule.enabled === false) continue;
     try {
       const target = new URL(rule.target.baseUrl);
       const sameHost = isLocalHostname(target.hostname) && isLocalHostname(parsed.hostname)
         ? true
         : target.hostname.toLowerCase() === parsed.hostname.toLowerCase();
-      return sameHost && portOf(target) === portOf(parsed);
+      if (sameHost && portOf(target) === portOf(parsed)) return rule;
     } catch {
-      return false;
+      // ignore invalid targets
     }
-  });
+  }
+  return null;
+}
+
+export function isTargetUrl(rules, url) {
+  return findTargetRule(rules, url) !== null;
 }
 
 function deleteHeaderCaseInsensitive(headers, name) {
@@ -270,8 +276,10 @@ export class Router {
 
   headersReceived(details, callback) {
     const hit = this.pending.get(details.id);
-    const related = Boolean(hit) || isTargetUrl(this.getRules(), details.url);
-    if (!related) {
+    const targetRule = hit?.rule ?? findTargetRule(this.getRules(), details.url);
+    // Only local targets get CORS/status-line fixes. SIT is a real gateway:
+    // never mask its 4xx or rewrite its CORS headers.
+    if (!targetRule || targetRule.target?.kind !== 'local') {
       callback({ responseHeaders: details.responseHeaders });
       return;
     }
@@ -287,8 +295,7 @@ export class Router {
       requestHeaders: hit?.requestHeaders ?? {},
     });
 
-    // Demo fallback: a preflight must be 2xx or the browser blocks the request.
-    // Rewrite the status line instead of only warning.
+    // Demo fallback: a local preflight must be 2xx or the browser blocks the request.
     if (isPreflight && (statusCode < 200 || statusCode >= 300)) {
       this.onHit({
         type: 'cors-warning',

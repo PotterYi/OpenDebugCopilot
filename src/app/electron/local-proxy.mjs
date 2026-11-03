@@ -40,6 +40,7 @@ export async function startLocalProxy({
       }
       const target = entry.searchParams.get('target');
       const pathAndQuery = entry.searchParams.get('url') ?? '/';
+      const kind = entry.searchParams.get('kind') === 'sit' ? 'sit' : 'local';
       if (!target) {
         res.writeHead(400, cors);
         res.end('missing target');
@@ -52,7 +53,9 @@ export async function startLocalProxy({
         return;
       }
 
-      if (req.method === 'OPTIONS') {
+      // Local targets: answer preflight ourselves. SIT is a real gateway:
+      // forward OPTIONS untouched so its real status/CORS are preserved.
+      if (kind === 'local' && req.method === 'OPTIONS') {
         res.writeHead(204, cors);
         res.end();
         return;
@@ -71,7 +74,7 @@ export async function startLocalProxy({
       for (const [key, value] of Object.entries(req.headers)) {
         const lower = key.toLowerCase();
         if (['host', 'connection', 'content-length', 'accept-encoding'].includes(lower)) continue;
-        if (lower.startsWith('access-control-')) continue;
+        if (kind === 'local' && lower.startsWith('access-control-')) continue;
         headers[key] = value;
       }
       if (req.headers.origin) headers.origin = req.headers.origin;
@@ -83,19 +86,30 @@ export async function startLocalProxy({
         redirect: 'manual',
       });
 
-      const responseHeaders = {
-        ...cors,
-        'Content-Type': upstream.headers.get('content-type') ?? 'application/octet-stream',
-      };
-      for (const [key, value] of upstream.headers) {
-        const lower = key.toLowerCase();
-        if (
-          ['content-length', 'content-encoding', 'transfer-encoding', 'connection', 'set-cookie', 'vary'].includes(lower) ||
-          lower.startsWith('access-control-')
-        ) {
-          continue;
+      let responseHeaders;
+      if (kind === 'local') {
+        responseHeaders = {
+          ...cors,
+          'Content-Type': upstream.headers.get('content-type') ?? 'application/octet-stream',
+        };
+        for (const [key, value] of upstream.headers) {
+          const lower = key.toLowerCase();
+          if (
+            ['content-length', 'content-encoding', 'transfer-encoding', 'connection', 'set-cookie', 'vary'].includes(lower) ||
+            lower.startsWith('access-control-')
+          ) {
+            continue;
+          }
+          responseHeaders[key] = value;
         }
-        responseHeaders[key] = value;
+      } else {
+        // SIT: forward the gateway's headers verbatim (including CORS).
+        responseHeaders = {};
+        for (const [key, value] of upstream.headers) {
+          const lower = key.toLowerCase();
+          if (['content-length', 'content-encoding', 'transfer-encoding', 'connection', 'set-cookie'].includes(lower)) continue;
+          responseHeaders[key] = value;
+        }
       }
       const setCookies = typeof upstream.headers.getSetCookie === 'function' ? upstream.headers.getSetCookie() : [];
       if (setCookies.length > 0) responseHeaders['set-cookie'] = setCookies;
@@ -104,7 +118,10 @@ export async function startLocalProxy({
       res.writeHead(upstream.status, responseHeaders);
       res.end(buffer);
     } catch (error) {
-      res.writeHead(502, { ...cors, 'Content-Type': 'application/json' });
+      const headers = kind === 'local'
+        ? { ...cors, 'Content-Type': 'application/json' }
+        : { 'Content-Type': 'application/json' };
+      res.writeHead(502, headers);
       res.end(JSON.stringify({ error: 'proxy_failed', message: error?.message ?? String(error) }));
     }
   });
