@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readLogs, listThreads, searchAll } from '../../src/evidence/logs.mjs';
+import { discoverLogFiles } from '../../src/evidence/logfiles.mjs';
+import { mkdir, rm, utimes, writeFile } from 'node:fs/promises';
+import { tempDir } from './tmp.mjs';
 import { parseTimestamp } from '../../src/evidence/parsers.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -111,4 +114,27 @@ test('no logfiles yields an empty result', async () => {
   assert.equal(result.parser, 'none');
   assert.equal(result.records.length, 0);
   assert.equal(result.files.length, 0);
+});
+
+test('orders rotated files by modification time', async (t) => {
+  const dir = tempDir('rotated-mtime');
+  await rm(dir, { recursive: true, force: true });
+  await mkdir(dir, { recursive: true });
+  t.after(async () => { await rm(dir, { recursive: true, force: true }); });
+
+  const older = path.join(dir, 'app.log.1');
+  const newer = path.join(dir, 'app.log');
+  const nl = String.fromCharCode(10);
+  await writeFile(older, '2026-11-02 19:30:00.000  INFO 1 --- [t] a.B : older-file' + nl, 'utf8');
+  await writeFile(newer, '2026-11-02 19:30:05.000  INFO 1 --- [t] a.B : newer-file' + nl, 'utf8');
+
+  const base = Date.now() - 60_000;
+  await utimes(older, new Date(base), new Date(base));
+  await utimes(newer, new Date(base + 30_000), new Date(base + 30_000));
+
+  const files = await discoverLogFiles([newer]);
+  assert.deepEqual(files.map((file) => path.basename(file.path)), ['app.log.1', 'app.log']);
+
+  const result = await readLogs({ logfiles: [newer], parser: { preset: 'logback' } });
+  assert.deepEqual(result.records.map((record) => record.message), ['older-file', 'newer-file']);
 });

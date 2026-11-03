@@ -16,6 +16,14 @@ const requestTitle = $('request-title');
 const requestMeta = $('request-meta');
 const configPath = $('config-path');
 const logPath = $('log-path');
+const logFiles = $('log-files');
+const logParser = $('log-parser');
+const logRegex = $('log-regex');
+const logAnchor = $('log-anchor');
+const logMessage = $('log-message');
+const logSummary = $('log-summary');
+const logOutput = $('log-output');
+const logsWarning = $('logs-warning');
 const splitter = $('splitter');
 const routingWarning = $('routing-warning');
 const routingStatus = $('routing-status');
@@ -80,6 +88,7 @@ async function loadConfig() {
     routingRules = config.routing?.rules ?? [];
     fillForm(config);
     renderRouting();
+    logFiles.value = (config.workspace?.logfiles ?? []).join(String.fromCharCode(10));
     if (config.meta?.logFile) logPath.textContent = `日志文件：${config.meta.logFile}`;
     if (config.meta?.configDir) {
       const dir = config.meta.configDir;
@@ -91,6 +100,7 @@ async function loadConfig() {
     if (!api.isDesktop) {
       routingWarning.hidden = false;
       routingWarning.textContent = '当前是 WebUI：路由与内嵌浏览器只在桌面版生效。';
+      logsWarning.hidden = false;
     }
     setStatus(api.isDesktop ? '桌面版已连接' : 'WebUI 已连接', 'ok');
     return config;
@@ -185,6 +195,7 @@ function renderRequests() {
   hintEl.textContent = api.isDesktop
     ? `${items.length} 条（显示 ${filtered.length}）${consoleErrorCount ? ` · 页面错误 ${consoleErrorCount}` : ''}`
     : '内嵌浏览器仅在桌面版可用';
+  renderLogAnchors();
 }
 
 async function refreshRequests() {
@@ -379,6 +390,7 @@ function setTab(name) {
   }
   if (name === 'requests') refreshRequests();
   if (name === 'routing') renderRouting();
+  if (name === 'logs') renderLogAnchors();
   if (name === 'history') loadRuns();
 }
 
@@ -580,6 +592,100 @@ async function scanLocalPorts() {
     : '未探测到常见本机端口';
 }
 
+function renderLogAnchors() {
+  const current = logAnchor.value;
+  logAnchor.textContent = '';
+  const nowOption = document.createElement('option');
+  nowOption.value = 'now';
+  nowOption.textContent = '当前时间';
+  logAnchor.append(nowOption);
+  const items = [...captureState.values()].sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0));
+  for (const item of items) {
+    const option = document.createElement('option');
+    option.value = item.id;
+    option.textContent = `${item.method} ${requestPath(item.url)} [${item.status ?? '…'}]`;
+    logAnchor.append(option);
+  }
+  if ([...logAnchor.options].some((option) => option.value === current)) logAnchor.value = current;
+}
+
+function currentLogParser() {
+  if (logParser.value === 'regex') {
+    return { regex: logRegex.value.trim() };
+  }
+  return logParser.value;
+}
+
+function renderLogResult(result, anchorRequest) {
+  const stats = result.stats ?? {};
+  const anchorText = anchorRequest
+    ? `${anchorRequest.method} ${requestPath(anchorRequest.url)} [${anchorRequest.status ?? '…'}] @ ${new Date(anchorRequest.startedAt ?? Date.now()).toLocaleString()}`
+    : `当前时间 @ ${new Date().toLocaleString()}`;
+  logSummary.textContent = `${anchorText} · 解析器 ${result.parser ?? '-'} · 文件 ${stats.files ?? 0} · 行 ${stats.lines ?? 0} · 解析 ${stats.parsed ?? 0} · 续行 ${stats.continuations ?? 0} · 未解析 ${stats.unparsed ?? 0}`;
+  logOutput.textContent = '';
+  if (!result.records || result.records.length === 0) {
+    logOutput.textContent = '时间窗内没有匹配日志；可调整时间窗或切换解析器。';
+    return;
+  }
+  for (const record of result.records) {
+    const line = document.createElement('div');
+    line.className = 'log-line';
+    const ts = document.createElement('span');
+    ts.textContent = record.ts ? new Date(record.ts).toLocaleString() : '—';
+    const level = document.createElement('span');
+    level.className = `log-level ${record.level ?? ''}`;
+    level.textContent = record.level ?? '—';
+    const thread = document.createElement('span');
+    thread.textContent = record.thread ?? '—';
+    const message = document.createElement('span');
+    message.className = 'log-msg';
+    message.textContent = [record.message, ...(record.stack ?? [])].join(String.fromCharCode(10));
+    line.append(ts, level, thread, message);
+    logOutput.append(line);
+  }
+}
+
+async function queryLogsTab() {
+  if (!api.isDesktop) {
+    logMessage.textContent = '日志查询仅在桌面版可用';
+    logMessage.className = 'message error';
+    return;
+  }
+  const files = logFiles.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const anchorValue = logAnchor.value;
+  let anchor = Date.now();
+  let anchorRequest = null;
+  if (anchorValue && anchorValue !== 'now') {
+    anchorRequest = captureState.get(anchorValue) ?? null;
+    if (anchorRequest?.startedAt) anchor = anchorRequest.startedAt;
+  }
+  const parser = currentLogParser();
+  if (parser && typeof parser === 'object' && !parser.regex) {
+    logMessage.textContent = '请填写自定义正则';
+    logMessage.className = 'message error';
+    return;
+  }
+  logMessage.textContent = '查询中…';
+  logMessage.className = 'message';
+  try {
+    const result = await api.queryLogs({
+      logfiles: files,
+      parser,
+      anchor,
+      window: configCache?.workspace?.window,
+      limit: 300,
+    });
+    renderLogResult(result, anchorRequest);
+    logMessage.textContent = `查询完成：${result.records?.length ?? 0} 条`;
+    logMessage.className = 'message ok';
+  } catch (err) {
+    logOutput.textContent = '';
+    logSummary.textContent = '';
+    logMessage.textContent = `查询失败：${err.message}`;
+    logMessage.className = 'message error';
+  }
+}
+
 async function waitForBrowserIdle(timeoutMs = 15_000) {
   if (!api.isDesktop) return;
   const started = Date.now();
@@ -691,6 +797,25 @@ $('open-log').addEventListener('click', async () => {
     setMessage(`打开日志失败：${err.message}`, 'error');
   }
 });
+$('pick-logs').addEventListener('click', async () => {
+  try {
+    const result = await api.pickLogs();
+    const paths = result?.paths ?? [];
+    if (paths.length === 0) return;
+    logFiles.value = paths.join(String.fromCharCode(10));
+    if (configCache?.workspace) {
+      configCache.workspace = { ...configCache.workspace, logfiles: paths };
+      api.saveConfig({ workspace: configCache.workspace }).catch(() => {});
+    }
+  } catch (err) {
+    logMessage.textContent = `选择文件失败：${err.message}`;
+    logMessage.className = 'message error';
+  }
+});
+logParser.addEventListener('change', () => {
+  logRegex.hidden = logParser.value !== 'regex';
+});
+$('query-logs').addEventListener('click', queryLogsTab);
 $('add-rule').addEventListener('click', addRule);
 $('derive-rules').addEventListener('click', () => addCandidateRules([...captureState.values()]));
 $('scan-ports').addEventListener('click', scanLocalPorts);

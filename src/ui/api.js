@@ -57,6 +57,14 @@ export const api = {
     if (dc?.invoke) return dc.invoke('dc:diagnose', payload);
     return http('/api/diagnose', { method: 'POST', body: JSON.stringify(payload) });
   },
+  async pickLogs() {
+    if (dc?.invoke) return dc.invoke('dc:logs', { action: 'pick' });
+    return { paths: [] };
+  },
+  async queryLogs(payload) {
+    if (dc?.invoke) return dc.invoke('dc:logs', { action: 'query', ...payload });
+    return { pending: true };
+  },
   onCapture(handler) {
     if (!dc?.on) return () => {};
     return dc.on('dc:capture:event', handler);

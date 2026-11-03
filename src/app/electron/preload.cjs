@@ -4,6 +4,7 @@ const CHANNELS = new Set([
   'dc:config',
   'dc:browser',
   'dc:capture',
+  'dc:logs',
   'dc:diagnose',
   'dc:runs',
 ]);

@@ -51,6 +51,14 @@ test('auto detection requires >60% hits and no unparsed lines', () => {
   assert.equal(parsed.thread, 'main');
   assert.match(parsed.message, /Starting RuoYiApplication/);
 
+  const pipe = ['2026-11-02 19:30:00.000|INFO|main|com.demo.OrderService|create order | id=1'];
+  assert.equal(detectParserFromLines(pipe), 'pipe');
+  const pipeParsed = resolveParser({ preset: 'pipe' }).parse(pipe[0]);
+  assert.equal(pipeParsed.level, 'INFO');
+  assert.equal(pipeParsed.thread, 'main');
+  assert.equal(pipeParsed.logger, 'com.demo.OrderService');
+  assert.match(pipeParsed.message, /create order \| id=1/);
+
   const node = ['2026-11-02T19:30:00.000Z INFO [main] ok'];
   assert.equal(detectParserFromLines(node), 'node');
 

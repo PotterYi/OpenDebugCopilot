@@ -109,6 +109,7 @@ npm run dev        # http://127.0.0.1:5173
 | 预检 | 由内置代理 204 应答，后端无需处理 OPTIONS |
 | 日志解析 | 新增 `spring-boot` 预设，RuoYi 日志可解析 |
 | 诊断 | 捕获请求 + RuoYi 日志 → Mock 诊断 gates ok |
+| 日志页签 | 选 `sys-info.log` + `spring-boot` 解析器，按捕获请求对齐查询，返回真实日志记录 |
 
 ## 14.7 停止与清理
 

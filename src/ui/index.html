@@ -55,6 +55,7 @@
         <button type="button" class="tab active" data-tab="browser">浏览器</button>
         <button type="button" class="tab" data-tab="requests">请求</button>
         <button type="button" class="tab" data-tab="routing">路由</button>
+        <button type="button" class="tab" data-tab="logs">日志</button>
         <button type="button" class="tab" data-tab="history">历史</button>
         <span class="flex"></span>
         <input id="browser-url" class="url-input" placeholder="http://localhost:5173" />
@@ -111,6 +112,29 @@
           若前端通过 dev server 代理，请填前端域名（如 localhost:5173）。
           HTTPS 页面不能改道到 http 本地地址。
         </p>
+      </div>
+
+      <div id="tab-logs" class="tab-pane">
+        <p id="logs-warning" class="message error" hidden>日志查询仅在桌面版可用。</p>
+        <div class="toolbar log-toolbar">
+          <textarea id="log-files" class="log-files-input" rows="2" placeholder="日志文件，每行一个"></textarea>
+          <button id="pick-logs" type="button" class="secondary">选文件</button>
+          <select id="log-parser">
+            <option value="auto">自动探测</option>
+            <option value="pipe">竖线分隔 pipe</option>
+            <option value="spring-boot">Spring Boot</option>
+            <option value="logback">Logback</option>
+            <option value="json-lines">JSON Lines</option>
+            <option value="node">Node</option>
+            <option value="regex">自定义正则</option>
+          </select>
+          <input id="log-regex" class="url-input" placeholder="正则（命名组 ts/level/thread/logger/message）" hidden />
+          <select id="log-anchor"></select>
+          <button id="query-logs" type="button">查询</button>
+          <span id="log-message" class="message"></span>
+        </div>
+        <div id="log-summary" class="muted small"></div>
+        <div id="log-output" class="log-output">选择请求与解析器后查询</div>
       </div>
 
       <div id="tab-history" class="tab-pane">

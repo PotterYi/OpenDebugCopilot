@@ -259,3 +259,38 @@ button:hover { filter: brightness(1.08); }
 .probe-status.error { color: var(--danger); }
 
 .small.error { color: var(--danger); }
+
+.log-toolbar { flex-wrap: wrap; align-items: flex-start; }
+.log-files-input {
+  min-width: 260px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 6px 8px;
+  font: inherit;
+  resize: vertical;
+}
+.log-output {
+  flex: 1;
+  overflow: auto;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+.log-line {
+  display: grid;
+  grid-template-columns: 160px 54px 130px 1fr;
+  gap: 8px;
+  padding: 2px 0;
+  border-bottom: 1px solid #20242c;
+}
+.log-level.ERROR, .log-level.FATAL { color: var(--danger); }
+.log-level.WARN { color: #e6b450; }
+.log-level.INFO { color: #5bd693; }
+.log-level.DEBUG, .log-level.TRACE { color: var(--muted); }
+.log-line .log-msg { white-space: pre-wrap; word-break: break-word; }

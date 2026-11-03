@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 import path from 'node:path';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
@@ -7,6 +7,7 @@ import { startServer } from '../server.mjs';
 import { BrowserHost } from './browser-host.mjs';
 import { isLocalHostname, Router } from './routing.mjs';
 import { startLocalProxy } from './local-proxy.mjs';
+import { readLogs } from '../../evidence/logs.mjs';
 import { runCaptureDiagnosis } from '../../diagnose/run.mjs';
 import { createMockAgent } from '../../agent/mock.mjs';
 import { createClaudeAgent } from '../../agent/claude.mjs';
@@ -33,6 +34,7 @@ const smokeUrl = argValue('--smoke-url');
 const smokeClick = argValue('--smoke-click');
 const smokeEval = argValue('--smoke-eval');
 const smokeWait = Number(argValue('--smoke-wait') ?? 0);
+const smokeUiEval = argValue('--smoke-ui-eval');
 const smokeOut = argValue('--smoke-out');
 const port = Number(argValue('--port') ?? 7080);
 const runsDir = argValue('--runs-dir');
@@ -103,6 +105,32 @@ function registerIpc(service, getHost, getRouter, setRules) {
       default:
         throw new Error(`dc:browser: unknown action ${payload.action}`);
     }
+  });
+
+  handle('dc:logs', async (_event, payload = {}) => {
+    if (payload.action === 'pick') {
+      const result = await dialog.showOpenDialog({
+        properties: ['openFile', 'multiSelections'],
+        filters: [{ name: 'Log files', extensions: ['log', 'txt', 'out'] }],
+      });
+      return { paths: result.canceled ? [] : result.filePaths };
+    }
+    if (payload.action === 'query') {
+      const workspace = (await service.getConfig()).workspace;
+      const logfiles = (payload.logfiles?.length ? payload.logfiles : workspace.logfiles ?? [])
+        .map((file) => path.resolve(ROOT, file));
+      const anchor = Number(payload.anchor) || Date.now();
+      const result = await readLogs({
+        logfiles,
+        parser: payload.parser ?? 'auto',
+        anchor,
+        window: payload.window ?? workspace.window,
+        limit: payload.limit ?? 300,
+        encoding: 'auto',
+      });
+      return { ...result, logfiles };
+    }
+    throw new Error(`dc:logs: unknown action ${payload.action}`);
   });
 
   handle('dc:capture', async (_event, payload = {}) => {
@@ -259,6 +287,8 @@ async function runSmoke(window, host) {
           uiReady: window.__dcUIReady === true,
           tempConfigFlag: document.getElementById('config-path')?.textContent.includes('临时配置') === true,
           logPathVisible: document.getElementById('log-path')?.textContent.includes('日志文件') === true,
+          logTabPresent: Boolean(document.querySelector('[data-tab="logs"]')),
+          pipeParserOption: [...document.querySelectorAll('#log-parser option')].some((option) => option.value === 'pipe'),
           hiddenAttrWorks: (() => {
             const element = document.getElementById('diagnose-result');
             return Boolean(element && element.hidden && getComputedStyle(element).display === 'none');
@@ -270,6 +300,11 @@ async function runSmoke(window, host) {
     })()`);
     ui.uiReady = uiState.ready;
     ui.uiError = uiState.error;
+    let uiEvalResult = null;
+    if (smokeUiEval) {
+      const script = Buffer.from(smokeUiEval, 'base64').toString('utf8');
+      uiEvalResult = await window.webContents.executeJavaScript(script);
+    }
 
     let captured = 0;
     let captureOk = true;
@@ -346,6 +381,7 @@ async function runSmoke(window, host) {
       pageTitle,
       url: host.status().url,
       evalResult,
+      uiEvalResult,
       isLoading: host.status().isLoading,
     };
     const ok = Boolean(

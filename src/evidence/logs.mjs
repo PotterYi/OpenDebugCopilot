@@ -150,6 +150,8 @@ export async function readLogs(options = {}) {
     }
   }
 
+  records.sort((a, b) => (a.ts ?? 0) - (b.ts ?? 0));
+
   return {
     records,
     parser: scanner.parserName,
@@ -217,6 +219,8 @@ export async function searchAll(options = {}) {
     matches.push(record);
     if (matches.length >= limit) break;
   }
+  matches.sort((a, b) => (a.ts ?? 0) - (b.ts ?? 0));
+
   return {
     matches,
     keyword,

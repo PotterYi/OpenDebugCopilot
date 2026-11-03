@@ -144,10 +144,67 @@ function regexParser(pattern, name) {
 }
 
 /** @type {Record<string, { name: string, parse: (line: string) => any }>} */
+/**
+ * Pipe-delimited logs, e.g. "2026-11-03 19:24:37.920|INFO|main|com.foo.Bar|message".
+ * Fields are detected by shape; message keeps any remaining pipes.
+ *
+ * @param {string} line
+ */
+export function parsePipeLine(line) {
+  if (!line.includes('|')) return null;
+  const parts = line.split('|').map((part) => part.trim());
+  if (parts.length < 2) return null;
+
+  let ts = null;
+  let level = null;
+  let thread = null;
+  let logger = null;
+  const messageParts = [];
+
+  for (const part of parts) {
+    if (!part) continue;
+    const parsedTs = parseTimestamp(part);
+    if (ts === null && parsedTs !== null && /\d{2}:\d{2}:\d{2}/.test(part)) {
+      ts = parsedTs;
+      continue;
+    }
+    const parsedLevel = normalizeLevel(part);
+    if (level === null && parsedLevel) {
+      level = parsedLevel;
+      continue;
+    }
+    if (thread === null && /^\[[^\]]+\]$/.test(part)) {
+      thread = part.slice(1, -1);
+      continue;
+    }
+    if (logger === null && /^[\w.$]+$/.test(part) && part.includes('.')) {
+      logger = part;
+      continue;
+    }
+    messageParts.push(part);
+  }
+
+  if (ts === null) ts = parseTimestamp(parts[0]);
+  if (level === null) level = normalizeLevel(parts[1]);
+  if (thread === null && parts[2] && !parts[2].includes(' ')) thread = parts[2];
+  if (logger === null && parts[3] && /^[\w.$]+$/.test(parts[3])) logger = parts[3];
+  if (ts === null && level === null) return null;
+
+  return {
+    ts,
+    level,
+    thread,
+    logger,
+    message: messageParts.length > 0 ? messageParts.join(' | ') : parts[parts.length - 1] ?? '',
+    stack: [],
+  };
+}
+
 export const PRESETS = Object.freeze({
   'json-lines': { name: 'json-lines', parse: parseJsonLine },
   logback: regexParser(LOGBACK_REGEX, 'logback'),
   'spring-boot': regexParser(SPRING_BOOT_REGEX, 'spring-boot'),
+  pipe: { name: 'pipe', parse: parsePipeLine },
   node: regexParser(NODE_REGEX, 'node'),
 });
 
