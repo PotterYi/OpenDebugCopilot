@@ -30,11 +30,19 @@ body {
 .status.error { color: var(--danger); }
 .layout {
   display: grid;
-  grid-template-columns: 380px 1fr;
+  grid-template-columns: var(--left-width, 380px) 6px 1fr;
   gap: 12px;
   padding: 12px;
   height: calc(100vh - 48px);
 }
+.splitter {
+  width: 6px;
+  cursor: col-resize;
+  border-radius: 3px;
+  background: transparent;
+}
+.splitter:hover, .splitter.dragging { background: var(--border); }
+.small { font-size: 11px; }
 .panel {
   background: var(--panel);
   border: 1px solid var(--border);

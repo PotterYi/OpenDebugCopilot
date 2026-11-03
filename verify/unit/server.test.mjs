@@ -42,6 +42,7 @@ test('serves health, config, static page and runs', async (t) => {
     }),
   }).then((r) => r.json());
   assert.equal(saved.workspace.backendUrl, 'http://127.0.0.1:9090');
+  assert.match(saved.meta.configDir, /configs$/);
 
   const page = await fetch(`${server.url}/`).then((r) => r.text());
   assert.match(page, /DebugCopilot/);

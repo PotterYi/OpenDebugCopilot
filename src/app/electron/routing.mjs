@@ -3,6 +3,8 @@
  * Routing rules are matched by host + URL prefix; local targets are normalized to localhost.
  */
 
+import { log } from '../../core/logger.mjs';
+
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
 
 export function isLocalHostname(hostname) {
@@ -156,11 +158,12 @@ export class Router {
    *   onHit?: (event: any) => void
    * }} options
    */
-  constructor({ session, getRules, getPageOrigin = () => null, onHit = () => {} }) {
+  constructor({ session, getRules, getPageOrigin = () => null, onHit = () => {}, onMiss = () => {} }) {
     this.session = session;
     this.getRules = getRules;
     this.getPageOrigin = getPageOrigin;
     this.onHit = onHit;
+    this.onMiss = onMiss;
     this.pending = new Map();
     this.filter = { urls: ['<all_urls>'] };
 
@@ -181,6 +184,10 @@ export class Router {
       ? matchRule(this.getRules(), details.url, null)
       : matchRule(this.getRules(), details.url, details.resourceType ?? null);
     if (!rule) {
+      log.debug('[routing miss]', details.resourceType ?? '-', details.method, details.url);
+      if (details.resourceType === 'xhr' || details.resourceType === 'fetch') {
+        this.onMiss({ url: details.url, method: details.method, resourceType: details.resourceType });
+      }
       callback({});
       return;
     }

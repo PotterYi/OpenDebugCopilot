@@ -13,6 +13,10 @@ const browserUrlInput = $('browser-url');
 const browserSlot = $('browser-slot');
 const requestTitle = $('request-title');
 const requestMeta = $('request-meta');
+const configPath = $('config-path');
+const splitter = $('splitter');
+const routingWarning = $('routing-warning');
+const routingStatus = $('routing-status');
 const routingList = $('routing-list');
 const routingMessage = $('routing-message');
 const diagnoseQuestion = $('diagnose-question');
@@ -22,6 +26,7 @@ const diagnoseResult = $('diagnose-result');
 let currentTab = 'browser';
 let configCache = null;
 let routingRules = [];
+let routingHits = 0;
 let currentRequestId = null;
 const captureState = new Map();
 let renderQueued = false;
@@ -69,6 +74,11 @@ async function loadConfig() {
     routingRules = config.routing?.rules ?? [];
     fillForm(config);
     renderRouting();
+    if (config.meta?.configDir) configPath.textContent = `配置目录：${config.meta.configDir}`;
+    if (!api.isDesktop) {
+      routingWarning.hidden = false;
+      routingWarning.textContent = '当前是 WebUI：路由与内嵌浏览器只在桌面版生效。';
+    }
     setStatus(api.isDesktop ? '桌面版已连接' : 'WebUI 已连接', 'ok');
     return config;
   } catch (err) {
@@ -325,6 +335,7 @@ function setTab(name) {
 }
 
 function renderRouting() {
+  routingStatus.textContent = `已加载 ${routingRules.length} 条规则${routingHits ? `，命中 ${routingHits} 次` : ''}`;
   routingList.textContent = '';
   if (!routingRules.length) {
     const empty = document.createElement('p');
@@ -422,8 +433,9 @@ async function saveRouting() {
     const saved = await api.saveConfig({ routing: { rules: routingRules } });
     routingRules = saved.routing?.rules ?? routingRules;
     renderRouting();
-    routingMessage.textContent = '路由已保存';
+    routingMessage.textContent = `路由已保存（${routingRules.length} 条）`;
     routingMessage.className = 'message ok';
+    routingStatus.textContent = `已加载 ${routingRules.length} 条规则${routingHits ? `，命中 ${routingHits} 次` : ''}`;
   } catch (err) {
     routingMessage.textContent = `保存失败：${err.message}`;
     routingMessage.className = 'message error';
@@ -495,13 +507,38 @@ async function openBrowser(url) {
   }
 }
 
+const savedWidth = Number(localStorage.getItem('dc.leftWidth'));
+if (Number.isFinite(savedWidth) && savedWidth >= 260 && savedWidth <= 640) {
+  document.documentElement.style.setProperty('--left-width', `${savedWidth}px`);
+}
+let dragging = false;
+splitter.addEventListener('mousedown', (event) => {
+  dragging = true;
+  splitter.classList.add('dragging');
+  event.preventDefault();
+});
+window.addEventListener('mousemove', (event) => {
+  if (!dragging) return;
+  const width = Math.min(640, Math.max(260, event.clientX - 12));
+  document.documentElement.style.setProperty('--left-width', `${width}px`);
+  localStorage.setItem('dc.leftWidth', String(width));
+  requestAnimationFrame(syncBounds);
+});
+window.addEventListener('mouseup', () => {
+  if (!dragging) return;
+  dragging = false;
+  splitter.classList.remove('dragging');
+  syncBounds();
+});
+
 form.addEventListener('submit', async (event) => {
   event.preventDefault();
   setMessage('保存中…');
   try {
     const saved = await api.saveConfig(readForm());
     configCache = saved;
-    setMessage('已保存', 'ok');
+    if (saved.meta?.configDir) configPath.textContent = `配置目录：${saved.meta.configDir}`;
+    setMessage(saved.meta?.configDir ? `已保存到 ${saved.meta.configDir}` : '已保存', 'ok');
   } catch (err) {
     setMessage(`保存失败：${err.message}`, 'error');
   }
@@ -549,13 +586,17 @@ api.onCapture((event) => {
     setStatus(event.isLoading ? '加载中…' : '页面已加载', event.isLoading ? '' : 'ok');
   } else if (event.type === 'load-failed') {
     setStatus(`加载失败：${event.description ?? event.code ?? 'unknown'}`, 'error');
+  } else if (event.type === 'routing-miss') {
+    routingStatus.textContent = `最近未命中：${event.method} ${event.url}`;
   } else if (event.type === 'cors-warning') {
     setStatus(`预检失败：OPTIONS ${event.status}`, 'error');
     routingMessage.textContent = `预检失败（HTTP ${event.status}）：${event.url}。后端需对 OPTIONS 返回 2xx`;
     routingMessage.className = 'message error';
   } else if (event.type === 'routing') {
+    routingHits += 1;
     routingMessage.textContent = `改道：${event.method} ${event.url} → ${event.target ?? 'OPTIONS（仅补 CORS）'}`;
     routingMessage.className = 'message ok';
+    routingStatus.textContent = `已加载 ${routingRules.length} 条规则，命中 ${routingHits} 次`;
   } else if (event.type === 'error') {
     setStatus(event.message, 'error');
   }

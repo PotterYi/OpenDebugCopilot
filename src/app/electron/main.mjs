@@ -15,6 +15,7 @@ const ROOT = path.resolve(HERE, '../../..');
 const HOST = '127.0.0.1';
 
 app.disableHardwareAcceleration();
+app.setName('DebugCopilot');
 
 
 
@@ -41,6 +42,7 @@ function registerIpc(service, getHost, getRouter, setRules) {
         setRules(saved.routing.rules);
         getRouter()?.apply();
       }
+      log.info('[config] saved to', service.configDir, 'rules:', saved.routing?.rules?.length ?? 0);
       return saved;
     }
     throw new Error(`dc:config: unknown action ${payload.action}`);
@@ -307,7 +309,6 @@ async function runSmoke(window, host) {
 }
 
 async function bootstrap() {
-  app.setName('DebugCopilot');
   try {
     setLogFile(path.join(app.getPath('userData'), 'debugcopilot.log'));
   } catch {
@@ -319,6 +320,7 @@ async function bootstrap() {
   let router = null;
   let currentRules = initial.routing.rules;
   let pageOrigin = null;
+  log.info('[config] loaded rules:', currentRules.length, 'from', service.configDir);
   registerIpc(
     service,
     () => host,
@@ -353,7 +355,11 @@ async function bootstrap() {
     getRules: () => currentRules,
     getPageOrigin: () => pageOrigin,
     onHit: (event) => {
+      log.info('[routing]', event.rule, event.method, event.url, '->', event.target ?? 'OPTIONS (no redirect)');
       if (!window.isDestroyed()) window.webContents.send('dc:capture:event', event);
+    },
+    onMiss: (event) => {
+      if (!window.isDestroyed()) window.webContents.send('dc:capture:event', { type: 'routing-miss', ...event });
     },
   });
   window.on('closed', () => {

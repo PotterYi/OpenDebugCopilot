@@ -105,6 +105,7 @@ const child = spawn(electronPath, [
 
 log.info('');
 log.info('=== DebugCopilot 手工 E2E ===');
+log.info('注意：harness 使用临时配置（.tmp/manual-e2e/configs），关闭后清理；真实使用请 npm run desktop');
 log.info(`UI: ${`http://127.0.0.1:${UI_PORT}`}`);
 log.info(`前端: ${frontendUrl}`);
 log.info(`后端: ${backendUrl}`);

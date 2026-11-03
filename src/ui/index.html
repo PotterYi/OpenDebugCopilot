@@ -42,8 +42,11 @@
         </div>
         <button type="submit">保存配置</button>
         <p id="config-message" class="message"></p>
+        <p id="config-path" class="muted small"></p>
       </form>
     </section>
+
+    <div id="splitter" class="splitter" title="拖动调整宽度"></div>
 
     <section class="panel grow">
       <div class="tabbar">
@@ -90,13 +93,19 @@
       </div>
 
       <div id="tab-routing" class="tab-pane">
+        <p id="routing-warning" class="message error" hidden>当前是 WebUI：路由与内嵌浏览器只在桌面版生效。</p>
         <div class="toolbar">
           <button id="add-rule" type="button" class="secondary">添加规则</button>
           <button id="save-routing" type="button">保存路由</button>
           <span id="routing-message" class="message"></span>
+          <span id="routing-status" class="muted small"></span>
         </div>
         <div id="routing-list" class="routing-list"></div>
-        <p class="muted">按 host + URL 前缀匹配；local 改道到本地，sit 改道到测试环境。OPTIONS 预检不重定向，只补 CORS 头。</p>
+        <p class="muted">
+          规则匹配浏览器实际请求的 host + 路径前缀；host 留空表示任意。
+          若前端通过 dev server 代理，请填前端域名（如 localhost:5173）。
+          HTTPS 页面不能改道到 http 本地地址。
+        </p>
       </div>
 
       <div id="tab-history" class="tab-pane">

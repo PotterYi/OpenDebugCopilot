@@ -18,6 +18,10 @@ export function createService({ root = process.cwd(), configDir, runsDir } = {})
     return {
       workspace: await store.getWorkspace(),
       routing: await store.getRouting(),
+      meta: {
+        configDir: path.resolve(configDir ?? path.join(root, 'configs')),
+        runsDir: runsRoot,
+      },
     };
   }
 

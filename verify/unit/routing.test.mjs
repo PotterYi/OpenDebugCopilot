@@ -134,3 +134,30 @@ test('router redirects actual requests, keeps OPTIONS and adds CORS', () => {
   router.dispose();
   assert.equal(handlers.before, null);
 });
+
+test('reports routing misses for xhr requests only', () => {
+  const handlers = {};
+  const session = {
+    webRequest: {
+      onBeforeRequest: (_filter, listener) => { handlers.before = listener ?? null; },
+      onBeforeSendHeaders: (_filter, listener) => { handlers.send = listener ?? null; },
+      onHeadersReceived: (_filter, listener) => { handlers.headers = listener ?? null; },
+      onCompleted: (_filter, listener) => { handlers.completed = listener ?? null; },
+      onErrorOccurred: (_filter, listener) => { handlers.error = listener ?? null; },
+    },
+  };
+  const misses = [];
+  const router = new Router({ session, getRules: () => rules, onMiss: (event) => misses.push(event) });
+
+  let result = null;
+  handlers.before({ id: 1, url: 'https://api.example.com/other', method: 'GET', resourceType: 'xhr' }, (value) => { result = value; });
+  assert.deepEqual(result, {});
+  assert.equal(misses.length, 1);
+  assert.equal(misses[0].url, 'https://api.example.com/other');
+
+  handlers.before({ id: 2, url: 'https://api.example.com/other', method: 'GET', resourceType: 'mainFrame' }, () => {});
+  assert.equal(misses.length, 1);
+
+  router.dispose();
+  assert.equal(handlers.before, null);
+});
