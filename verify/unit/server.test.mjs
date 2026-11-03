@@ -5,10 +5,11 @@ import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { createService } from '../../src/app/service.mjs';
 import { startServer } from '../../src/app/server.mjs';
+import { tempDir } from './tmp.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '../..');
-const TMP = path.resolve(HERE, `../../../.tmp/server-test-${process.pid}`);
+const TMP = tempDir('server-test');
 const UI_DIR = path.join(ROOT, 'src/ui');
 
 test('serves health, config, static page and runs', async (t) => {

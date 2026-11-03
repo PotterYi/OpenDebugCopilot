@@ -78,7 +78,12 @@ async function loadConfig() {
     routingRules = config.routing?.rules ?? [];
     fillForm(config);
     renderRouting();
-    if (config.meta?.configDir) configPath.textContent = `配置目录：${config.meta.configDir}`;
+    if (config.meta?.configDir) {
+      const dir = config.meta.configDir;
+      const isTemp = /[\/]\.tmp[\/]/.test(dir);
+      configPath.textContent = `配置目录：${dir}${isTemp ? '（harness 临时配置，关闭后清理；正式使用请 npm run desktop）' : ''}`;
+      configPath.className = `muted small${isTemp ? ' error' : ''}`;
+    }
     if (!api.isDesktop) {
       routingWarning.hidden = false;
       routingWarning.textContent = '当前是 WebUI：路由与内嵌浏览器只在桌面版生效。';

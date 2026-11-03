@@ -4,11 +4,12 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { mkdir, readFile, rm } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
+import { tempDir } from './tmp.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '../..');
 const CLI = path.join(ROOT, 'src/app/cli.mjs');
-const TMP = path.resolve(HERE, `../../../.tmp/serve-test-${process.pid}`);
+const TMP = tempDir('serve-test');
 
 function startServe(args) {
   return new Promise((resolve, reject) => {

@@ -257,3 +257,5 @@ button:hover { filter: brightness(1.08); }
 .probe-status { font-size: 11px; color: var(--muted); }
 .probe-status.ok { color: #5bd693; }
 .probe-status.error { color: var(--danger); }
+
+.small.error { color: var(--danger); }

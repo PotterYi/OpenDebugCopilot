@@ -6,12 +6,13 @@ import { once } from 'node:events';
 import { mkdir, readFile, rm, writeFile, appendFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { tempDir } from './tmp.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '../..');
 const CLI = path.join(ROOT, 'src/app/cli.mjs');
 const FIXTURES = path.join(ROOT, 'verify/fixtures/scenarios');
-const TMP = path.resolve(HERE, `../../../.tmp/cli-test-${process.pid}`);
+const TMP = tempDir('cli-test');
 
 function runCli(args) {
   return spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8' });

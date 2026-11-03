@@ -6,12 +6,13 @@ import { fileURLToPath } from 'node:url';
 import { parseScenario } from '../../src/core/scenario.mjs';
 import { createTools } from '../../src/tools/index.mjs';
 import { parseTimestamp } from '../../src/evidence/parsers.mjs';
+import { tempDir } from './tmp.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES = path.resolve(HERE, '../fixtures');
 const LOGS = path.join(FIXTURES, 'logs');
 const SOURCE = path.join(FIXTURES, 'source');
-const RUN_DIR = path.resolve(HERE, `../../../.tmp/tools-test-${process.pid}`);
+const RUN_DIR = tempDir('tools-test');
 
 const scenario = parseScenario({
   name: 'tools-test',

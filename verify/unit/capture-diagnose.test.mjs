@@ -4,10 +4,11 @@ import path from 'node:path';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { runCaptureDiagnosis } from '../../src/diagnose/run.mjs';
+import { tempDir } from './tmp.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '../..');
-const TMP = path.resolve(HERE, `../../../.tmp/capture-diagnose-${process.pid}`);
+const TMP = tempDir('capture-diagnose');
 
 function localTimestamp() {
   const now = new Date();

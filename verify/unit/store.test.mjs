@@ -4,9 +4,10 @@ import path from 'node:path';
 import { readdir, rm } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { createStore, DEFAULT_WORKSPACE } from '../../src/core/store.mjs';
+import { tempDir } from './tmp.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const TMP = path.resolve(HERE, `../../../.tmp/store-test-${process.pid}`);
+const TMP = tempDir('store-test');
 
 test('returns defaults when config files are absent', async (t) => {
   await rm(TMP, { recursive: true, force: true });

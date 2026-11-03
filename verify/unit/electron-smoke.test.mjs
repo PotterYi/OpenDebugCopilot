@@ -9,12 +9,13 @@ import { fileURLToPath } from 'node:url';
 import http from 'node:http';
 import { once } from 'node:events';
 import { pageHtml } from '../manual/page.mjs';
+import { tempDir } from './tmp.mjs';
 
 const require = createRequire(import.meta.url);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '../..');
 const MAIN = path.join(ROOT, 'src/app/electron/main.mjs');
-const TMP = path.resolve(HERE, `../../../.tmp/electron-test-${process.pid}`);
+const TMP = tempDir('electron-test');
 
 let electronPath = null;
 try {

@@ -8,10 +8,11 @@ import { fileURLToPath } from 'node:url';
 import { parseScenario } from '../../src/core/scenario.mjs';
 import { runDiagnosis } from '../../src/diagnose/run.mjs';
 import { runPreflight } from '../../src/doctor/preflight.mjs';
+import { tempDir } from './tmp.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES = path.resolve(HERE, '../fixtures');
-const TMP = path.resolve(HERE, `../../../.tmp/diagnose-test-${process.pid}`);
+const TMP = tempDir('diagnose-test');
 const LOG_FILE = path.join(TMP, 'app.log');
 const RUNS = path.join(TMP, 'runs');
 
