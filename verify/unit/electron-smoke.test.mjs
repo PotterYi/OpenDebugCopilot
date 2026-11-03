@@ -129,6 +129,9 @@ test('electron shell boots, captures, routes and diagnoses', {
   assert.match(stdout, /"logPathVisible":true/);
   assert.match(stdout, /"logTabPresent":true/);
   assert.match(stdout, /"pipeParserOption":true/);
+  assert.match(stdout, /"consolePanel":true/);
+  assert.match(stdout, /"singleDiagnoseButton":true/);
+  assert.match(stdout, /"questionIsTextarea":true/);
   assert.match(stdout, /"captureOk":true/);
   assert.match(stdout, /"captured":[1-9]/);
   assert.match(stdout, /"pageTitle":"ok"/);
@@ -137,6 +140,8 @@ test('electron shell boots, captures, routes and diagnoses', {
   assert.match(stdout, /"diagnose":\{"ok":true/);
   assert.match(stdout, /"gates":true/);
   assert.match(stdout, /"frontendErrors":[1-9]/);
+  assert.match(stdout, /"consoleDiagnose":\{"ok":true/);
+  assert.match(stdout, /"gates":true/);
   assert.ok(backendHits >= 1, `expected redirect to backend, got ${backendHits}`);
   assert.equal(backendOptions, 0, 'preflight should be answered by the local proxy');
   assert.equal(pageOptionsHits, 0, 'preflight should not reach the page server');

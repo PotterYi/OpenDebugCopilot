@@ -40,6 +40,7 @@ export class BrowserHost {
     this.pendingUrl = null;
     this.loading = false;
     this.consoleEvents = [];
+    this.consoleSeq = 0;
     this.headersByPath = new Map();
     this.visible = false;
     this.bounds = { x: 0, y: 0, width: 0, height: 0 };
@@ -150,6 +151,7 @@ export class BrowserHost {
   }
 
   pushConsole(event) {
+    event.id = String(++this.consoleSeq);
     this.consoleEvents.push(event);
     if (this.consoleEvents.length > 200) this.consoleEvents.shift();
     this.emit({ type: 'console', event });
@@ -165,6 +167,7 @@ export class BrowserHost {
 
   clearConsole() {
     this.consoleEvents = [];
+    this.consoleSeq = 0;
     this.headersByPath = new Map();
     this.emit({ type: 'console-clear' });
   }
@@ -401,6 +404,7 @@ export class BrowserHost {
     this.byRequestId.clear();
     this.order = [];
     this.consoleEvents = [];
+    this.consoleSeq = 0;
     this.headersByPath = new Map();
     this.emit({ type: 'clear' });
   }

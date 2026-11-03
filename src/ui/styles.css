@@ -294,3 +294,37 @@ button:hover { filter: brightness(1.08); }
 .log-level.INFO { color: #5bd693; }
 .log-level.DEBUG, .log-level.TRACE { color: var(--muted); }
 .log-line .log-msg { white-space: pre-wrap; word-break: break-word; }
+
+.question-row { margin-bottom: 6px; }
+.question-input {
+  width: 100%;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 8px;
+  font: inherit;
+  resize: vertical;
+}
+.console-panel {
+  margin-top: 10px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  max-height: 38%;
+  min-height: 90px;
+}
+.console-panel .panel-head { padding-top: 8px; }
+.console-panel h2 { font-size: 12px; margin: 0; }
+.console-list { list-style: none; margin: 6px 0 0; padding: 0; overflow: auto; }
+.console-list li {
+  display: grid;
+  grid-template-columns: 64px 1fr 54px;
+  gap: 6px;
+  align-items: center;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.console-list .console-message { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.console-list button { padding: 3px 6px; font-size: 11px; }

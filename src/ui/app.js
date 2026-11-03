@@ -32,6 +32,8 @@ const routingList = $('routing-list');
 const routingMessage = $('routing-message');
 const diagnoseQuestion = $('diagnose-question');
 const diagnoseMessage = $('diagnose-message');
+const consoleList = $('console-list');
+const consoleCount = $('console-count');
 const diagnoseResult = $('diagnose-result');
 
 let currentTab = 'browser';
@@ -40,6 +42,7 @@ let routingRules = [];
 let routingHits = 0;
 let currentRequest = null;
 let consoleErrorCount = 0;
+const consoleState = new Map();
 let currentRequestId = null;
 const captureState = new Map();
 let renderQueued = false;
@@ -209,7 +212,12 @@ async function refreshRequests() {
     captureState.clear();
     for (const item of requests) captureState.set(item.id, item);
     const consoleResult = await api.capture('console', { limit: 200 }).catch(() => ({ events: [] }));
-    consoleErrorCount = Array.isArray(consoleResult?.events) ? consoleResult.events.length : 0;
+    consoleState.clear();
+    for (const event of Array.isArray(consoleResult?.events) ? consoleResult.events : []) {
+      consoleState.set(event.id, event);
+    }
+    consoleErrorCount = consoleState.size;
+    renderConsoleList();
     renderRequests();
   } catch (err) {
     hintEl.textContent = `加载请求失败：${err.message}`;
@@ -521,21 +529,47 @@ async function saveRouting() {
   }
 }
 
-async function runDiagnose(mock) {
-  if (!currentRequestId) {
-    diagnoseMessage.textContent = '请先选择一条请求';
+function renderConsoleList() {
+  consoleCount.textContent = String(consoleState.size);
+  consoleList.textContent = '';
+  const items = [...consoleState.values()].sort((a, b) => (b.ts ?? 0) - (a.ts ?? 0));
+  if (items.length === 0) {
+    const empty = document.createElement('li');
+    empty.className = 'muted';
+    empty.textContent = '暂无页面错误';
+    consoleList.append(empty);
     return;
   }
-  diagnoseMessage.textContent = mock ? 'Mock 诊断中…' : '真实诊断中…';
+  for (const item of items) {
+    const row = document.createElement('li');
+    const time = document.createElement('span');
+    time.className = 'muted';
+    time.textContent = item.ts ? new Date(item.ts).toLocaleTimeString() : '—';
+    const message = document.createElement('span');
+    message.className = 'console-message';
+    message.textContent = item.message ?? '';
+    message.title = item.message ?? '';
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'secondary';
+    button.textContent = '诊断';
+    button.addEventListener('click', () => runConsoleDiagnose(item.id));
+    row.append(time, message, button);
+    consoleList.append(row);
+  }
+}
+
+async function runDiagnosisPayload(payload, label) {
+  diagnoseMessage.textContent = `${label}诊断中…`;
   diagnoseMessage.className = 'muted';
   diagnoseResult.hidden = true;
-  const buttons = [$('diagnose-mock'), $('diagnose-live')];
-  for (const button of buttons) button.disabled = true;
+  const button = $('diagnose-request');
+  button.disabled = true;
   try {
     const response = await api.diagnose({
-      requestId: currentRequestId,
+      ...payload,
       question: diagnoseQuestion.value.trim(),
-      mock,
+      mock: false,
       recheck: 1,
     });
     renderDiagnosis(response);
@@ -546,8 +580,21 @@ async function runDiagnose(mock) {
     diagnoseMessage.textContent = `诊断失败：${err.message}`;
     diagnoseMessage.className = 'message error';
   } finally {
-    for (const button of buttons) button.disabled = false;
+    button.disabled = false;
   }
+}
+
+async function runDiagnoseRequest() {
+  if (!currentRequestId) {
+    diagnoseMessage.textContent = '请先选择一条请求';
+    return;
+  }
+  await runDiagnosisPayload({ requestId: currentRequestId }, '请求');
+}
+
+async function runConsoleDiagnose(consoleId) {
+  if (!consoleId) return;
+  await runDiagnosisPayload({ consoleId }, '页面错误');
 }
 
 async function probeTarget(url) {
@@ -811,7 +858,9 @@ $('clear-requests').addEventListener('click', async () => {
     await api.capture('clear');
     await api.capture('console-clear').catch(() => {});
     captureState.clear();
+    consoleState.clear();
     consoleErrorCount = 0;
+    renderConsoleList();
     renderRequests();
   } catch (err) {
     hintEl.textContent = `清空失败：${err.message}`;
@@ -862,8 +911,13 @@ makeRuleButton.addEventListener('click', () => {
   }
   addCandidateRules([currentRequest]).then(() => setTab('routing')).catch(() => {});
 });
-$('diagnose-mock').addEventListener('click', () => runDiagnose(true));
-$('diagnose-live').addEventListener('click', () => runDiagnose(false));
+$('diagnose-request').addEventListener('click', runDiagnoseRequest);
+$('clear-console').addEventListener('click', async () => {
+  await api.capture('console-clear').catch(() => {});
+  consoleState.clear();
+  consoleErrorCount = 0;
+  renderConsoleList();
+});
 $('save-routing').addEventListener('click', saveRouting);
 for (const tab of document.querySelectorAll('.tab')) {
   tab.addEventListener('click', () => setTab(tab.dataset.tab));
@@ -884,10 +938,14 @@ api.onCapture((event) => {
   } else if (event.type === 'load-failed') {
     setStatus(`加载失败：${event.description ?? event.code ?? 'unknown'}`, 'error');
   } else if (event.type === 'console') {
-    consoleErrorCount += 1;
+    consoleState.set(event.event.id, event.event);
+    consoleErrorCount = consoleState.size;
+    renderConsoleList();
     scheduleRender();
   } else if (event.type === 'console-clear') {
+    consoleState.clear();
     consoleErrorCount = 0;
+    renderConsoleList();
     scheduleRender();
   } else if (event.type === 'routing-miss') {
     routingStatus.textContent = `最近未命中：${event.method} ${event.url}`;

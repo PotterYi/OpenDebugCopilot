@@ -77,16 +77,24 @@
               <span id="capture-hint" class="muted"></span>
             </div>
             <ul id="requests" class="request-list"></ul>
+            <div class="console-panel">
+              <div class="panel-head">
+                <h2>页面错误 <span id="console-count">0</span></h2>
+                <button id="clear-console" type="button" class="secondary">清空</button>
+              </div>
+              <ul id="console-list" class="console-list"></ul>
+            </div>
           </aside>
           <section class="split-right">
             <div class="detail-head">
               <span id="request-title">选择一条请求</span>
               <span id="request-meta" class="muted"></span>
             </div>
+            <div class="question-row">
+              <textarea id="diagnose-question" class="question-input" rows="2" placeholder="描述现象（可选），例如：登录后用户列表报错"></textarea>
+            </div>
             <div class="toolbar">
-              <input id="diagnose-question" class="url-input" placeholder="描述现象（可选，如：下单报错）" />
-              <button id="diagnose-mock" type="button">诊断（Mock）</button>
-              <button id="diagnose-live" type="button" class="secondary">真实诊断</button>
+              <button id="diagnose-request" type="button">诊断此请求</button>
               <button id="make-rule" type="button" class="secondary">生成路由规则</button>
               <span id="diagnose-message" class="muted"></span>
             </div>

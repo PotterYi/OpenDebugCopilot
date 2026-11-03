@@ -159,40 +159,69 @@ function registerIpc(service, getHost, getRouter, setRules) {
   handle('dc:diagnose', async (_event, payload = {}) => {
     const host = getHost();
     if (!host) throw new Error('browser host is not ready');
-    const record = host.detail(payload.requestId);
-    if (!record) throw new Error(`captured request not found: ${payload.requestId}`);
-
     const workspace = (await service.getConfig()).workspace;
-    const observation = {
-      request: {
-        method: record.method,
-        url: record.url,
-        headers: record.requestHeaders,
-        body: record.postData,
-        startedAt: record.startedAt,
-      },
-      response: {
-        status: record.status,
-        statusText: record.statusText,
-        ok: (record.status ?? 0) >= 200 && (record.status ?? 0) < 400,
-        headers: record.responseHeaders,
-        body: record.body?.text ?? null,
-        truncated: record.body?.truncated ?? false,
-        durationMs: record.durationMs,
-        error: record.error,
-      },
-      firedAt: record.startedAt,
-      resourceType: record.resourceType,
-      ruleId: payload.ruleId ?? null,
-    };
 
-    const frontendErrors = host.listConsole({ limit: 20 });
+    let observation;
+    let frontendErrors;
 
-    const agent = payload.mock === false
-      ? createClaudeAgent({
+    if (payload.consoleId) {
+      const event = host.listConsole({ limit: 200 }).find((item) => String(item.id) === String(payload.consoleId));
+      if (!event) throw new Error(`console error not found: ${payload.consoleId}`);
+      const pageUrl = host.status().url;
+      observation = {
+        request: {
+          method: 'CONSOLE',
+          url: pageUrl,
+          headers: {},
+          body: null,
+          startedAt: event.ts,
+        },
+        response: {
+          status: null,
+          statusText: '',
+          ok: false,
+          headers: {},
+          body: null,
+          durationMs: 0,
+          error: event.message,
+        },
+        firedAt: event.ts,
+        resourceType: 'console',
+      };
+      frontendErrors = [event];
+    } else {
+      const record = host.detail(payload.requestId);
+      if (!record) throw new Error(`captured request not found: ${payload.requestId}`);
+      observation = {
+        request: {
+          method: record.method,
+          url: record.url,
+          headers: record.requestHeaders,
+          body: record.postData,
+          startedAt: record.startedAt,
+        },
+        response: {
+          status: record.status,
+          statusText: record.statusText,
+          ok: (record.status ?? 0) >= 200 && (record.status ?? 0) < 400,
+          headers: record.responseHeaders,
+          body: record.body?.text ?? null,
+          truncated: record.body?.truncated ?? false,
+          durationMs: record.durationMs,
+          error: record.error,
+        },
+        firedAt: record.startedAt,
+        resourceType: record.resourceType,
+        ruleId: payload.ruleId ?? null,
+      };
+      frontendErrors = host.listConsole({ limit: 20 });
+    }
+
+    const agent = payload.mock === true
+      ? createMockAgent()
+      : createClaudeAgent({
           cwd: workspace.sourceRoot ? path.resolve(ROOT, workspace.sourceRoot) : undefined,
-        })
-      : createMockAgent();
+        });
 
     return runCaptureDiagnosis(observation, {
       workspace,
@@ -289,6 +318,9 @@ async function runSmoke(window, host) {
           logPathVisible: document.getElementById('log-path')?.textContent.includes('日志文件') === true,
           logTabPresent: Boolean(document.querySelector('[data-tab="logs"]')),
           pipeParserOption: [...document.querySelectorAll('#log-parser option')].some((option) => option.value === 'pipe'),
+          consolePanel: Boolean(document.getElementById('console-list')),
+          singleDiagnoseButton: Boolean(document.getElementById('diagnose-request')) && !document.getElementById('diagnose-mock'),
+          questionIsTextarea: document.getElementById('diagnose-question')?.tagName === 'TEXTAREA',
           hiddenAttrWorks: (() => {
             const element = document.getElementById('diagnose-result');
             return Boolean(element && element.hidden && getComputedStyle(element).display === 'none');
@@ -311,6 +343,7 @@ async function runSmoke(window, host) {
     let diagnose = null;
     let pageTitle = null;
     let evalResult = null;
+    let consoleDiagnose = null;
     if (smokeUrl) {
       host.open(smokeUrl);
       if (smokeEval) {
@@ -367,6 +400,19 @@ async function runSmoke(window, host) {
     }
 
     await new Promise((resolve) => setTimeout(resolve, 300));
+    if (smokeUrl) {
+      consoleDiagnose = await window.webContents.executeJavaScript(`(async () => {
+        const { events } = await window.dc.invoke('dc:capture', { action: 'console', limit: 5 });
+        if (!events.length) return { ok: false, reason: 'no console events' };
+        const response = await window.dc.invoke('dc:diagnose', {
+          consoleId: events[0].id,
+          question: 'smoke console diagnosis',
+          mock: true,
+        });
+        return { ok: true, gates: Boolean(response.result?.gates?.ok) };
+      })()`);
+    }
+
     clearTimeout(timeout);
     const sample = host.list({ limit: 1 })[0] ?? null;
     const details = host.list({ limit: 50 }).map((item) => host.detail(item.id)).filter(Boolean);
@@ -378,6 +424,7 @@ async function runSmoke(window, host) {
       captureSample: sample ? { url: sample.url, status: sample.status } : null,
       captureBody: Boolean(sampleBody),
       diagnose,
+      consoleDiagnose,
       pageTitle,
       url: host.status().url,
       evalResult,
