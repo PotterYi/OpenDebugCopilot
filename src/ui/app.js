@@ -80,7 +80,8 @@ async function loadConfig() {
     renderRouting();
     if (config.meta?.configDir) {
       const dir = config.meta.configDir;
-      const isTemp = /[\/]\.tmp[\/]/.test(dir);
+      const sep = String.fromCharCode(92);
+      const isTemp = dir.includes(`${sep}.tmp${sep}`) || dir.includes('/.tmp/') || dir.includes(`${sep}.tmp/`) || dir.includes(`/.tmp${sep}`);
       configPath.textContent = `配置目录：${dir}${isTemp ? '（harness 临时配置，关闭后清理；正式使用请 npm run desktop）' : ''}`;
       configPath.className = `muted small${isTemp ? ' error' : ''}`;
     }
