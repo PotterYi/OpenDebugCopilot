@@ -191,8 +191,14 @@ function renderRequests() {
     url.textContent = requestPath(item.url);
     url.title = item.url;
     const status = document.createElement('span');
-    status.className = `status ${item.error ? 'error' : (item.status ?? 0) >= 400 ? 'error' : 'ok'}`;
-    status.textContent = item.error ? 'FAIL' : item.status ?? '…';
+    const isError = Boolean(item.error) || (item.status ?? 0) >= 400 || Boolean(item.businessError);
+    status.className = `status ${isError ? 'error' : 'ok'}`;
+    status.textContent = item.error
+      ? 'FAIL'
+      : item.businessError
+        ? `${item.status ?? 200}/${item.businessCode}`
+        : item.status ?? '…';
+    if (item.businessError && item.businessMessage) status.title = item.businessMessage;
     const duration = document.createElement('span');
     duration.textContent = item.durationMs != null ? `${item.durationMs}ms` : '';
     const type = document.createElement('span');

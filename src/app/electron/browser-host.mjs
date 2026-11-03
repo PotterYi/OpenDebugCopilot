@@ -1,6 +1,7 @@
 import { WebContentsView } from 'electron';
 import { normalizeLocalhost } from './routing.mjs';
 import { log } from '../../core/logger.mjs';
+import { detectBusinessError } from '../../evidence/business.mjs';
 
 const MAX_RECORDS = 500;
 const MAX_BODY_BYTES = 1024 * 1024;
@@ -139,6 +140,9 @@ export class BrowserHost {
       error: record.error,
       startedAt: record.startedAt,
       finished: record.finished,
+      businessError: record.businessError,
+      businessCode: record.businessCode,
+      businessMessage: record.businessMessage,
     };
   }
 
@@ -262,6 +266,9 @@ export class BrowserHost {
         finished: false,
         body: null,
         bodyError: null,
+        businessError: null,
+        businessCode: null,
+        businessMessage: null,
       };
       this.records.set(record.id, record);
       this.byRequestId.set(params.requestId, record);
@@ -401,7 +408,9 @@ export class BrowserHost {
       .map((id) => this.records.get(id))
       .filter(Boolean)
       .filter((record) => (resourceType ? record.resourceType === resourceType : true))
-      .filter((record) => (errorsOnly ? Boolean(record.error) || (record.status ?? 0) >= 400 : true));
+      .filter((record) => (errorsOnly
+        ? Boolean(record.error) || (record.status ?? 0) >= 400 || Boolean(record.businessError)
+        : true));
     return records.slice(-limit).map((record) => this.summary(record)).reverse();
   }
 

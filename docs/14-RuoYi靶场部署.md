@@ -149,27 +149,47 @@ npm run dev        # http://127.0.0.1:5173
 - 需要用户手动停用本地规则或把目标切换为 SIT。
 - 若希望“本地不可达自动回退 SIT”，需要新增 health-aware 规则（定期探活 + 不可达时跳过规则），属于候选功能，尚未实现。
 
-## 14.6.2 报错靶子场景
+## 14.6.2 业务故障场景（在现有代码里注入）
 
-测试页：`http://localhost:5173/debug.html`（需在 DebugCopilot 内嵌浏览器打开）
+没有新造测试页面/控制器，而是在 RuoYi 现有服务方法里加入可控故障开关：
 
-| 按钮 / 接口 | 预期 | 说明 |
+`com.ruoyi.common.utils.DebugFaults`（ruoyi-common）读取 JVM 参数 `-Ddebug.faults=a,b,c`。
+未开启时完全走原逻辑；开启后对应业务链路抛异常/延迟。
+
+| 开关 | 注入位置 | 现象 |
 | --- | --- | --- |
-| `/debug/ok?orderId=...` | 200 | 正常请求，ERROR 日志基线 |
-| `/debug/exception?orderId=...` | 500 | 抛 `IllegalStateException`，error 级堆栈 |
-| `/debug/npe?orderId=...` | 500 | NPE 堆栈 |
-| `/debug/sql?orderId=...` | 500 | `BadSqlGrammarException`，含错误 SQL |
-| `/debug/redis?orderId=...` | 500 | Redis WRONGTYPE 异常 |
-| `/debug/business?qty=0` | 409 | 业务错误“库存不足” |
-| `/debug/http500?orderId=...` | 500 | 强制 HTTP 500 |
-| `/debug/slow?orderId=...` | 200（5s） | 慢请求，日志 start/end |
-| `/debug/late-log?orderId=...` | 200 | 3 秒后才写日志，验证时间窗 |
-| `/debug/big?orderId=...` | 200 | 500 行 JSON，验证大响应 |
-| `/debug-sit/*` | 同上 | 不命中规则，直接走 SIT 8081 |
+| `loginException` | `SysLoginService.login` | 登录失败，错误堆栈 |
+| `loginSlow` | 同上 | 登录延迟 3s |
+| `userListSql` | `SysUserServiceImpl.selectUserList` | 用户列表 `BadSqlGrammarException` |
+| `userListException` | 同上 | 用户列表业务异常 |
+| `deptListException` | `SysDeptServiceImpl.selectDeptList` | 部门树异常 |
+| `roleListException` | `SysRoleServiceImpl.selectRoleList` | 角色列表异常 |
+| `menuRoutersException` | `SysMenuServiceImpl.selectMenuTreeByUserId` | 登录后菜单路由异常 |
+| `noticeListException` | `SysNoticeServiceImpl.selectNoticeList` | 通知公告异常 |
 
-- `/debug/**` 被路由到本地 8080；`/debug-sit/**` 无规则，走 SIT 8081。
-- 两个实例都已关闭 Spring Security 对 `/debug/**`、`/debug-sit/**` 的鉴权，便于直接触发。
-- 日志订单号保留在 `orderId`，可直接用于业务 ID 关联验证。
+当前实例配置：
+
+```bash
+# 本地 8080：用户列表 SQL 错误 + 部门异常
+java -Ddebug.faults=userListSql,deptListException -jar ruoyi-admin.jar ...
+
+# SIT 8081：通知公告异常
+java -Ddebug.faults=noticeListException -jar ruoyi-admin.jar --server.port=8081 ...
+```
+
+配合路由规则：
+
+| 前缀 | 去向 |
+| --- | --- |
+| `/login` | 本地 8080 |
+| `/system/user` | 本地 8080（用户列表报 SQL 错） |
+| `/system/dept` | 本地 8080（部门树报错） |
+| `/system/role` | 无规则 → SIT 8081（正常） |
+| `/system/notice` | 无规则 → SIT 8081（报异常） |
+
+正常后台页面即可触发：登录 → 用户管理（本地 SQL 错误）→ 部门管理（本地异常）→ 角色管理（SIT 正常）→ 通知公告（SIT 异常）。
+
+> RuoYi 全局异常处理器返回 **HTTP 200 + body `code:500`**。DebugCopilot 会识别该业务错误码，在请求列表显示 `200/500` 并纳入“只显示错误”筛选。
 
 ## 14.7 停止与清理
 
