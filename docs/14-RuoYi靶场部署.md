@@ -90,7 +90,9 @@ npm run dev        # http://127.0.0.1:5173
   "sitUrl": "http://localhost:8081",
   "logfiles": [
     "G:/develop/project/test-targets/ruoyi/logs/sys-info.log",
-    "G:/develop/project/test-targets/ruoyi/logs/sys-error.log"
+    "G:/develop/project/test-targets/ruoyi/logs/sys-error.log",
+    "G:/develop/project/test-targets/ruoyi/logs-sit/sys-info.log",
+    "G:/develop/project/test-targets/ruoyi/logs-sit/sys-error.log"
   ],
   "sourceRoot": "G:/develop/project/test-targets/ruoyi/backend",
   "frontendSourceRoot": "G:/develop/project/test-targets/ruoyi/frontend/src",
@@ -103,6 +105,7 @@ npm run dev        # http://127.0.0.1:5173
 | 规则 | 前缀 | 目标 |
 | --- | --- | --- |
 | system-to-sit | `/system` | SIT `http://localhost:8081` |
+| local-debug | `/debug/` | 本地 `http://localhost:8080` |
 | api-local | `/` | 本地 `http://localhost:8080` |
 
 ## 14.6 已验证结果（2026-11-03）
@@ -145,6 +148,28 @@ npm run dev        # http://127.0.0.1:5173
 - 本地 8080 停掉后，`/login`、`/system/user` 会失败（连接失败），SIT 请求仍正常。
 - 需要用户手动停用本地规则或把目标切换为 SIT。
 - 若希望“本地不可达自动回退 SIT”，需要新增 health-aware 规则（定期探活 + 不可达时跳过规则），属于候选功能，尚未实现。
+
+## 14.6.2 报错靶子场景
+
+测试页：`http://localhost:5173/debug.html`（需在 DebugCopilot 内嵌浏览器打开）
+
+| 按钮 / 接口 | 预期 | 说明 |
+| --- | --- | --- |
+| `/debug/ok?orderId=...` | 200 | 正常请求，ERROR 日志基线 |
+| `/debug/exception?orderId=...` | 500 | 抛 `IllegalStateException`，error 级堆栈 |
+| `/debug/npe?orderId=...` | 500 | NPE 堆栈 |
+| `/debug/sql?orderId=...` | 500 | `BadSqlGrammarException`，含错误 SQL |
+| `/debug/redis?orderId=...` | 500 | Redis WRONGTYPE 异常 |
+| `/debug/business?qty=0` | 409 | 业务错误“库存不足” |
+| `/debug/http500?orderId=...` | 500 | 强制 HTTP 500 |
+| `/debug/slow?orderId=...` | 200（5s） | 慢请求，日志 start/end |
+| `/debug/late-log?orderId=...` | 200 | 3 秒后才写日志，验证时间窗 |
+| `/debug/big?orderId=...` | 200 | 500 行 JSON，验证大响应 |
+| `/debug-sit/*` | 同上 | 不命中规则，直接走 SIT 8081 |
+
+- `/debug/**` 被路由到本地 8080；`/debug-sit/**` 无规则，走 SIT 8081。
+- 两个实例都已关闭 Spring Security 对 `/debug/**`、`/debug-sit/**` 的鉴权，便于直接触发。
+- 日志订单号保留在 `orderId`，可直接用于业务 ID 关联验证。
 
 ## 14.7 停止与清理
 
