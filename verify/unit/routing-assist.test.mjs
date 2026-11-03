@@ -10,28 +10,88 @@ const requests = [
   { url: 'http://localhost:5173/api/order/3', method: 'GET', resourceType: 'mainFrame' },
 ];
 
-test('derives rules by host and first path segment', () => {
-  const rules = deriveCandidateRules(requests, { defaultBaseUrl: 'http://localhost:8080' });
-  assert.equal(rules.length, 2);
-  const order = rules.find((rule) => rule.match.prefix === '/api/order');
-  assert.ok(order);
-  assert.equal(order.match.host, 'localhost');
-  assert.equal(order.target.kind, 'local');
-  assert.equal(order.target.baseUrl, 'http://localhost:8080');
+const probeAll = async () => true;
+
+test('requires observed prefix + declared target + successful probe', async () => {
+  const result = await deriveCandidateRules(requests, {
+    declaredTargets: [{ kind: 'local', baseUrl: 'http://localhost:8080', source: 'workspace.backendUrl' }],
+    probe: probeAll,
+  });
+  assert.equal(result.rules.length, 2);
+  const order = result.rules.find((rule) => rule.match.prefix === '/api/order');
   assert.equal(order.assistant.count, 2);
   assert.deepEqual(order.assistant.methods.sort(), ['GET', 'POST']);
-  const user = rules.find((rule) => rule.match.prefix === '/api/user');
+  assert.deepEqual(order.assistant.sources, ['observed', 'declared', 'probed']);
+  assert.equal(order.assistant.targetSource, 'workspace.backendUrl');
+  assert.equal(order.assistant.probed, true);
+  const user = result.rules.find((rule) => rule.match.prefix === '/api/user');
   assert.equal(user.assistant.count, 1);
 });
 
-test('skips prefixes already covered by existing rules', () => {
-  const rules = deriveCandidateRules(requests, {
-    existingRules: [{ match: { host: 'localhost', prefix: '/api' } }],
+test('falls back to a declared SIT target only when it probes successfully', async () => {
+  const result = await deriveCandidateRules(requests, {
+    declaredTargets: [
+      { kind: 'local', baseUrl: 'http://localhost:8080', source: 'workspace.backendUrl' },
+      { kind: 'sit', baseUrl: 'https://sit.example.com', source: 'rule:sit' },
+    ],
+    probe: async (url) => url === 'https://sit.example.com',
   });
-  assert.equal(rules.length, 0);
+  assert.ok(result.rules.length > 0);
+  assert.ok(result.rules.every((rule) => rule.target.kind === 'sit'));
+  assert.ok(result.rules.every((rule) => rule.target.baseUrl === 'https://sit.example.com'));
 });
 
-test('handles empty or invalid input', () => {
-  assert.deepEqual(deriveCandidateRules([], {}), []);
-  assert.deepEqual(deriveCandidateRules([{ url: 'not a url', resourceType: 'Fetch' }], {}), []);
+test('emits nothing when no declared target is reachable', async () => {
+  const result = await deriveCandidateRules(requests, {
+    declaredTargets: [{ kind: 'local', baseUrl: 'http://localhost:8080' }],
+    probe: async () => false,
+  });
+  assert.equal(result.rules.length, 0);
+  assert.equal(result.unreachable.length, 2);
+  assert.deepEqual(result.unreachable[0].candidates, ['http://localhost:8080']);
+});
+
+test('does not invent targets without declarations', async () => {
+  const result = await deriveCandidateRules(requests, { probe: probeAll });
+  assert.equal(result.rules.length, 0);
+  assert.equal(result.unreachable.length, 2);
+  assert.deepEqual(result.declaredTargets, []);
+});
+
+test('skips prefixes already covered by existing rules', async () => {
+  const result = await deriveCandidateRules(requests, {
+    existingRules: [{
+      id: 'old-order',
+      enabled: true,
+      match: { host: 'localhost', prefix: '/api/order' },
+      target: { kind: 'local', baseUrl: 'http://localhost:8080' },
+    }],
+    declaredTargets: [{ kind: 'local', baseUrl: 'http://localhost:8080' }],
+    probe: probeAll,
+  });
+  assert.equal(result.rules.length, 1);
+  assert.equal(result.rules[0].match.prefix, '/api/user');
+});
+
+test('flags SIT targets that point at localhost', async () => {
+  const result = await deriveCandidateRules(requests, {
+    declaredTargets: [{ kind: 'sit', baseUrl: 'http://localhost:8081' }],
+    probe: probeAll,
+  });
+  assert.ok(result.rules.length > 0);
+  assert.ok(result.rules.every((rule) => rule.assistant.suspicious === true));
+});
+
+test('a catch-all rule does not block specific candidates', async () => {
+  const result = await deriveCandidateRules(requests, {
+    existingRules: [{
+      id: 'catch-all',
+      enabled: true,
+      match: { host: 'localhost', prefix: '/' },
+      target: { kind: 'local', baseUrl: 'http://localhost:8080' },
+    }],
+    declaredTargets: [{ kind: 'local', baseUrl: 'http://localhost:8080' }],
+    probe: probeAll,
+  });
+  assert.equal(result.rules.length, 2);
 });

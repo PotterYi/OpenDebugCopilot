@@ -449,6 +449,10 @@ function renderRouting() {
     const probeStatus = document.createElement('span');
     probeStatus.className = 'probe-status';
     probeStatus.textContent = '未探测';
+    if (rule.assistant?.probed) {
+      probeStatus.textContent = '可达（自动）';
+      probeStatus.className = 'probe-status ok';
+    }
     probe.addEventListener('click', async () => {
       probeStatus.textContent = '探测中…';
       probeStatus.className = 'probe-status';
@@ -546,10 +550,6 @@ async function runDiagnose(mock) {
   }
 }
 
-function backendDefault() {
-  return (configCache?.workspace?.backendUrl || 'http://localhost:8080').replace('127.0.0.1', 'localhost');
-}
-
 async function probeTarget(url) {
   if (!url) return false;
   const controller = new AbortController();
@@ -564,20 +564,54 @@ async function probeTarget(url) {
   }
 }
 
-function addCandidateRules(requests) {
-  const candidates = deriveCandidateRules(requests, {
-    existingRules: routingRules,
-    defaultBaseUrl: backendDefault(),
-  });
-  if (!candidates.length) {
-    routingMessage.textContent = '没有可推导的 XHR/Fetch 请求（或前缀已被现有规则覆盖）';
-    routingMessage.className = 'message error';
-    return;
+async function addCandidateRules(requests) {
+  const declared = [];
+  const backend = configCache?.workspace?.backendUrl;
+  if (backend) {
+    declared.push({
+      kind: 'local',
+      baseUrl: backend.replace('127.0.0.1', 'localhost'),
+      source: 'workspace.backendUrl',
+    });
   }
-  routingRules.push(...candidates);
-  renderRouting();
-  routingMessage.textContent = `已从捕获请求生成 ${candidates.length} 条规则，请确认本地/SIT 后保存`;
-  routingMessage.className = 'message ok';
+  for (const rule of routingRules) {
+    if (rule.target?.baseUrl) {
+      declared.push({
+        kind: rule.target.kind === 'sit' ? 'sit' : 'local',
+        baseUrl: rule.target.baseUrl,
+        source: `rule:${rule.id}`,
+      });
+    }
+  }
+
+  routingMessage.textContent = '正在探测已声明的目标地址…';
+  routingMessage.className = 'message';
+  try {
+    const result = await deriveCandidateRules(requests, {
+      existingRules: routingRules,
+      declaredTargets: declared,
+      probe: probeTarget,
+    });
+    if (result.rules.length === 0) {
+      routingMessage.textContent = result.unreachable.length > 0
+        ? `未生成规则：${result.unreachable.length} 组前缀没有可达的已声明目标`
+        : '没有可推导的 XHR/Fetch 请求（或前缀已被现有规则覆盖）';
+      routingMessage.className = 'message error';
+      return;
+    }
+    routingRules.push(...result.rules);
+    renderRouting();
+    const suspicious = result.rules.filter((rule) => rule.assistant?.suspicious).length;
+    routingMessage.textContent = [
+      `已生成 ${result.rules.length} 条（观测前缀 + 已声明目标 + 探活通过）`,
+      result.unreachable.length > 0 ? `${result.unreachable.length} 组不可达已剔除` : null,
+      suspicious > 0 ? `${suspicious} 条 SIT 目标指向本机，请确认` : null,
+    ].filter(Boolean).join('；');
+    routingMessage.className = suspicious > 0 ? 'message error' : 'message ok';
+  } catch (err) {
+    routingMessage.textContent = `生成失败：${err.message}`;
+    routingMessage.className = 'message error';
+  }
 }
 
 async function scanLocalPorts() {
@@ -817,15 +851,16 @@ logParser.addEventListener('change', () => {
 });
 $('query-logs').addEventListener('click', queryLogsTab);
 $('add-rule').addEventListener('click', addRule);
-$('derive-rules').addEventListener('click', () => addCandidateRules([...captureState.values()]));
+$('derive-rules').addEventListener('click', () => {
+  addCandidateRules([...captureState.values()]).catch(() => {});
+});
 $('scan-ports').addEventListener('click', scanLocalPorts);
 makeRuleButton.addEventListener('click', () => {
   if (!currentRequest) {
     diagnoseMessage.textContent = '请先选择一条请求';
     return;
   }
-  addCandidateRules([currentRequest]);
-  setTab('routing');
+  addCandidateRules([currentRequest]).then(() => setTab('routing')).catch(() => {});
 });
 $('diagnose-mock').addEventListener('click', () => runDiagnose(true));
 $('diagnose-live').addEventListener('click', () => runDiagnose(false));
