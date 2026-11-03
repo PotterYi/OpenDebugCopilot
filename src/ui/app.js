@@ -1,5 +1,6 @@
 import { api } from './api.js';
 import { deriveCandidateRules } from './routing-assist.mjs';
+import { formatBodyText } from './format-body.mjs';
 
 const $ = (id) => document.getElementById(id);
 const statusEl = $('status');
@@ -255,12 +256,18 @@ function preBlock(text) {
   return el('pre', 'code-block', String(text ?? ''));
 }
 
+function requestContentType(request) {
+  const entry = Object.entries(request.requestHeaders ?? {})
+    .find(([key]) => key.toLowerCase() === 'content-type');
+  return entry ? String(entry[1]) : '';
+}
+
 function buildBodySection(request) {
   const block = section('响应体');
   if (request.body && typeof request.body.text === 'string') {
     block.append(
       el('div', 'muted small', `${request.body.bytes ?? request.body.text.length} bytes${request.body.truncated ? '，已截断' : ''}`),
-      preBlock(request.body.text),
+      preBlock(formatBodyText(request.body.text, request.mimeType)),
     );
     return block;
   }
@@ -367,7 +374,9 @@ async function showRequest(id) {
         ['错误', request.error ?? '—'],
       ])),
       section('请求头', preBlock(JSON.stringify(request.requestHeaders ?? {}, null, 2))),
-      ...(request.postData ? [section('请求体', preBlock(request.postData))] : []),
+      ...(request.postData
+        ? [section('请求体', preBlock(formatBodyText(request.postData, requestContentType(request))))]
+        : []),
       section('响应头', preBlock(JSON.stringify(request.responseHeaders ?? {}, null, 2))),
       buildBodySection(request),
     );
