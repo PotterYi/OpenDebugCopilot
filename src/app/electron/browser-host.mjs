@@ -69,7 +69,11 @@ export class BrowserHost {
       this.pendingUrl = null;
       this.emit({ type: 'loading', isLoading: false, url: contents.getURL(), pendingUrl: null });
     });
-    contents.on('console-message', (_event, level, message, line, sourceId) => {
+    contents.on('console-message', (_event, details) => {
+      const level = details?.level ?? 0;
+      const message = details?.message ?? '';
+      const line = details?.lineNumber ?? 0;
+      const sourceId = details?.sourceId ?? '';
       if (level >= 2) log.warn('[browser console]', `${message} (${sourceId}:${line})`);
     });
     contents.on('did-fail-load', (_event, code, description, url) => {
@@ -334,11 +338,13 @@ export class BrowserHost {
   }
 
   back() {
-    if (this.view.webContents.canGoBack()) this.view.webContents.goBack();
+    const history = this.view.webContents.navigationHistory;
+    if (history.canGoBack()) history.goBack();
   }
 
   forward() {
-    if (this.view.webContents.canGoForward()) this.view.webContents.goForward();
+    const history = this.view.webContents.navigationHistory;
+    if (history.canGoForward()) history.goForward();
   }
 
   devtools() {
@@ -386,8 +392,8 @@ export class BrowserHost {
       url: contents.getURL(),
       pendingUrl: this.pendingUrl,
       isLoading: contents.isLoading(),
-      canGoBack: contents.canGoBack(),
-      canGoForward: contents.canGoForward(),
+      canGoBack: contents.navigationHistory.canGoBack(),
+      canGoForward: contents.navigationHistory.canGoForward(),
       attached: this.attached,
       count: this.order.length,
       visible: this.visible,

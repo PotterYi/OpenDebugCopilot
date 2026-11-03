@@ -1,5 +1,6 @@
 import { app, BrowserWindow, ipcMain } from 'electron';
 import path from 'node:path';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { createService } from '../service.mjs';
 import { startServer } from '../server.mjs';
@@ -30,6 +31,7 @@ function argValue(flag) {
 const smoke = process.argv.includes('--smoke');
 const smokeUrl = argValue('--smoke-url');
 const smokeClick = argValue('--smoke-click');
+const smokeOut = argValue('--smoke-out');
 const port = Number(argValue('--port') ?? 7080);
 const runsDir = argValue('--runs-dir');
 const configDir = argValue('--config-dir');
@@ -316,14 +318,18 @@ async function runSmoke(window, host) {
       pageTitle,
       isLoading: host.status().isLoading,
     };
-    console.log(`SMOKE_RESULT ${JSON.stringify(result)}`);
     const ok = Boolean(
       result.hasDc &&
       result.hasWorkspace &&
       captureOk &&
       (!smokeUrl || (diagnose?.ok && diagnose.gates)),
     );
+    result.ok = ok;
+    console.log(`SMOKE_RESULT ${JSON.stringify(result)}`);
     console.log(ok ? 'SMOKE_OK' : 'SMOKE_FAILED');
+    if (smokeOut) {
+      await writeFile(smokeOut, JSON.stringify(result, null, 2), 'utf8').catch(() => {});
+    }
     return ok;
   } catch (error) {
     clearTimeout(timeout);
@@ -338,7 +344,14 @@ async function bootstrap() {
   } catch {
     // file logging is optional
   }
-  const service = createService({ root: ROOT, runsDir, configDir });
+  const userData = app.getPath('userData');
+  const effectiveConfigDir = configDir ? path.resolve(configDir) : app.isPackaged ? path.join(userData, 'configs') : path.join(ROOT, 'configs');
+  const effectiveRunsDir = runsDir ? path.resolve(runsDir) : app.isPackaged ? path.join(userData, 'runs') : path.join(ROOT, 'runs');
+  if (app.isPackaged) {
+    await mkdir(effectiveConfigDir, { recursive: true });
+    await mkdir(effectiveRunsDir, { recursive: true });
+  }
+  const service = createService({ root: ROOT, runsDir: effectiveRunsDir, configDir: effectiveConfigDir });
   const initial = await service.getConfig();
   let host = null;
   let router = null;

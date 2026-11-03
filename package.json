@@ -12,7 +12,9 @@
     "cli": "node src/app/cli.mjs",
     "desktop": "electron src/app/electron/main.mjs",
     "desktop:smoke": "electron src/app/electron/main.mjs --smoke --port 0",
-    "manual:e2e": "node verify/manual/e2e-harness.mjs"
+    "manual:e2e": "node verify/manual/e2e-harness.mjs",
+    "dist:dir": "node node_modules/electron-builder/cli.js --win --dir",
+    "dist:win": "node node_modules/electron-builder/cli.js --win --publish never"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.316",
@@ -21,5 +23,39 @@
   },
   "devDependencies": {
     "electron": "^45.2.1"
-  }
+  },
+  "author": "PotterYi",
+  "build": {
+    "appId": "com.debugcopilot.app",
+    "productName": "DebugCopilot",
+    "directories": {
+      "output": "dist"
+    },
+    "asar": true,
+    "asarUnpack": [
+      "node_modules/@anthropic-ai/claude-agent-sdk-win32-x64/**"
+    ],
+    "files": [
+      "src/**/*",
+      "configs/default.json",
+      "scenarios/**/*",
+      "package.json",
+      "!verify/**",
+      "!docs/**",
+      "!.tmp/**",
+      "!runs/**",
+      "!dist/**"
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  },
+  "main": "src/app/electron/main.mjs"
 }
