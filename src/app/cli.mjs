@@ -10,7 +10,7 @@ import { runDiagnosis } from '../diagnose/run.mjs';
 import { createMockAgent } from '../agent/mock.mjs';
 import { createClaudeAgent } from '../agent/claude.mjs';
 import { startWeb } from './web.mjs';
-import { log } from '../core/logger.mjs';
+import { log, setLogFile } from '../core/logger.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '../..');
@@ -237,6 +237,13 @@ function printHuman(summary) {
  * @returns {Promise<number>} exit code
  */
 export async function main(argv = process.argv.slice(2), { root = ROOT } = {}) {
+  if (!process.env.DC_LOG_FILE) {
+    try {
+      setLogFile(path.join(root, 'logs', 'debugcopilot.log'));
+    } catch {
+      // file logging is optional
+    }
+  }
   let parsed = null;
   try {
     parsed = parseArgv(argv);

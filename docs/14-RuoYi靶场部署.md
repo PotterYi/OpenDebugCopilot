@@ -116,6 +116,7 @@ npm run dev        # http://127.0.0.1:5173
 | 日志解析 | 新增 `spring-boot` 预设，RuoYi 日志可解析 |
 | 诊断 | 捕获请求 + RuoYi 日志 → Mock 诊断 gates ok |
 | 日志页签 | 选 `sys-info.log` + `spring-boot` 解析器，按捕获请求对齐查询，返回真实日志记录 |
+| DebugCopilot 自身日志 | 开发版写入项目 `logs/debugcopilot.log`（已在 .gitignore） |
 
 ## 14.6.1 混合环境场景（真实常态）
 
