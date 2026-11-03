@@ -111,6 +111,33 @@ npm run dev        # http://127.0.0.1:5173
 | 诊断 | 捕获请求 + RuoYi 日志 → Mock 诊断 gates ok |
 | 日志页签 | 选 `sys-info.log` + `spring-boot` 解析器，按捕获请求对齐查询，返回真实日志记录 |
 
+## 14.6.1 混合环境场景（真实常态）
+
+页面默认访问**测试环境**，只把正在本地开发的前缀改道到本地：
+
+- 前端 `.env.development.local`：`VITE_APP_BASE_API = 'http://localhost:8081'`（SIT）
+- 路由规则：
+  - `/login` → local `http://localhost:8080`
+  - `/system/user` → local `http://localhost:8080`
+  - 其他前缀无规则 → 直接走 SIT 8081（由真实网关处理 CORS）
+
+已验证（2026-11-03）：
+
+| 请求 | 去向 | 结果 |
+| --- | --- | --- |
+| `POST /login` | 本地 8080（经代理） | 200 + token |
+| `GET /system/user/list` | 本地 8080（经代理） | 200，2 行 |
+| `GET /getInfo` | SIT 8081（直连） | 200 |
+| `GET /system/role/list` | SIT 8081（直连） | 200，2 行 |
+
+### 本地服务未启动时
+
+当前实现是**静态按前缀路由**，不自动回退：
+
+- 本地 8080 停掉后，`/login`、`/system/user` 会失败（代理 502/连接失败），SIT 请求仍正常。
+- 需要用户手动停用本地规则或把目标切换为 SIT。
+- 若希望“本地不可达自动回退 SIT”，需要新增 health-aware 规则（定期探活 + 不可达时跳过规则），属于候选功能，尚未实现。
+
 ## 14.7 停止与清理
 
 ```bash
