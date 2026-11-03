@@ -5,6 +5,7 @@ import { createService } from '../service.mjs';
 import { startServer } from '../server.mjs';
 import { BrowserHost } from './browser-host.mjs';
 import { Router } from './routing.mjs';
+import { startLocalProxy } from './local-proxy.mjs';
 import { runCaptureDiagnosis } from '../../diagnose/run.mjs';
 import { createMockAgent } from '../../agent/mock.mjs';
 import { createClaudeAgent } from '../../agent/claude.mjs';
@@ -325,6 +326,13 @@ async function bootstrap() {
   const initial = await service.getConfig();
   let host = null;
   let router = null;
+  let proxy = null;
+  try {
+    proxy = await startLocalProxy();
+    log.info('[proxy] local routing proxy:', proxy.url);
+  } catch (error) {
+    log.error('[proxy] failed to start; falling back to direct redirects', error);
+  }
   let currentRules = initial.routing.rules;
   let pageOrigin = null;
   log.info('[config] loaded rules:', currentRules.length, 'from', service.configDir);
@@ -368,10 +376,12 @@ async function bootstrap() {
     onMiss: (event) => {
       if (!window.isDestroyed()) window.webContents.send('dc:capture:event', { type: 'routing-miss', ...event });
     },
+    proxyBaseUrl: proxy?.url ?? null,
   });
   window.on('closed', () => {
     router?.dispose();
     host?.destroy();
+    proxy?.close().catch(() => {});
   });
 
   if (!smoke && initial.workspace.frontendUrl) {
@@ -385,6 +395,7 @@ async function bootstrap() {
   if (smoke) {
     const ok = await runSmoke(window, host);
     await server.close();
+    await proxy?.close().catch(() => {});
     app.exit(ok ? 0 : 1);
     return;
   }

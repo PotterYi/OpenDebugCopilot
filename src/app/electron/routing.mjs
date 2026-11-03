@@ -67,8 +67,14 @@ export function matchRule(rules, url, resourceType = null) {
  * @param {string} requestUrl
  * @returns {string}
  */
-export function buildRedirectUrl(rule, requestUrl) {
+export function buildRedirectUrl(rule, requestUrl, proxyBaseUrl = null) {
   const source = new URL(requestUrl);
+  if (rule.target?.kind === 'local' && proxyBaseUrl) {
+    const proxy = new URL('/__dcproxy', proxyBaseUrl);
+    proxy.searchParams.set('target', rule.target.baseUrl);
+    proxy.searchParams.set('url', `${source.pathname}${source.search}`);
+    return proxy.toString();
+  }
   const target = new URL(rule.target.baseUrl);
   if (isLocalHostname(target.hostname)) target.hostname = 'localhost';
   target.pathname = joinPath(target.pathname, source.pathname);
@@ -158,12 +164,13 @@ export class Router {
    *   onHit?: (event: any) => void
    * }} options
    */
-  constructor({ session, getRules, getPageOrigin = () => null, onHit = () => {}, onMiss = () => {} }) {
+  constructor({ session, getRules, getPageOrigin = () => null, onHit = () => {}, onMiss = () => {}, proxyBaseUrl = null }) {
     this.session = session;
     this.getRules = getRules;
     this.getPageOrigin = getPageOrigin;
     this.onHit = onHit;
     this.onMiss = onMiss;
+    this.proxyBaseUrl = proxyBaseUrl;
     this.pending = new Map();
     this.filter = { urls: ['<all_urls>'] };
 
@@ -201,7 +208,7 @@ export class Router {
       return;
     }
 
-    const redirectURL = buildRedirectUrl(rule, details.url);
+    const redirectURL = buildRedirectUrl(rule, details.url, this.proxyBaseUrl);
     if (redirectURL === details.url) {
       callback({});
       return;

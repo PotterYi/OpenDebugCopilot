@@ -161,3 +161,34 @@ test('reports routing misses for xhr requests only', () => {
   router.dispose();
   assert.equal(handlers.before, null);
 });
+
+test('routes local targets through the proxy when proxyBaseUrl is set', () => {
+  const proxied = buildRedirectUrl(rules[0], 'https://api.example.com/api/order/1?x=1', 'http://localhost:9999');
+  const parsed = new URL(proxied);
+  assert.equal(parsed.pathname, '/__dcproxy');
+  assert.equal(parsed.searchParams.get('target'), 'http://127.0.0.1:8080');
+  assert.equal(parsed.searchParams.get('url'), '/api/order/1?x=1');
+
+  const sit = buildRedirectUrl(rules[1], 'https://api.example.com/api/user/2', 'http://localhost:9999');
+  assert.equal(sit, 'https://sit.example.com/api/user/2');
+});
+
+test('router uses the proxy for local rules', () => {
+  const handlers = {};
+  const session = {
+    webRequest: {
+      onBeforeRequest: (_filter, listener) => { handlers.before = listener ?? null; },
+      onBeforeSendHeaders: (_filter, listener) => { handlers.send = listener ?? null; },
+      onHeadersReceived: (_filter, listener) => { handlers.headers = listener ?? null; },
+      onCompleted: (_filter, listener) => { handlers.completed = listener ?? null; },
+      onErrorOccurred: (_filter, listener) => { handlers.error = listener ?? null; },
+    },
+  };
+  const router = new Router({ session, getRules: () => rules, proxyBaseUrl: 'http://localhost:9999' });
+  let redirect = null;
+  handlers.before({ id: 1, url: 'https://api.example.com/api/order/1', method: 'POST', resourceType: 'xhr' }, (value) => { redirect = value; });
+  const parsed = new URL(redirect.redirectURL);
+  assert.equal(parsed.pathname, '/__dcproxy');
+  assert.equal(parsed.searchParams.get('target'), 'http://127.0.0.1:8080');
+  router.dispose();
+});
