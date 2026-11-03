@@ -223,6 +223,10 @@ async function runSmoke(window, host) {
           hasWorkspace: !!config && !!config.workspace,
           frontendUrl: config?.workspace?.frontendUrl ?? null,
           uiReady: window.__dcUIReady === true,
+          hiddenAttrWorks: (() => {
+            const element = document.getElementById('diagnose-result');
+            return Boolean(element && element.hidden && getComputedStyle(element).display === 'none');
+          })(),
         };
       } catch (error) {
         return { hasDc, error: String(error) };

@@ -241,3 +241,7 @@ button:hover { filter: brightness(1.08); }
 .evidence-list, .advice-list { margin: 0; padding-left: 18px; }
 .evidence-list li, .advice-list li { margin-bottom: 4px; word-break: break-word; }
 .error-text { color: var(--danger); margin: 0; }
+
+/* Author styles with any display rule beat the UA [hidden] rule.
+   Keep the hidden attribute authoritative for the zero-framework UI. */
+[hidden] { display: none !important; }
