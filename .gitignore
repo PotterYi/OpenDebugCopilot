@@ -2,3 +2,5 @@ node_modules/
 .tmp/
 runs/
 dist/
+configs/workspace.json
+configs/routing.json

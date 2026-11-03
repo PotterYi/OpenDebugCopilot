@@ -24,7 +24,11 @@ function corsHeaders(origin, requestHeaders = {}) {
  *
  * URL shape: /__dcproxy?target=<baseUrl>&url=<path+query>
  */
-export async function startLocalProxy({ host = '127.0.0.1', port = 0 } = {}) {
+export async function startLocalProxy({
+  host = '127.0.0.1',
+  port = 0,
+  isAllowedTarget = (targetUrl) => LOCAL_HOSTS.has(targetUrl.hostname),
+} = {}) {
   const server = http.createServer(async (req, res) => {
     const cors = corsHeaders(req.headers.origin, req.headers);
     try {
@@ -42,9 +46,9 @@ export async function startLocalProxy({ host = '127.0.0.1', port = 0 } = {}) {
         return;
       }
       const targetUrl = new URL(target);
-      if (!LOCAL_HOSTS.has(targetUrl.hostname)) {
+      if (typeof isAllowedTarget === 'function' && !isAllowedTarget(targetUrl)) {
         res.writeHead(400, cors);
-        res.end('target must be a local host');
+        res.end('target is not allowed by routing rules');
         return;
       }
 

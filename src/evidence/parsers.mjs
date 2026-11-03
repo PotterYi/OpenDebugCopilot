@@ -110,6 +110,9 @@ export function parseJsonLine(line) {
 const LOGBACK_REGEX =
   /^(?<ts>\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:[.,]\d{1,6})?)\s+(?<level>TRACE|DEBUG|INFO|WARN|WARNING|ERROR|FATAL)\s+(?:\d+\s+)?---\s+\[(?<thread>[^\]]*)\]\s+(?<logger>\S+)\s*:\s?(?<message>.*)$/;
 
+const SPRING_BOOT_REGEX =
+  /^(?<ts>\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:[.,]\d{1,6})?)\s+\[(?<thread>[^\]]+)\]\s+(?<level>TRACE|DEBUG|INFO|WARN|WARNING|ERROR|FATAL)\s+(?<logger>\S+)\s+-\s+(?:\[[^\]]*\]\s+-\s+)?(?<message>.*)$/;
+
 const NODE_REGEX =
   /^\[?(?<ts>\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:[.,]\d{1,6})?(?:Z|[+-]\d{2}:?\d{2})?)\]?\s+(?<level>TRACE|DEBUG|INFO|WARN|WARNING|ERROR|FATAL)\b\s*(?:\[(?<thread>[^\]]*)\])?\s*(?<message>.*)$/;
 
@@ -144,6 +147,7 @@ function regexParser(pattern, name) {
 export const PRESETS = Object.freeze({
   'json-lines': { name: 'json-lines', parse: parseJsonLine },
   logback: regexParser(LOGBACK_REGEX, 'logback'),
+  'spring-boot': regexParser(SPRING_BOOT_REGEX, 'spring-boot'),
   node: regexParser(NODE_REGEX, 'node'),
 });
 

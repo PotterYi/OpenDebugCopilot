@@ -173,8 +173,10 @@ test('routes local targets through the proxy when proxyBaseUrl is set', () => {
   assert.equal(parsed.searchParams.get('target'), 'http://127.0.0.1:8080');
   assert.equal(parsed.searchParams.get('url'), '/api/order/1?x=1');
 
-  const sit = buildRedirectUrl(rules[1], 'https://api.example.com/api/user/2', 'http://localhost:9999');
-  assert.equal(sit, 'https://sit.example.com/api/user/2');
+  const sit = new URL(buildRedirectUrl(rules[1], 'https://api.example.com/api/user/2', 'http://localhost:9999'));
+  assert.equal(sit.pathname, '/__dcproxy');
+  assert.equal(sit.searchParams.get('target'), 'https://sit.example.com');
+  assert.equal(sit.searchParams.get('url'), '/api/user/2');
 });
 
 test('router uses the proxy for local rules', () => {
@@ -286,5 +288,76 @@ test('rewrites non-2xx preflight status to 200 OK', () => {
   );
   assert.equal(postResult.statusLine, undefined);
 
+  router.dispose();
+});
+
+test('never re-routes requests that already target the local proxy', () => {
+  const handlers = {};
+  const session = {
+    webRequest: {
+      onBeforeRequest: (_filter, listener) => { handlers.before = listener ?? null; },
+      onBeforeSendHeaders: (_filter, listener) => { handlers.send = listener ?? null; },
+      onHeadersReceived: (_filter, listener) => { handlers.headers = listener ?? null; },
+      onCompleted: (_filter, listener) => { handlers.completed = listener ?? null; },
+      onErrorOccurred: (_filter, listener) => { handlers.error = listener ?? null; },
+    },
+  };
+  const catchAll = [{
+    id: 'all',
+    enabled: true,
+    match: { host: 'localhost', prefix: '/' },
+    target: { kind: 'local', baseUrl: 'http://localhost:8080' },
+  }];
+  const router = new Router({
+    session,
+    getRules: () => catchAll,
+    proxyBaseUrl: 'http://localhost:9999',
+  });
+  let result = null;
+  handlers.before(
+    {
+      id: 1,
+      url: 'http://localhost:9999/__dcproxy?target=http%3A%2F%2Flocalhost%3A8080&url=%2Flogin',
+      method: 'POST',
+      resourceType: 'xhr',
+    },
+    (value) => { result = value; },
+  );
+  assert.deepEqual(result, {});
+  router.dispose();
+});
+
+test('restores Authorization stripped by browser redirects', () => {
+  const handlers = {};
+  const session = {
+    webRequest: {
+      onBeforeRequest: (_filter, listener) => { handlers.before = listener ?? null; },
+      onBeforeSendHeaders: (_filter, listener) => { handlers.send = listener ?? null; },
+      onHeadersReceived: (_filter, listener) => { handlers.headers = listener ?? null; },
+      onCompleted: (_filter, listener) => { handlers.completed = listener ?? null; },
+      onErrorOccurred: (_filter, listener) => { handlers.error = listener ?? null; },
+    },
+  };
+  const router = new Router({
+    session,
+    getRules: () => rules,
+    proxyBaseUrl: 'http://localhost:9999',
+    getOriginalHeaders: (pathAndQuery) =>
+      pathAndQuery === '/api/order/1?x=1' ? { Authorization: 'Bearer abc' } : null,
+  });
+  handlers.before(
+    { id: 1, url: 'https://api.example.com/api/order/1?x=1', method: 'GET', resourceType: 'xhr' },
+    () => {},
+  );
+  let sent = null;
+  handlers.send(
+    {
+      id: 1,
+      url: 'http://localhost:9999/__dcproxy?target=http%3A%2F%2Flocalhost%3A8080&url=%2Fapi%2Forder%2F1%3Fx%3D1',
+      requestHeaders: { 'User-Agent': 'test' },
+    },
+    (value) => { sent = value; },
+  );
+  assert.equal(sent.requestHeaders.Authorization, 'Bearer abc');
   router.dispose();
 });

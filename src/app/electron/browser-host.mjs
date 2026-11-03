@@ -40,6 +40,7 @@ export class BrowserHost {
     this.pendingUrl = null;
     this.loading = false;
     this.consoleEvents = [];
+    this.headersByPath = new Map();
     this.visible = false;
     this.bounds = { x: 0, y: 0, width: 0, height: 0 };
 
@@ -154,12 +155,17 @@ export class BrowserHost {
     this.emit({ type: 'console', event });
   }
 
+  findRequestHeadersByPath(pathAndQuery) {
+    return this.headersByPath.get(pathAndQuery) ?? null;
+  }
+
   listConsole({ limit = 50 } = {}) {
     return this.consoleEvents.slice(-limit);
   }
 
   clearConsole() {
     this.consoleEvents = [];
+    this.headersByPath = new Map();
     this.emit({ type: 'console-clear' });
   }
 
@@ -203,6 +209,18 @@ export class BrowserHost {
 
     if (method === 'Network.requestWillBeSent') {
       const request = params.request ?? {};
+      if (request.url) {
+        try {
+          const parsed = new URL(request.url);
+          this.headersByPath.set(`${parsed.pathname}${parsed.search}`, request.headers ?? {});
+          if (this.headersByPath.size > 300) {
+            const oldest = this.headersByPath.keys().next().value;
+            this.headersByPath.delete(oldest);
+          }
+        } catch {
+          // ignore invalid URLs
+        }
+      }
       const startedAt = params.wallTime ? Math.round(params.wallTime * 1000) : Date.now();
       const existing = this.byRequestId.get(params.requestId);
       if (existing) {
@@ -383,6 +401,7 @@ export class BrowserHost {
     this.byRequestId.clear();
     this.order = [];
     this.consoleEvents = [];
+    this.headersByPath = new Map();
     this.emit({ type: 'clear' });
   }
 

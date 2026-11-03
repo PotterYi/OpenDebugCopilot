@@ -44,6 +44,13 @@ test('auto detection requires >60% hits and no unparsed lines', () => {
   const json = ['{"time":"2026-11-02 19:30:00.000","level":"INFO","message":"ok"}'];
   assert.equal(detectParserFromLines(json), 'json-lines');
 
+  const springBoot = ['2026-11-02 19:30:00.000 [main] INFO  c.r.RuoYiApplication - [logStarting,53] - Starting RuoYiApplication'];
+  assert.equal(detectParserFromLines(springBoot), 'spring-boot');
+  const parsed = resolveParser({ preset: 'spring-boot' }).parse(springBoot[0]);
+  assert.equal(parsed.level, 'INFO');
+  assert.equal(parsed.thread, 'main');
+  assert.match(parsed.message, /Starting RuoYiApplication/);
+
   const node = ['2026-11-02T19:30:00.000Z INFO [main] ok'];
   assert.equal(detectParserFromLines(node), 'node');
 

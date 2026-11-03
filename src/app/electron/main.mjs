@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { createService } from '../service.mjs';
 import { startServer } from '../server.mjs';
 import { BrowserHost } from './browser-host.mjs';
-import { Router } from './routing.mjs';
+import { isLocalHostname, Router } from './routing.mjs';
 import { startLocalProxy } from './local-proxy.mjs';
 import { runCaptureDiagnosis } from '../../diagnose/run.mjs';
 import { createMockAgent } from '../../agent/mock.mjs';
@@ -31,6 +31,8 @@ function argValue(flag) {
 const smoke = process.argv.includes('--smoke');
 const smokeUrl = argValue('--smoke-url');
 const smokeClick = argValue('--smoke-click');
+const smokeEval = argValue('--smoke-eval');
+const smokeWait = Number(argValue('--smoke-wait') ?? 0);
 const smokeOut = argValue('--smoke-out');
 const port = Number(argValue('--port') ?? 7080);
 const runsDir = argValue('--runs-dir');
@@ -273,8 +275,15 @@ async function runSmoke(window, host) {
     let captureOk = true;
     let diagnose = null;
     let pageTitle = null;
+    let evalResult = null;
     if (smokeUrl) {
       host.open(smokeUrl);
+      if (smokeEval) {
+        await waitForIdle(host, 8_000);
+        const script = Buffer.from(smokeEval, 'base64').toString('utf8');
+        evalResult = await host.view.webContents.executeJavaScript(script);
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
       if (smokeClick) {
         await waitForIdle(host, 8_000);
         await host.view.webContents.executeJavaScript(`(() => {
@@ -290,6 +299,9 @@ async function runSmoke(window, host) {
           element.click();
           return true;
         })()`);
+      }
+      if (Number.isFinite(smokeWait) && smokeWait > 0) {
+        await new Promise((resolve) => setTimeout(resolve, smokeWait));
       }
       captureOk = await waitForCapture(host, 10_000);
       await waitForIdle(host, 8_000);
@@ -332,6 +344,8 @@ async function runSmoke(window, host) {
       captureBody: Boolean(sampleBody),
       diagnose,
       pageTitle,
+      url: host.status().url,
+      evalResult,
       isLoading: host.status().isLoading,
     };
     const ok = Boolean(
@@ -372,15 +386,29 @@ async function bootstrap() {
   let host = null;
   let router = null;
   let proxy = null;
-  try {
-    proxy = await startLocalProxy();
-    log.info('[proxy] local routing proxy:', proxy.url);
-  } catch (error) {
-    log.error('[proxy] failed to start; falling back to direct redirects', error);
-  }
   let currentRules = initial.routing.rules;
   let pageOrigin = null;
   log.info('[config] loaded rules:', currentRules.length, 'from', service.configDir);
+
+  const portOf = (url) => url.port || (url.protocol === 'https:' ? '443' : '80');
+  const isAllowedTarget = (target) => currentRules.some((rule) => {
+    if (rule.enabled === false) return false;
+    try {
+      const base = new URL(rule.target.baseUrl);
+      const sameHost = isLocalHostname(base.hostname) && isLocalHostname(target.hostname)
+        ? true
+        : base.hostname.toLowerCase() === target.hostname.toLowerCase();
+      return sameHost && portOf(base) === portOf(target);
+    } catch {
+      return false;
+    }
+  });
+  try {
+    proxy = await startLocalProxy({ isAllowedTarget });
+    log.info('[proxy] routing proxy:', proxy.url);
+  } catch (error) {
+    log.error('[proxy] failed to start; falling back to direct redirects', error);
+  }
   registerIpc(
     service,
     () => host,
@@ -422,6 +450,7 @@ async function bootstrap() {
       if (!window.isDestroyed()) window.webContents.send('dc:capture:event', { type: 'routing-miss', ...event });
     },
     proxyBaseUrl: proxy?.url ?? null,
+    getOriginalHeaders: (pathAndQuery) => host?.findRequestHeadersByPath(pathAndQuery) ?? null,
   });
   window.on('closed', () => {
     router?.dispose();

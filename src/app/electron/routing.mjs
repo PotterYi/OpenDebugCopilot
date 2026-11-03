@@ -69,7 +69,7 @@ export function matchRule(rules, url, resourceType = null) {
  */
 export function buildRedirectUrl(rule, requestUrl, proxyBaseUrl = null) {
   const source = new URL(requestUrl);
-  if (rule.target?.kind === 'local' && proxyBaseUrl) {
+  if (proxyBaseUrl && (rule.target?.kind === 'local' || rule.target?.kind === 'sit')) {
     const proxy = new URL('/__dcproxy', proxyBaseUrl);
     proxy.searchParams.set('target', rule.target.baseUrl);
     proxy.searchParams.set('url', `${source.pathname}${source.search}`);
@@ -165,13 +165,14 @@ export class Router {
    *   onHit?: (event: any) => void
    * }} options
    */
-  constructor({ session, getRules, getPageOrigin = () => null, onHit = () => {}, onMiss = () => {}, proxyBaseUrl = null }) {
+  constructor({ session, getRules, getPageOrigin = () => null, onHit = () => {}, onMiss = () => {}, proxyBaseUrl = null, getOriginalHeaders = () => null }) {
     this.session = session;
     this.getRules = getRules;
     this.getPageOrigin = getPageOrigin;
     this.onHit = onHit;
     this.onMiss = onMiss;
     this.proxyBaseUrl = proxyBaseUrl;
+    this.getOriginalHeaders = getOriginalHeaders;
     this.originByUrl = new Map();
     this.pending = new Map();
     this.filter = { urls: ['<all_urls>'] };
@@ -189,6 +190,14 @@ export class Router {
   }
 
   beforeRequest(details, callback) {
+    try {
+      if (new URL(details.url).pathname === '/__dcproxy') {
+        callback({});
+        return;
+      }
+    } catch {
+      // fall through to rule matching
+    }
     const rule = details.method === 'OPTIONS'
       ? matchRule(this.getRules(), details.url, null)
       : matchRule(this.getRules(), details.url, details.resourceType ?? null);
@@ -225,6 +234,24 @@ export class Router {
   beforeSendHeaders(details, callback) {
     const hit = this.pending.get(details.id);
     const requestHeaders = { ...(details.requestHeaders ?? {}) };
+    let hasAuth = Object.keys(requestHeaders).some((key) => key.toLowerCase() === 'authorization');
+    if (!hasAuth) {
+      try {
+        const proxied = new URL(details.url);
+        if (proxied.pathname === '/__dcproxy') {
+          const pathAndQuery = proxied.searchParams.get('url');
+          const original = this.getOriginalHeaders(pathAndQuery) ?? {};
+          const authKey = Object.keys(original).find((key) => key.toLowerCase() === 'authorization');
+          if (authKey) {
+            requestHeaders.Authorization = original[authKey];
+            hasAuth = true;
+          }
+        }
+      } catch {
+        // ignore malformed proxy URLs
+      }
+    }
+    log.debug('[routing headers]', details.url, hasAuth ? 'auth' : 'no-auth');
     const originKey = Object.keys(requestHeaders).find((key) => key.toLowerCase() === 'origin');
     const origin = originKey ? requestHeaders[originKey] : null;
     if (origin) {
