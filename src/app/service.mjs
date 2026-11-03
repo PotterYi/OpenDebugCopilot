@@ -2,6 +2,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { AppError } from '../core/errors.mjs';
 import { createStore } from '../core/store.mjs';
+import { getLogFile } from '../core/logger.mjs';
 
 const RUN_ID_PATTERN = /^[A-Za-z0-9._-]+$/;
 
@@ -21,6 +22,7 @@ export function createService({ root = process.cwd(), configDir, runsDir } = {})
       meta: {
         configDir: path.resolve(configDir ?? path.join(root, 'configs')),
         runsDir: runsRoot,
+        logFile: getLogFile(),
       },
     };
   }

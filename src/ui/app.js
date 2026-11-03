@@ -15,6 +15,7 @@ const browserSlot = $('browser-slot');
 const requestTitle = $('request-title');
 const requestMeta = $('request-meta');
 const configPath = $('config-path');
+const logPath = $('log-path');
 const splitter = $('splitter');
 const routingWarning = $('routing-warning');
 const routingStatus = $('routing-status');
@@ -79,6 +80,7 @@ async function loadConfig() {
     routingRules = config.routing?.rules ?? [];
     fillForm(config);
     renderRouting();
+    if (config.meta?.logFile) logPath.textContent = `日志文件：${config.meta.logFile}`;
     if (config.meta?.configDir) {
       const dir = config.meta.configDir;
       const sep = String.fromCharCode(92);
@@ -677,6 +679,18 @@ $('clear-requests').addEventListener('click', async () => {
 });
 $('only-errors').addEventListener('change', renderRequests);
 $('refresh-runs').addEventListener('click', loadRuns);
+$('open-log').addEventListener('click', async () => {
+  if (!api.isDesktop) {
+    setMessage(logPath.textContent || 'WebUI 模式日志输出到 stderr', '');
+    return;
+  }
+  try {
+    const result = await api.openLog();
+    if (!result.ok) setMessage(`打开日志失败：${result.reason ?? result.error ?? 'unknown'}`, 'error');
+  } catch (err) {
+    setMessage(`打开日志失败：${err.message}`, 'error');
+  }
+});
 $('add-rule').addEventListener('click', addRule);
 $('derive-rules').addEventListener('click', () => addCandidateRules([...captureState.values()]));
 $('scan-ports').addEventListener('click', scanLocalPorts);

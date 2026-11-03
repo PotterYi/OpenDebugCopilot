@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain, shell } from 'electron';
 import path from 'node:path';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
@@ -10,7 +10,7 @@ import { startLocalProxy } from './local-proxy.mjs';
 import { runCaptureDiagnosis } from '../../diagnose/run.mjs';
 import { createMockAgent } from '../../agent/mock.mjs';
 import { createClaudeAgent } from '../../agent/claude.mjs';
-import { log, setLogFile } from '../../core/logger.mjs';
+import { getLogFile, log, setLogFile } from '../../core/logger.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '../../..');
@@ -37,8 +37,23 @@ const runsDir = argValue('--runs-dir');
 const configDir = argValue('--config-dir');
 
 function registerIpc(service, getHost, getRouter, setRules) {
-  ipcMain.handle('dc:config', async (_event, payload = {}) => {
+  const handle = (channel, fn) => ipcMain.handle(channel, async (event, payload) => {
+    try {
+      return await fn(event, payload);
+    } catch (error) {
+      log.error('[ipc]', channel, error?.message ?? error);
+      throw error;
+    }
+  });
+
+  handle('dc:config', async (_event, payload = {}) => {
     if (payload.action === 'get') return service.getConfig();
+    if (payload.action === 'open-log') {
+      const file = getLogFile();
+      if (!file) return { ok: false, reason: 'no-log-file' };
+      const error = await shell.openPath(file);
+      return { ok: !error, path: file, error: error || null };
+    }
     if (payload.action === 'save') {
       const saved = await service.saveConfig({ workspace: payload.workspace, routing: payload.routing });
       if (payload.routing !== undefined) {
@@ -51,13 +66,13 @@ function registerIpc(service, getHost, getRouter, setRules) {
     throw new Error(`dc:config: unknown action ${payload.action}`);
   });
 
-  ipcMain.handle('dc:runs', async (_event, payload = {}) => {
+  handle('dc:runs', async (_event, payload = {}) => {
     if (payload.action === 'list') return { runs: await service.listRuns() };
     if (payload.action === 'get') return service.getRun(payload.runId);
     throw new Error(`dc:runs: unknown action ${payload.action}`);
   });
 
-  ipcMain.handle('dc:browser', async (_event, payload = {}) => {
+  handle('dc:browser', async (_event, payload = {}) => {
     const host = getHost();
     if (!host) throw new Error('browser host is not ready');
     switch (payload.action) {
@@ -88,7 +103,7 @@ function registerIpc(service, getHost, getRouter, setRules) {
     }
   });
 
-  ipcMain.handle('dc:capture', async (_event, payload = {}) => {
+  handle('dc:capture', async (_event, payload = {}) => {
     const host = getHost();
     if (!host) throw new Error('browser host is not ready');
     switch (payload.action) {
@@ -111,7 +126,7 @@ function registerIpc(service, getHost, getRouter, setRules) {
     }
   });
 
-  ipcMain.handle('dc:diagnose', async (_event, payload = {}) => {
+  handle('dc:diagnose', async (_event, payload = {}) => {
     const host = getHost();
     if (!host) throw new Error('browser host is not ready');
     const record = host.detail(payload.requestId);
@@ -241,6 +256,7 @@ async function runSmoke(window, host) {
           frontendUrl: config?.workspace?.frontendUrl ?? null,
           uiReady: window.__dcUIReady === true,
           tempConfigFlag: document.getElementById('config-path')?.textContent.includes('临时配置') === true,
+          logPathVisible: document.getElementById('log-path')?.textContent.includes('日志文件') === true,
           hiddenAttrWorks: (() => {
             const element = document.getElementById('diagnose-result');
             return Boolean(element && element.hidden && getComputedStyle(element).display === 'none');

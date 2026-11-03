@@ -124,6 +124,7 @@ test('electron shell boots, captures, routes and diagnoses', {
   assert.match(stdout, /"uiReady":true/);
   assert.match(stdout, /"hiddenAttrWorks":true/);
   assert.match(stdout, /"tempConfigFlag":true/);
+  assert.match(stdout, /"logPathVisible":true/);
   assert.match(stdout, /"captureOk":true/);
   assert.match(stdout, /"captured":[1-9]/);
   assert.match(stdout, /"pageTitle":"ok"/);

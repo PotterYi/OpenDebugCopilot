@@ -191,9 +191,11 @@ export class Router {
       ? matchRule(this.getRules(), details.url, null)
       : matchRule(this.getRules(), details.url, details.resourceType ?? null);
     if (!rule) {
-      log.debug('[routing miss]', details.resourceType ?? '-', details.method, details.url);
       if (details.resourceType === 'xhr' || details.resourceType === 'fetch') {
+        log.info('[routing miss]', details.method, details.url);
         this.onMiss({ url: details.url, method: details.method, resourceType: details.resourceType });
+      } else {
+        log.debug('[routing miss]', details.resourceType ?? '-', details.method, details.url);
       }
       callback({});
       return;

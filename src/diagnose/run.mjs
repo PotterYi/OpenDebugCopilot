@@ -12,6 +12,7 @@ import { createTools } from '../tools/index.mjs';
 import { runCapturePreflight, runPreflight } from '../doctor/preflight.mjs';
 import { createMockAgent } from '../agent/mock.mjs';
 import { buildReport, renderMarkdown } from '../report/report.mjs';
+import { createRunLog } from './run-log.mjs';
 import { evaluateRecheck } from './recheck.mjs';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -184,6 +185,9 @@ async function diagnoseWithFired({
   preflight,
   startedAt,
 }) {
+  const runLog = createRunLog(runDir);
+  await runLog.info(`start scenario=${scenario.name} driver=${scenario.driverKind} question=${question || '-'}`);
+
   const marker = fired.marker?.injected ? fired.marker.value : null;
   const wait = await waitForMarker({
     logfiles: paths.logfiles,
@@ -212,6 +216,7 @@ async function diagnoseWithFired({
         limit: 200,
       });
   const logsResult = correlation.result;
+  await runLog.info(`logs strategy=${correlation.strategy} count=${logsResult.records.length} markerMatched=${wait.matched}`);
 
   const threads = await listThreads({
     logfiles: paths.logfiles,
@@ -291,15 +296,19 @@ async function diagnoseWithFired({
     },
   };
 
-  const agentResult = await agent.diagnose({
-    question,
-    evidence,
-    tools: toolsBundle,
-    budget: { maxRounds: 24 },
-  });
+  await runLog.info(`agent=${agent.id} mode=${agent.id === 'mock' ? 'mock' : 'live'}`);
+  const callAgent = async () => {
+    try {
+      return await agent.diagnose({ question, evidence, tools: toolsBundle, budget: { maxRounds: 24 } });
+    } catch (error) {
+      await runLog.error(`agent failed: ${error?.message ?? error}`);
+      throw error;
+    }
+  };
+  const agentResult = await callAgent();
   const agentRuns = [agentResult];
   for (let i = 1; i < recheck; i += 1) {
-    agentRuns.push(await agent.diagnose({ question, evidence, tools: toolsBundle, budget: { maxRounds: 24 } }));
+    agentRuns.push(await callAgent());
   }
 
   const gates = evaluateGates(fired, agentResult);
@@ -338,6 +347,8 @@ async function diagnoseWithFired({
     };
   }
 
+  await runLog.info(`gates=${gates.ok} recheck=${recheckInfo ? recheckInfo.verdict : 'off'}`);
+
   const result = {
     meta: {
       runId,
@@ -350,6 +361,7 @@ async function diagnoseWithFired({
       endedAt,
       durationMs: endedAt - startedAt,
       question,
+      runLog: 'run.log',
     },
     target,
     request: evidence.request,
@@ -377,6 +389,7 @@ async function diagnoseWithFired({
     JSON.stringify({ ...result.meta, preflight }, null, 2),
     'utf8',
   );
+  await runLog.info(`done durationMs=${Date.now() - startedAt} result=${runDir}`);
 
   return { result, runDir, runId, report };
 }

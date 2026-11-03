@@ -86,6 +86,11 @@ test('diagnoses a captured request without replay and correlates by business id'
   const report = await readFile(path.join(runDir, 'report.md'), 'utf8');
   assert.match(report, /DebugCopilot 诊断报告/);
   assert.match(report, /前端错误：1 条/);
+  const runLog = await readFile(path.join(runDir, 'run.log'), 'utf8');
+  assert.match(runLog, /start scenario=/);
+  assert.match(runLog, /logs strategy=/);
+  assert.match(runLog, /gates=/);
+  assert.match(runLog, /done durationMs=/);
 });
 
 test('capture diagnosis works without log evidence', async (t) => {
