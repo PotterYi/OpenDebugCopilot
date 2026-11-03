@@ -5,6 +5,7 @@ import { AppError } from './errors.mjs';
 export const DEFAULT_WORKSPACE = Object.freeze({
   frontendUrl: 'http://localhost:5173',
   backendUrl: 'http://127.0.0.1:8080',
+  sitUrl: '',
   logfiles: [],
   sourceRoot: '',
   frontendSourceRoot: '',
@@ -24,6 +25,7 @@ export function validateWorkspace(value) {
   const workspace = {
     frontendUrl: String(value.frontendUrl ?? ''),
     backendUrl: String(value.backendUrl ?? ''),
+    sitUrl: String(value.sitUrl ?? ''),
     logfiles: Array.isArray(value.logfiles) ? value.logfiles.map(String) : [],
     sourceRoot: String(value.sourceRoot ?? ''),
     frontendSourceRoot: String(value.frontendSourceRoot ?? ''),

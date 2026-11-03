@@ -27,6 +27,7 @@ const logsWarning = $('logs-warning');
 const splitter = $('splitter');
 const routingWarning = $('routing-warning');
 const routingStatus = $('routing-status');
+const targetStatus = $('target-status');
 const makeRuleButton = $('make-rule');
 const routingList = $('routing-list');
 const routingMessage = $('routing-message');
@@ -40,6 +41,8 @@ let currentTab = 'browser';
 let configCache = null;
 let routingRules = [];
 let routingHits = 0;
+let targetCandidates = { local: [], sit: [] };
+let discoveredLocalPorts = [];
 let currentRequest = null;
 let consoleErrorCount = 0;
 const consoleState = new Map();
@@ -60,6 +63,7 @@ function setMessage(text, kind = '') {
 function fillForm(config) {
   const workspace = config.workspace ?? {};
   form.elements.backendUrl.value = workspace.backendUrl ?? '';
+  form.elements.sitUrl.value = workspace.sitUrl ?? '';
   form.elements.logfiles.value = (workspace.logfiles ?? []).join('\n');
   form.elements.sourceRoot.value = workspace.sourceRoot ?? '';
   form.elements.frontendSourceRoot.value = workspace.frontendSourceRoot ?? '';
@@ -73,6 +77,7 @@ function readForm() {
     workspace: {
       frontendUrl: configCache?.workspace?.frontendUrl ?? browserUrlInput.value.trim(),
       backendUrl: form.elements.backendUrl.value.trim(),
+      sitUrl: form.elements.sitUrl.value.trim(),
       logfiles: form.elements.logfiles.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean),
       sourceRoot: form.elements.sourceRoot.value.trim(),
       frontendSourceRoot: form.elements.frontendSourceRoot.value.trim(),
@@ -397,9 +402,88 @@ function setTab(name) {
     api.browser('setBounds', { visible: false }).catch(() => {});
   }
   if (name === 'requests') refreshRequests();
-  if (name === 'routing') renderRouting();
+  if (name === 'routing') {
+    renderRouting();
+    refreshTargetCandidates().catch(() => {});
+  }
   if (name === 'logs') renderLogAnchors();
   if (name === 'history') loadRuns();
+}
+
+function observedOrigins() {
+  const frontendOrigin = (() => {
+    try {
+      return new URL(configCache?.workspace?.frontendUrl ?? '').origin;
+    } catch {
+      return null;
+    }
+  })();
+  const origins = new Set();
+  for (const item of captureState.values()) {
+    try {
+      const origin = new URL(item.url).origin;
+      if (origin !== frontendOrigin) origins.add(origin);
+    } catch {
+      // ignore invalid URLs
+    }
+  }
+  return [...origins];
+}
+
+function candidateSets() {
+  const local = new Set();
+  const sit = new Set();
+  const workspace = configCache?.workspace ?? {};
+  const normalize = (url) => String(url ?? '').replace('127.0.0.1', 'localhost').replace(/\/+$/, '');
+  if (workspace.backendUrl) local.add(normalize(workspace.backendUrl));
+  if (workspace.sitUrl) sit.add(normalize(workspace.sitUrl));
+  for (const rule of routingRules) {
+    if (!rule.target?.baseUrl) continue;
+    const url = normalize(rule.target.baseUrl);
+    if (rule.target.kind === 'sit') sit.add(url);
+    else local.add(url);
+  }
+  for (const port of discoveredLocalPorts) local.add(`http://localhost:${port}`);
+  for (const origin of observedOrigins()) {
+    if (!local.has(origin)) sit.add(origin);
+  }
+  return { local: [...local].filter(Boolean), sit: [...sit].filter(Boolean) };
+}
+
+async function refreshTargetCandidates() {
+  const sets = candidateSets();
+  targetStatus.textContent = '探测候选地址…';
+  const probeList = async (list) => {
+    const reachable = [];
+    for (const url of list) {
+      if (await probeTarget(url)) reachable.push(url);
+    }
+    return reachable;
+  };
+  const [local, sit] = await Promise.all([probeList(sets.local), probeList(sets.sit)]);
+  targetCandidates = { local, sit };
+  targetStatus.textContent = `本地可达 ${local.length} 个 / SIT 可达 ${sit.length} 个`;
+  renderRouting();
+}
+
+function fillTargetOptions(select, kind, current) {
+  const probed = targetCandidates[kind] ?? [];
+  const values = [...new Set([...(current ? [current] : []), ...probed])];
+  select.textContent = '';
+  if (values.length === 0) {
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = '未探测到可用地址';
+    select.append(option);
+    return;
+  }
+  for (const url of values) {
+    const option = document.createElement('option');
+    option.value = url;
+    option.textContent = probed.includes(url) ? url : `${url}（当前，未探测/不可达）`;
+    select.append(option);
+  }
+  select.value = current && values.includes(current) ? current : values[0];
 }
 
 function renderRouting() {
@@ -443,16 +527,12 @@ function renderRouting() {
       kind.append(option);
     }
     kind.value = rule.target?.kind ?? 'local';
-    kind.addEventListener('change', () => {
-      baseUrl.placeholder = kind.value === 'sit' ? 'https://sit.example.com' : 'http://localhost:8080';
-    });
 
-    const baseUrl = document.createElement('input');
-    baseUrl.type = 'text';
+    const baseUrl = document.createElement('select');
     baseUrl.dataset.field = 'baseUrl';
-    baseUrl.placeholder = 'http://localhost:8080';
-    baseUrl.title = '目标服务 baseUrl（含协议和端口），例如 http://localhost:8080 或 https://sit.example.com';
-    baseUrl.value = rule.target?.baseUrl ?? '';
+    baseUrl.title = '从探测可达的候选地址中选择；切换类型会刷新选项';
+    fillTargetOptions(baseUrl, kind.value, rule.target?.baseUrl);
+    kind.addEventListener('change', () => fillTargetOptions(baseUrl, kind.value, ''));
 
     const probe = document.createElement('button');
     probe.type = 'button';
@@ -510,7 +590,8 @@ function addRule() {
     match: { host: '', prefix: '/api' },
     target: {
       kind: 'local',
-      baseUrl: (configCache?.workspace?.backendUrl ?? 'http://localhost:8080').replace('127.0.0.1', 'localhost'),
+      baseUrl: targetCandidates.local[0]
+        ?? (configCache?.workspace?.backendUrl ?? '').replace('127.0.0.1', 'localhost'),
     },
   });
   renderRouting();
@@ -625,6 +706,14 @@ async function addCandidateRules(requests) {
       source: 'workspace.backendUrl',
     });
   }
+  const sitUrl = configCache?.workspace?.sitUrl;
+  if (sitUrl) {
+    declared.push({
+      kind: 'sit',
+      baseUrl: sitUrl.replace('127.0.0.1', 'localhost'),
+      source: 'workspace.sitUrl',
+    });
+  }
   for (const rule of routingRules) {
     if (rule.target?.baseUrl) {
       declared.push({
@@ -672,9 +761,11 @@ async function scanLocalPorts() {
     ports.map(async (port) => ({ port, ok: await probeTarget(`http://localhost:${port}/`) })),
   );
   const reachable = results.filter((item) => item.ok).map((item) => item.port);
+  discoveredLocalPorts = reachable;
   routingStatus.textContent = reachable.length
     ? `本机可达端口：${reachable.join(', ')}`
     : '未探测到常见本机端口';
+  await refreshTargetCandidates();
 }
 
 function renderLogAnchors() {
@@ -908,6 +999,9 @@ $('derive-rules').addEventListener('click', () => {
   addCandidateRules([...captureState.values()]).catch(() => {});
 });
 $('scan-ports').addEventListener('click', scanLocalPorts);
+$('refresh-targets').addEventListener('click', () => {
+  refreshTargetCandidates().catch(() => {});
+});
 makeRuleButton.addEventListener('click', () => {
   if (!currentRequest) {
     diagnoseMessage.textContent = '请先选择一条请求';

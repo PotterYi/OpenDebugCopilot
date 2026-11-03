@@ -87,6 +87,7 @@ npm run dev        # http://127.0.0.1:5173
 {
   "frontendUrl": "http://localhost:5173",
   "backendUrl": "http://localhost:8080",
+  "sitUrl": "http://localhost:8081",
   "logfiles": [
     "G:/develop/project/test-targets/ruoyi/logs/sys-info.log",
     "G:/develop/project/test-targets/ruoyi/logs/sys-error.log"
