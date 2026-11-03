@@ -5,6 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>DebugCopilot</title>
   <link rel="stylesheet" href="/styles.css" />
+  <script>
+    window.addEventListener('error', (event) => { window.__dcUIError = String(event.message || event.error || 'error'); });
+    window.addEventListener('unhandledrejection', (event) => { window.__dcUIError = String(event.reason || 'unhandled rejection'); });
+  </script>
 </head>
 <body>
   <header class="topbar">
@@ -59,20 +63,30 @@
       </div>
 
       <div id="tab-requests" class="tab-pane">
-        <div class="toolbar">
-          <label class="inline"><input type="checkbox" id="only-errors" /> 只显示错误</label>
-          <button id="clear-requests" type="button" class="secondary">清空</button>
-          <span id="capture-hint" class="muted"></span>
+        <div class="split">
+          <aside class="split-left">
+            <div class="toolbar">
+              <label class="inline"><input type="checkbox" id="only-errors" /> 只显示错误</label>
+              <button id="clear-requests" type="button" class="secondary">清空</button>
+              <span id="capture-hint" class="muted"></span>
+            </div>
+            <ul id="requests" class="request-list"></ul>
+          </aside>
+          <section class="split-right">
+            <div class="detail-head">
+              <span id="request-title">选择一条请求</span>
+              <span id="request-meta" class="muted"></span>
+            </div>
+            <div class="toolbar">
+              <input id="diagnose-question" class="url-input" placeholder="描述现象（可选，如：下单报错）" />
+              <button id="diagnose-mock" type="button">诊断（Mock）</button>
+              <button id="diagnose-live" type="button" class="secondary">真实诊断</button>
+              <span id="diagnose-message" class="muted"></span>
+            </div>
+            <div id="request-detail" class="detail">选择一条请求查看详情</div>
+            <div id="diagnose-result" class="diagnose-card" hidden></div>
+          </section>
         </div>
-        <div class="toolbar">
-          <input id="diagnose-question" class="url-input" placeholder="描述现象（可选，如：下单报错）" />
-          <button id="diagnose-mock" type="button">诊断（Mock）</button>
-          <button id="diagnose-live" type="button" class="secondary">真实诊断</button>
-          <span id="diagnose-message" class="muted"></span>
-        </div>
-        <ul id="requests" class="request-list"></ul>
-        <pre id="request-detail" class="detail">选择一条请求查看详情</pre>
-        <pre id="diagnose-result" class="detail" hidden></pre>
       </div>
 
       <div id="tab-routing" class="tab-pane">

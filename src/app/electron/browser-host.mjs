@@ -34,6 +34,8 @@ export class BrowserHost {
     this.seq = 0;
     this.attached = false;
     this.networkEnabled = false;
+    this.pendingUrl = null;
+    this.loading = false;
     this.visible = false;
     this.bounds = { x: 0, y: 0, width: 0, height: 0 };
 
@@ -52,8 +54,25 @@ export class BrowserHost {
     if (typeof this.view.setVisible === 'function') this.view.setVisible(false);
 
     const contents = this.view.webContents;
+    this.loading = contents.isLoading();
     contents.setWindowOpenHandler(() => ({ action: 'deny' }));
-    contents.on('did-navigate', (_event, url) => this.emit({ type: 'navigation', url }));
+    contents.on('did-start-loading', () => {
+      this.loading = true;
+      this.emit({ type: 'loading', isLoading: true, url: contents.getURL(), pendingUrl: this.pendingUrl });
+    });
+    contents.on('did-stop-loading', () => {
+      this.loading = false;
+      this.pendingUrl = null;
+      this.emit({ type: 'loading', isLoading: false, url: contents.getURL(), pendingUrl: null });
+    });
+    contents.on('did-fail-load', (_event, code, description, url) => {
+      this.loading = contents.isLoading();
+      this.emit({ type: 'load-failed', code, description, url });
+    });
+    contents.on('did-navigate', (_event, url) => {
+      this.pendingUrl = null;
+      this.emit({ type: 'navigation', url });
+    });
     contents.on('did-navigate-in-page', (_event, url) => this.emit({ type: 'navigation', url }));
 
     this.attachCdp();
@@ -203,7 +222,18 @@ export class BrowserHost {
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
       throw new Error('Only http/https URLs are allowed');
     }
-    this.view.webContents.loadURL(normalized);
+    const contents = this.view.webContents;
+    this.pendingUrl = normalized;
+    this.loading = true;
+    this.emit({ type: 'loading', isLoading: true, url: contents.getURL(), pendingUrl: normalized });
+    // loadURL() resolves when navigation starts, not when it commits.
+    // Readiness must be checked with webContents.isLoading().
+    contents.loadURL(normalized).catch((error) => {
+      if (!String(error?.message ?? '').includes('ERR_ABORTED')) {
+        this.emit({ type: 'load-failed', code: null, description: error?.message ?? String(error), url: normalized });
+      }
+    });
+    return { url: normalized, pendingUrl: normalized };
   }
 
   reload() {
@@ -259,6 +289,8 @@ export class BrowserHost {
     const contents = this.view.webContents;
     return {
       url: contents.getURL(),
+      pendingUrl: this.pendingUrl,
+      isLoading: contents.isLoading(),
       canGoBack: contents.canGoBack(),
       canGoForward: contents.canGoForward(),
       attached: this.attached,

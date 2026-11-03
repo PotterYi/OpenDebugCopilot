@@ -57,8 +57,7 @@ function registerIpc(service, getHost, getRouter, setRules) {
       case 'open': {
         const url = payload.url ?? (await service.getConfig()).workspace.frontendUrl;
         if (!url) throw new Error('No frontendUrl configured');
-        host.open(url);
-        return { ok: true, url };
+        return { ok: true, ...host.open(url) };
       }
       case 'reload':
         host.reload();
@@ -169,6 +168,27 @@ function createWindow(url) {
   return window;
 }
 
+async function waitForUi(window, timeoutMs = 5000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const state = await window.webContents
+      .executeJavaScript('({ ready: window.__dcUIReady === true, error: window.__dcUIError ?? null })')
+      .catch(() => ({ ready: false, error: 'executeJavaScript failed' }));
+    if (state.ready || state.error) return state;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return { ready: false, error: 'timeout waiting for UI' };
+}
+
+async function waitForIdle(host, timeoutMs) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    if (!host.status().isLoading) return true;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return false;
+}
+
 async function waitForCapture(host, timeoutMs) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
@@ -192,16 +212,24 @@ async function runSmoke(window, host) {
       });
     });
 
+    const uiState = await waitForUi(window);
     const ui = await window.webContents.executeJavaScript(`(async () => {
       const hasDc = !!window.dc && typeof window.dc.invoke === 'function';
       if (!hasDc) return { hasDc: false };
       try {
         const config = await window.dc.invoke('dc:config', { action: 'get' });
-        return { hasDc, hasWorkspace: !!config && !!config.workspace, frontendUrl: config?.workspace?.frontendUrl ?? null };
+        return {
+          hasDc,
+          hasWorkspace: !!config && !!config.workspace,
+          frontendUrl: config?.workspace?.frontendUrl ?? null,
+          uiReady: window.__dcUIReady === true,
+        };
       } catch (error) {
         return { hasDc, error: String(error) };
       }
     })()`);
+    ui.uiReady = uiState.ready;
+    ui.uiError = uiState.error;
 
     let captured = 0;
     let captureOk = true;
@@ -210,6 +238,7 @@ async function runSmoke(window, host) {
     if (smokeUrl) {
       host.open(smokeUrl);
       captureOk = await waitForCapture(host, 10_000);
+      await waitForIdle(host, 8_000);
       captured = host.list({ limit: 500 }).length;
       if (captureOk) {
         diagnose = await window.webContents.executeJavaScript(`(async () => {
@@ -244,6 +273,7 @@ async function runSmoke(window, host) {
       captureSample: sample ? { url: sample.url, status: sample.status } : null,
       diagnose,
       pageTitle,
+      isLoading: host.status().isLoading,
     };
     console.log(`SMOKE_RESULT ${JSON.stringify(result)}`);
     const ok = Boolean(

@@ -11,6 +11,8 @@ const detailEl = $('request-detail');
 const hintEl = $('capture-hint');
 const browserUrlInput = $('browser-url');
 const browserSlot = $('browser-slot');
+const requestTitle = $('request-title');
+const requestMeta = $('request-meta');
 const routingList = $('routing-list');
 const routingMessage = $('routing-message');
 const diagnoseQuestion = $('diagnose-question');
@@ -178,8 +180,86 @@ async function refreshRequests() {
   }
 }
 
+function el(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+function section(title, ...children) {
+  const block = el('section', 'card-section');
+  block.append(el('h4', 'card-title', title), ...children);
+  return block;
+}
+
+function kv(pairs) {
+  const grid = el('div', 'kv');
+  for (const [key, value] of pairs) {
+    grid.append(el('span', 'kv-key', key), el('span', 'kv-value', String(value ?? '—')));
+  }
+  return grid;
+}
+
+function preBlock(text) {
+  return el('pre', 'code-block', String(text ?? ''));
+}
+
+function renderDiagnosis(response) {
+  const result = response.result ?? {};
+  const correlation = result.logs?.correlation;
+  diagnoseResult.hidden = false;
+  diagnoseResult.textContent = '';
+  const head = el('div', 'card-head');
+  head.append(
+    el('strong', null, `Run ${response.runId ?? result.meta?.runId ?? '-'}`),
+    el('span', `badge ${result.gates?.ok ? 'ok' : 'error'}`, result.gates?.ok ? 'Gates ok' : 'Gates failed'),
+    el('span', 'badge', `${result.meta?.agent ?? '-'} / ${result.meta?.mode ?? '-'}`),
+  );
+  diagnoseResult.append(head);
+  diagnoseResult.append(section('结论', el('p', 'conclusion', result.agent?.conclusion ?? '(无结论)')));
+  diagnoseResult.append(section('上下文', kv([
+    ['关联方式', correlation ? `${correlation.strategy}${correlation.matchedId ? ` (${correlation.matchedId})` : ''}` : 'n/a'],
+    ['日志', `${result.logs?.count ?? 0} 条`],
+    ['线程', String(result.threads?.total ?? 0)],
+    ['工具调用', String(result.agent?.toolCalls?.length ?? 0)],
+    ['耗时', `${result.meta?.durationMs ?? 0} ms`],
+  ])));
+
+  const refs = Array.isArray(result.agent?.evidenceRefs) ? result.agent.evidenceRefs : [];
+  if (refs.length) {
+    const list = el('ul', 'evidence-list');
+    for (const ref of refs) {
+      const item = el('li', null, `[${ref.type}] ${ref.ref}`);
+      if (ref.note) item.append(el('span', 'muted', ` — ${ref.note}`));
+      list.append(item);
+    }
+    diagnoseResult.append(section('证据链', list));
+  }
+
+  for (const [title, items] of [
+    ['修复建议', result.agent?.fixes ?? []],
+    ['待补充信息', result.agent?.needsMoreInfo ?? []],
+  ]) {
+    if (!Array.isArray(items) || items.length === 0) continue;
+    const list = el('ul', 'advice-list');
+    for (const item of items) list.append(el('li', null, item));
+    diagnoseResult.append(section(title, list));
+  }
+
+  const reportButton = el('button', 'secondary', '查看完整报告');
+  reportButton.type = 'button';
+  reportButton.addEventListener('click', () => {
+    setTab('history');
+    showRun(response.runId);
+  });
+  diagnoseResult.append(reportButton);
+}
+
 async function showRequest(id) {
   currentRequestId = id;
+  requestTitle.textContent = '加载中…';
+  requestMeta.textContent = '';
   detailEl.textContent = '加载中…';
   try {
     const { request } = await api.capture('detail', { id });
@@ -187,20 +267,27 @@ async function showRequest(id) {
       detailEl.textContent = '请求已被清空或不存在';
       return;
     }
-    detailEl.textContent = JSON.stringify({
-      method: request.method,
-      url: request.url,
-      status: request.status,
-      statusText: request.statusText,
-      resourceType: request.resourceType,
-      durationMs: request.durationMs,
-      error: request.error,
-      requestHeaders: request.requestHeaders,
-      postData: request.postData,
-      responseHeaders: request.responseHeaders,
-      mimeType: request.mimeType,
-      body: request.body,
-    }, null, 2);
+    requestTitle.textContent = `${request.method} ${requestPath(request.url)}`;
+    requestMeta.textContent = [request.resourceType, request.status ?? '…', request.durationMs != null ? `${request.durationMs}ms` : null]
+      .filter(Boolean)
+      .join(' · ');
+    detailEl.textContent = '';
+    detailEl.append(
+      section('概览', kv([
+        ['方法', request.method],
+        ['URL', request.url],
+        ['状态', request.status ?? '—'],
+        ['类型', request.resourceType ?? '—'],
+        ['耗时', request.durationMs != null ? `${request.durationMs} ms` : '—'],
+        ['错误', request.error ?? '—'],
+      ])),
+      section('请求头', preBlock(JSON.stringify(request.requestHeaders ?? {}, null, 2))),
+      ...(request.postData ? [section('请求体', preBlock(request.postData))] : []),
+      section('响应头', preBlock(JSON.stringify(request.responseHeaders ?? {}, null, 2))),
+      ...(request.body?.text
+        ? [section(`响应体${request.body.truncated ? '（已截断）' : ''}`, preBlock(request.body.text))]
+        : []),
+    );
   } catch (err) {
     detailEl.textContent = `加载失败：${err.message}`;
   }
@@ -360,18 +447,7 @@ async function runDiagnose(mock) {
       mock,
       recheck: 1,
     });
-    const result = response.result;
-    const correlation = result.logs?.correlation;
-    diagnoseResult.hidden = false;
-    diagnoseResult.textContent = [
-      `Run ID : ${response.runId}`,
-      `Agent  : ${result.meta.agent} (${result.meta.mode})`,
-      `Gates  : ${result.gates.ok ? 'ok' : 'failed'}`,
-      `关联   : ${correlation?.strategy ?? 'n/a'}${correlation?.matchedId ? ` (${correlation.matchedId})` : ''}`,
-      `结论   : ${result.agent?.conclusion ?? ''}`,
-      '',
-      response.report ?? '',
-    ].join('\n');
+    renderDiagnosis(response);
     diagnoseMessage.textContent = '诊断完成';
     diagnoseMessage.className = 'message ok';
     await loadRuns();
@@ -383,11 +459,37 @@ async function runDiagnose(mock) {
   }
 }
 
+async function waitForBrowserIdle(timeoutMs = 15_000) {
+  if (!api.isDesktop) return;
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    try {
+      const status = await api.browser('status');
+      if (status.pendingUrl) browserUrlInput.value = status.pendingUrl;
+      if (!status.isLoading) {
+        if (status.url) browserUrlInput.value = status.url;
+        setStatus('页面已加载', 'ok');
+        return;
+      }
+    } catch {
+      // keep polling
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  setStatus('页面加载超时', 'error');
+}
+
 async function openBrowser(url) {
+  if (!api.isDesktop) {
+    setStatus('内嵌浏览器仅在桌面版可用', 'error');
+    return;
+  }
   const target = (url ?? browserUrlInput.value ?? '').trim();
   try {
+    setStatus('正在导航…', '');
     await api.browser('open', { url: target || undefined });
-    setStatus('页面加载中…', '');
+    // loadURL() resolving means navigation started; wait for isLoading() to become false.
+    await waitForBrowserIdle();
   } catch (err) {
     setStatus(`打开失败：${err.message}`, 'error');
   }
@@ -442,6 +544,11 @@ api.onCapture((event) => {
     renderRequests();
   } else if (event.type === 'navigation') {
     browserUrlInput.value = event.url;
+  } else if (event.type === 'loading') {
+    if (event.pendingUrl) browserUrlInput.value = event.pendingUrl;
+    setStatus(event.isLoading ? '加载中…' : '页面已加载', event.isLoading ? '' : 'ok');
+  } else if (event.type === 'load-failed') {
+    setStatus(`加载失败：${event.description ?? event.code ?? 'unknown'}`, 'error');
   } else if (event.type === 'routing') {
     routingMessage.textContent = `改道：${event.method} ${event.url} → ${event.target ?? 'OPTIONS（仅补 CORS）'}`;
     routingMessage.className = 'message ok';
@@ -462,3 +569,5 @@ setTab('browser');
 requestAnimationFrame(syncBounds);
 setTimeout(syncBounds, 300);
 await refreshRequests();
+
+window.__dcUIReady = true;

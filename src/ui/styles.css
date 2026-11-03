@@ -183,3 +183,61 @@ button:hover { filter: brightness(1.08); }
   background: var(--panel-2);
   border: 1px solid var(--border);
 }
+
+.split { display: flex; gap: 10px; flex: 1; min-height: 0; }
+.split-left { width: 42%; display: flex; flex-direction: column; min-width: 0; }
+.split-right { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.split-left .request-list { flex: 1; max-height: none; }
+.detail-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+}
+.detail-head #request-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.detail-head .muted { font-weight: 400; white-space: nowrap; }
+.detail { white-space: normal; font-family: inherit; }
+.code-block {
+  background: #12151c;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  overflow: auto;
+  max-height: 220px;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+.card-section { margin-bottom: 10px; }
+.card-title { margin: 0 0 6px; font-size: 12px; color: var(--muted); font-weight: 600; }
+.kv { display: grid; grid-template-columns: 120px 1fr; gap: 4px 10px; font-size: 12px; }
+.kv-key { color: var(--muted); }
+.kv-value { word-break: break-all; }
+.diagnose-card {
+  flex: 1;
+  overflow: auto;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px;
+  font-size: 13px;
+}
+.card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--muted);
+}
+.badge.ok { color: #5bd693; border-color: #2c5a42; }
+.badge.error { color: var(--danger); border-color: #5a2c2c; }
+.conclusion { margin: 0; line-height: 1.6; }
+.evidence-list, .advice-list { margin: 0; padding-left: 18px; }
+.evidence-list li, .advice-list li { margin-bottom: 4px; word-break: break-word; }
+.error-text { color: var(--danger); margin: 0; }

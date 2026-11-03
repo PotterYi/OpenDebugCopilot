@@ -115,9 +115,11 @@ test('electron shell boots, captures, routes and diagnoses', {
   assert.match(stdout, /SMOKE_OK/);
   assert.match(stdout, /"hasDc":true/);
   assert.match(stdout, /"hasWorkspace":true/);
+  assert.match(stdout, /"uiReady":true/);
   assert.match(stdout, /"captureOk":true/);
   assert.match(stdout, /"captured":[1-9]/);
   assert.match(stdout, /"pageTitle":"ok"/);
+  assert.match(stdout, /"isLoading":false/);
   assert.match(stdout, /"diagnose":\{"ok":true/);
   assert.match(stdout, /"gates":true/);
   assert.ok(backendHits >= 1, `expected redirect to backend, got ${backendHits}`);
