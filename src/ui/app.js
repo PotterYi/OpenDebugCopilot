@@ -1012,18 +1012,7 @@ $('clear-requests').addEventListener('click', async () => {
 });
 $('only-errors').addEventListener('change', renderRequests);
 $('refresh-runs').addEventListener('click', loadRuns);
-$('open-log').addEventListener('click', async () => {
-  if (!api.isDesktop) {
-    setMessage(logPath.textContent || 'WebUI 模式日志输出到 stderr', '');
-    return;
-  }
-  try {
-    const result = await api.openLog();
-    if (!result.ok) setMessage(`打开日志失败：${result.reason ?? result.error ?? 'unknown'}`, 'error');
-  } catch (err) {
-    setMessage(`打开日志失败：${err.message}`, 'error');
-  }
-});
+
 
 logParser.addEventListener('change', () => {
   logRegex.hidden = logParser.value !== 'regex';

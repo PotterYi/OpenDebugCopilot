@@ -49,10 +49,6 @@ export const api = {
     if (!dc?.invoke) return action === 'list' ? { requests: [] } : { pending: true };
     return dc.invoke('dc:capture', { action, ...payload });
   },
-  async openLog() {
-    if (dc?.invoke) return dc.invoke('dc:config', { action: 'open-log' });
-    return { ok: false, reason: 'webui' };
-  },
   async diagnose(payload) {
     if (dc?.invoke) return dc.invoke('dc:diagnose', payload);
     return http('/api/diagnose', { method: 'POST', body: JSON.stringify(payload) });

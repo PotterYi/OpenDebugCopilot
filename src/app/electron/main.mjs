@@ -1,6 +1,6 @@
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron';
 import path from 'node:path';
-import { access, mkdir, writeFile } from 'node:fs/promises';
+import { access, appendFile, mkdir, writeFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createService } from '../service.mjs';
@@ -53,12 +53,6 @@ function registerIpc(service, getHost, getRouter, setRules) {
 
   handle('dc:config', async (_event, payload = {}) => {
     if (payload.action === 'get') return service.getConfig();
-    if (payload.action === 'open-log') {
-      const file = getLogFile();
-      if (!file) return { ok: false, reason: 'no-log-file' };
-      const error = await shell.openPath(file);
-      return { ok: !error, path: file, error: error || null };
-    }
     if (payload.action === 'save') {
       const saved = await service.saveConfig({ workspace: payload.workspace, routing: payload.routing });
       if (payload.routing !== undefined) {
@@ -325,6 +319,7 @@ async function runSmoke(window, host) {
           targetSelect: document.querySelector('[data-field="baseUrl"]')?.tagName === 'SELECT',
           sitUrlField: Boolean(document.querySelector('input[name="sitUrl"]')),
           logSourcePresent: Boolean(document.getElementById('log-source')),
+          openLogButtonRemoved: !document.getElementById('open-log'),
           hiddenAttrWorks: (() => {
             const element = document.getElementById('diagnose-result');
             return Boolean(element && element.hidden && getComputedStyle(element).display === 'none');
@@ -430,6 +425,7 @@ async function runSmoke(window, host) {
       diagnose,
       consoleDiagnose,
       pageTitle,
+      menuHasLog: Boolean(Menu.getApplicationMenu()?.items?.some((item) => item.label === '日志')),
       url: host.status().url,
       evalResult,
       uiEvalResult,
@@ -455,6 +451,55 @@ async function runSmoke(window, host) {
   }
 }
 
+async function ensureLogFile() {
+  const file = getLogFile();
+  if (!file) return null;
+  try {
+    await mkdir(path.dirname(file), { recursive: true });
+    await appendFile(file, '', 'utf8');
+  } catch {
+    // creating the file is best-effort
+  }
+  return file;
+}
+
+async function openLogFile() {
+  const file = await ensureLogFile();
+  if (!file) {
+    dialog.showErrorBox('打开日志', '尚未配置日志文件');
+    return;
+  }
+  const error = await shell.openPath(file);
+  if (error) dialog.showErrorBox('打开日志失败', error);
+}
+
+async function revealLogFile() {
+  const file = await ensureLogFile();
+  if (!file) {
+    dialog.showErrorBox('打开日志', '尚未配置日志文件');
+    return;
+  }
+  shell.showItemInFolder(file);
+}
+
+function installApplicationMenu() {
+  const template = [
+    ...(process.platform === 'darwin' ? [{ role: 'appMenu' }] : []),
+    { role: 'fileMenu' },
+    { role: 'editMenu' },
+    { role: 'viewMenu' },
+    { role: 'windowMenu' },
+    {
+      label: '日志',
+      submenu: [
+        { label: '打开日志文件', click: () => { openLogFile().catch(() => {}); } },
+        { label: '在文件夹中显示', click: () => { revealLogFile().catch(() => {}); } },
+      ],
+    },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
 async function bootstrap() {
   try {
     let logFile = process.env.DC_LOG_FILE || path.join(ROOT, 'logs', 'debugcopilot.log');
@@ -473,6 +518,7 @@ async function bootstrap() {
   } catch {
     // file logging is optional
   }
+  installApplicationMenu();
   const userData = app.getPath('userData');
   const effectiveConfigDir = configDir ? path.resolve(configDir) : app.isPackaged ? path.join(userData, 'configs') : path.join(ROOT, 'configs');
   const effectiveRunsDir = runsDir ? path.resolve(runsDir) : app.isPackaged ? path.join(userData, 'runs') : path.join(ROOT, 'runs');
