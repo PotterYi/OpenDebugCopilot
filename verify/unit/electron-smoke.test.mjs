@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { existsSync } from 'node:fs';
-import { mkdir, rm } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
@@ -30,6 +30,23 @@ test('electron shell boots and exposes dc IPC', {
   await mkdir(TMP, { recursive: true });
   t.after(async () => { await rm(TMP, { recursive: true, force: true }); });
 
+  let pageApiHits = 0;
+  let backendHits = 0;
+
+  const backendServer = http.createServer((req, res) => {
+    if (req.url === '/api/ping') {
+      backendHits += 1;
+      res.setHeader('Content-Type', 'application/json');
+      res.end('{"from":"backend"}');
+      return;
+    }
+    res.statusCode = 404;
+    res.end('not found');
+  });
+  backendServer.listen(0, '127.0.0.1');
+  await once(backendServer, 'listening');
+  t.after(() => new Promise((resolve) => backendServer.close(resolve)));
+
   const pageServer = http.createServer((req, res) => {
     if (req.url === '/page') {
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
@@ -37,6 +54,7 @@ test('electron shell boots and exposes dc IPC', {
       return;
     }
     if (req.url === '/api/ping') {
+      pageApiHits += 1;
       res.setHeader('Content-Type', 'application/json');
       res.end('{"ok":true}');
       return;
@@ -48,11 +66,24 @@ test('electron shell boots and exposes dc IPC', {
   await once(pageServer, 'listening');
   t.after(() => new Promise((resolve) => pageServer.close(resolve)));
 
+  await mkdir(path.join(TMP, 'configs'), { recursive: true });
+  await writeFile(path.join(TMP, 'configs', 'routing.json'), JSON.stringify({
+    rules: [{
+      id: 'local-api',
+      enabled: true,
+      match: { host: 'localhost', prefix: '/api' },
+      target: {
+        kind: 'local',
+        baseUrl: `http://127.0.0.1:${backendServer.address().port}`,
+      },
+    }],
+  }), 'utf8');
+
   const child = spawn(electronPath, [
     MAIN,
     '--smoke',
     '--port', '0',
-    `--smoke-url=http://127.0.0.1:${pageServer.address().port}/page`,
+    `--smoke-url=http://localhost:${pageServer.address().port}/page`,
     '--runs-dir', path.join(TMP, 'runs'),
     '--config-dir', path.join(TMP, 'configs'),
   ], { env: { ...process.env } });
@@ -79,4 +110,6 @@ test('electron shell boots and exposes dc IPC', {
   assert.match(stdout, /"hasWorkspace":true/);
   assert.match(stdout, /"captureOk":true/);
   assert.match(stdout, /"captured":[1-9]/);
+  assert.ok(backendHits >= 1, `expected redirect to backend, got ${backendHits}`);
+  assert.equal(pageApiHits, 0, `request should have been redirected, page hits: ${pageApiHits}`);
 });

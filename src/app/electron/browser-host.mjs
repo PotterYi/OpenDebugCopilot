@@ -1,4 +1,5 @@
 import { WebContentsView } from 'electron';
+import { normalizeLocalhost } from './routing.mjs';
 
 const MAX_RECORDS = 500;
 const MAX_BODY_BYTES = 1024 * 1024;
@@ -42,6 +43,7 @@ export class BrowserHost {
         nodeIntegration: false,
         sandbox: true,
         webSecurity: true,
+        partition: 'persist:dc-browser',
       },
     });
     this.view.setBackgroundColor('#ffffff');
@@ -189,13 +191,19 @@ export class BrowserHost {
     }
   }
 
+  get session() {
+    return this.view.webContents.session;
+  }
+
   open(url) {
     if (!url) throw new Error('open requires a URL');
-    const parsed = new URL(url);
+    // Chromium returns ERR_ABORTED for 127.0.0.1 in the embedded view.
+    const normalized = normalizeLocalhost(url);
+    const parsed = new URL(normalized);
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
       throw new Error('Only http/https URLs are allowed');
     }
-    this.view.webContents.loadURL(url);
+    this.view.webContents.loadURL(normalized);
   }
 
   reload() {

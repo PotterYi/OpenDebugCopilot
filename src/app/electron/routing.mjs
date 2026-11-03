@@ -1,0 +1,219 @@
+/**
+ * Pure routing helpers (no Electron dependency) so they can be unit tested.
+ * Routing rules are matched by host + URL prefix; local targets are normalized to localhost.
+ */
+
+const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
+
+export function isLocalHostname(hostname) {
+  return LOCAL_HOSTS.has(String(hostname ?? '').toLowerCase());
+}
+
+/**
+ * Embedded Chromium hits ERR_ABORTED for 127.0.0.1; use localhost instead.
+ *
+ * @param {string} url
+ * @returns {string}
+ */
+export function normalizeLocalhost(url) {
+  try {
+    const parsed = new URL(url);
+    if (isLocalHostname(parsed.hostname)) parsed.hostname = 'localhost';
+    return parsed.toString();
+  } catch {
+    return url;
+  }
+}
+
+function joinPath(basePath, requestPath) {
+  const left = (basePath ?? '').replace(/\/+$/, '');
+  const right = (requestPath ?? '').replace(/^\/+/, '');
+  if (!left && !right) return '/';
+  if (!left) return `/${right}`;
+  if (!right) return left;
+  return `${left}/${right}`;
+}
+
+/**
+ * @param {Array<any>} rules
+ * @param {string} url
+ * @returns {any | null}
+ */
+export function matchRule(rules, url) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  for (const rule of rules ?? []) {
+    if (rule.enabled === false) continue;
+    if (rule.match?.host && rule.match.host.toLowerCase() !== parsed.hostname.toLowerCase()) continue;
+    if (!parsed.pathname.startsWith(rule.match?.prefix ?? '')) continue;
+    return rule;
+  }
+  return null;
+}
+
+/**
+ * @param {any} rule
+ * @param {string} requestUrl
+ * @returns {string}
+ */
+export function buildRedirectUrl(rule, requestUrl) {
+  const source = new URL(requestUrl);
+  const target = new URL(rule.target.baseUrl);
+  if (isLocalHostname(target.hostname)) target.hostname = 'localhost';
+  target.pathname = joinPath(target.pathname, source.pathname);
+  target.search = source.search;
+  return target.toString();
+}
+
+function deleteHeaderCaseInsensitive(headers, name) {
+  const lower = name.toLowerCase();
+  for (const key of Object.keys(headers)) {
+    if (key.toLowerCase() === lower) delete headers[key];
+  }
+}
+
+/**
+ * Add permissive CORS headers to an Electron responseHeaders object
+ * (values are arrays). Existing CORS headers are replaced.
+ *
+ * @param {Record<string, string[]>} responseHeaders
+ * @param {{ origin?: string | null, requestHeaders?: Record<string, string[]> }} [options]
+ * @returns {Record<string, string[]>}
+ */
+export function applyCorsHeaders(responseHeaders = {}, { origin = null, requestHeaders = {} } = {}) {
+  const headers = { ...responseHeaders };
+  const allowOrigin = origin || '*';
+  const requestedMethod = requestHeaders['access-control-request-method']?.[0];
+  const requestedHeaders = requestHeaders['access-control-request-headers']?.[0];
+
+  const values = {
+    'Access-Control-Allow-Origin': allowOrigin,
+    'Access-Control-Allow-Methods': requestedMethod || 'GET,POST,PUT,PATCH,DELETE,OPTIONS',
+    'Access-Control-Allow-Headers': requestedHeaders || 'Content-Type,Authorization,X-Requested-With,X-DC-Probe',
+    'Access-Control-Expose-Headers': '*',
+    Vary: 'Origin',
+  };
+  if (allowOrigin !== '*') values['Access-Control-Allow-Credentials'] = 'true';
+
+  for (const [name, value] of Object.entries(values)) {
+    deleteHeaderCaseInsensitive(headers, name);
+    headers[name] = [value];
+  }
+  return headers;
+}
+
+/**
+ * Electron session webRequest router: 3 hooks.
+ * - onBeforeRequest: redirect matched requests to the target (OPTIONS is not redirected)
+ * - onBeforeSendHeaders: capture preflight headers, force Origin to the page origin
+ * - onHeadersReceived: add CORS headers for local-target responses and preflight responses
+ */
+export class Router {
+  /**
+   * @param {{
+   *   session: import('electron').Session,
+   *   getRules: () => Array<any>,
+   *   getPageOrigin?: () => string | null,
+   *   onHit?: (event: any) => void
+   * }} options
+   */
+  constructor({ session, getRules, getPageOrigin = () => null, onHit = () => {} }) {
+    this.session = session;
+    this.getRules = getRules;
+    this.getPageOrigin = getPageOrigin;
+    this.onHit = onHit;
+    this.pending = new Map();
+    this.filter = { urls: ['<all_urls>'] };
+
+    this.beforeRequest = this.beforeRequest.bind(this);
+    this.beforeSendHeaders = this.beforeSendHeaders.bind(this);
+    this.headersReceived = this.headersReceived.bind(this);
+    this.completed = this.completed.bind(this);
+
+    session.webRequest.onBeforeRequest(this.filter, this.beforeRequest);
+    session.webRequest.onBeforeSendHeaders(this.filter, this.beforeSendHeaders);
+    session.webRequest.onHeadersReceived(this.filter, this.headersReceived);
+    session.webRequest.onCompleted(this.filter, this.completed);
+    session.webRequest.onErrorOccurred(this.filter, this.completed);
+  }
+
+  beforeRequest(details, callback) {
+    const rule = matchRule(this.getRules(), details.url);
+    if (!rule) {
+      callback({});
+      return;
+    }
+
+    // CORS preflight redirects are rejected by Chromium; let OPTIONS go to the
+    // original host and fix its response headers instead.
+    if (details.method === 'OPTIONS') {
+      this.pending.set(details.id, { rule, originalUrl: details.url, targetUrl: null, options: true });
+      this.onHit({ type: 'routing', rule: rule.id, method: 'OPTIONS', url: details.url, target: null });
+      callback({});
+      return;
+    }
+
+    const redirectURL = buildRedirectUrl(rule, details.url);
+    if (redirectURL === details.url) {
+      callback({});
+      return;
+    }
+    this.pending.set(details.id, { rule, originalUrl: details.url, targetUrl: redirectURL });
+    this.onHit({ type: 'routing', rule: rule.id, method: details.method, url: details.url, target: redirectURL });
+    callback({ redirectURL });
+  }
+
+  beforeSendHeaders(details, callback) {
+    const hit = this.pending.get(details.id);
+    const requestHeaders = { ...(details.requestHeaders ?? {}) };
+    if (hit) {
+      hit.requestHeaders = { ...requestHeaders };
+      const origin = this.getPageOrigin();
+      if (origin) {
+        const existing = Object.keys(requestHeaders).find((key) => key.toLowerCase() === 'origin');
+        if (existing) requestHeaders[existing] = origin;
+        else requestHeaders.Origin = origin;
+      }
+    }
+    callback({ requestHeaders });
+  }
+
+  headersReceived(details, callback) {
+    const hit = this.pending.get(details.id);
+    if (!hit) {
+      callback({ responseHeaders: details.responseHeaders });
+      return;
+    }
+    const localTarget = hit.rule?.target?.kind === 'local';
+    if (!localTarget && !hit.options) {
+      callback({ responseHeaders: details.responseHeaders });
+      return;
+    }
+    const responseHeaders = applyCorsHeaders(details.responseHeaders, {
+      origin: this.getPageOrigin(),
+      requestHeaders: hit.requestHeaders ?? {},
+    });
+    callback({ responseHeaders });
+  }
+
+  completed(details) {
+    this.pending.delete(details.id);
+  }
+
+  /** Rules are read dynamically; this hook exists for explicit config refresh events. */
+  apply() {}
+
+
+  dispose() {
+    this.session.webRequest.onBeforeRequest(null);
+    this.session.webRequest.onBeforeSendHeaders(null);
+    this.session.webRequest.onHeadersReceived(null);
+    this.session.webRequest.onCompleted(null);
+    this.session.webRequest.onErrorOccurred(null);
+    this.pending.clear();
+  }
+}

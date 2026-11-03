@@ -11,9 +11,12 @@ const detailEl = $('request-detail');
 const hintEl = $('capture-hint');
 const browserUrlInput = $('browser-url');
 const browserSlot = $('browser-slot');
+const routingList = $('routing-list');
+const routingMessage = $('routing-message');
 
 let currentTab = 'browser';
 let configCache = null;
+let routingRules = [];
 const captureState = new Map();
 let renderQueued = false;
 
@@ -57,7 +60,9 @@ async function loadConfig() {
   try {
     const config = await api.getConfig();
     configCache = config;
+    routingRules = config.routing?.rules ?? [];
     fillForm(config);
+    renderRouting();
     setStatus(api.isDesktop ? '桌面版已连接' : 'WebUI 已连接', 'ok');
     return config;
   } catch (err) {
@@ -223,7 +228,114 @@ function setTab(name) {
     api.browser('setBounds', { visible: false }).catch(() => {});
   }
   if (name === 'requests') refreshRequests();
+  if (name === 'routing') renderRouting();
   if (name === 'history') loadRuns();
+}
+
+function renderRouting() {
+  routingList.textContent = '';
+  if (!routingRules.length) {
+    const empty = document.createElement('p');
+    empty.className = 'muted';
+    empty.textContent = '暂无路由规则';
+    routingList.append(empty);
+    return;
+  }
+  for (const rule of routingRules) {
+    const row = document.createElement('div');
+    row.className = 'rule-row';
+    row.dataset.id = rule.id;
+
+    const enabled = document.createElement('input');
+    enabled.type = 'checkbox';
+    enabled.dataset.field = 'enabled';
+    enabled.checked = rule.enabled !== false;
+
+    const host = document.createElement('input');
+    host.type = 'text';
+    host.dataset.field = 'host';
+    host.placeholder = 'api.example.com（空=任意）';
+    host.value = rule.match?.host ?? '';
+
+    const prefix = document.createElement('input');
+    prefix.type = 'text';
+    prefix.dataset.field = 'prefix';
+    prefix.placeholder = '/api/order';
+    prefix.value = rule.match?.prefix ?? '/';
+
+    const kind = document.createElement('select');
+    kind.dataset.field = 'kind';
+    for (const [value, label] of [['local', '本地'], ['sit', 'SIT']]) {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = label;
+      kind.append(option);
+    }
+    kind.value = rule.target?.kind ?? 'local';
+
+    const baseUrl = document.createElement('input');
+    baseUrl.type = 'text';
+    baseUrl.dataset.field = 'baseUrl';
+    baseUrl.placeholder = 'http://localhost:8080';
+    baseUrl.value = rule.target?.baseUrl ?? '';
+
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'remove';
+    remove.textContent = '×';
+    remove.title = '删除规则';
+    remove.addEventListener('click', () => {
+      routingRules = routingRules.filter((item) => item.id !== rule.id);
+      renderRouting();
+    });
+
+    row.append(enabled, host, prefix, kind, baseUrl, remove);
+    routingList.append(row);
+  }
+}
+
+function collectRules() {
+  return [...routingList.querySelectorAll('.rule-row')].map((row) => ({
+    id: row.dataset.id,
+    enabled: row.querySelector('[data-field=enabled]').checked,
+    match: {
+      host: row.querySelector('[data-field=host]').value.trim(),
+      prefix: row.querySelector('[data-field=prefix]').value.trim(),
+    },
+    target: {
+      kind: row.querySelector('[data-field=kind]').value,
+      baseUrl: row.querySelector('[data-field=baseUrl]').value.trim(),
+    },
+  }));
+}
+
+function addRule() {
+  routingRules.push({
+    id: `rule-${Date.now()}`,
+    enabled: true,
+    match: { host: '', prefix: '/api' },
+    target: {
+      kind: 'local',
+      baseUrl: (configCache?.workspace?.backendUrl ?? 'http://localhost:8080').replace('127.0.0.1', 'localhost'),
+    },
+  });
+  renderRouting();
+}
+
+async function saveRouting() {
+  routingRules = collectRules();
+  routingMessage.textContent = '保存中…';
+  routingMessage.className = 'message';
+  try {
+    const saved = await api.saveConfig({ routing: { rules: routingRules } });
+    routingRules = saved.routing?.rules ?? routingRules;
+    renderRouting();
+    routingMessage.textContent = '路由已保存';
+    routingMessage.className = 'message ok';
+  } catch (err) {
+    routingMessage.textContent = `保存失败：${err.message}`;
+    routingMessage.className = 'message error';
+  }
 }
 
 async function openBrowser(url) {
@@ -268,6 +380,8 @@ $('clear-requests').addEventListener('click', async () => {
 });
 $('only-errors').addEventListener('change', renderRequests);
 $('refresh-runs').addEventListener('click', loadRuns);
+$('add-rule').addEventListener('click', addRule);
+$('save-routing').addEventListener('click', saveRouting);
 for (const tab of document.querySelectorAll('.tab')) {
   tab.addEventListener('click', () => setTab(tab.dataset.tab));
 }
@@ -281,6 +395,9 @@ api.onCapture((event) => {
     renderRequests();
   } else if (event.type === 'navigation') {
     browserUrlInput.value = event.url;
+  } else if (event.type === 'routing') {
+    routingMessage.textContent = `改道：${event.method} ${event.url} → ${event.target ?? 'OPTIONS（仅补 CORS）'}`;
+    routingMessage.className = 'message ok';
   } else if (event.type === 'error') {
     setStatus(event.message, 'error');
   }

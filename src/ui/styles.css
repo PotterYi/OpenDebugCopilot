@@ -160,3 +160,26 @@ button:hover { filter: brightness(1.08); }
   font-family: Consolas, "Courier New", monospace;
   font-size: 12px;
 }
+
+.routing-list { margin: 8px 0; }
+.rule-row {
+  display: grid;
+  grid-template-columns: 26px 1.1fr 1fr 100px 1.6fr 32px;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.rule-row input[type="text"], .rule-row select {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 6px 8px;
+  font: inherit;
+  width: 100%;
+}
+.rule-row .remove {
+  padding: 4px 6px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+}

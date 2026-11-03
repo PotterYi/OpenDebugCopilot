@@ -45,6 +45,7 @@
       <div class="tabbar">
         <button type="button" class="tab active" data-tab="browser">浏览器</button>
         <button type="button" class="tab" data-tab="requests">请求</button>
+        <button type="button" class="tab" data-tab="routing">路由</button>
         <button type="button" class="tab" data-tab="history">历史</button>
         <span class="flex"></span>
         <input id="browser-url" class="url-input" placeholder="http://localhost:5173" />
@@ -65,6 +66,16 @@
         </div>
         <ul id="requests" class="request-list"></ul>
         <pre id="request-detail" class="detail">选择一条请求查看详情</pre>
+      </div>
+
+      <div id="tab-routing" class="tab-pane">
+        <div class="toolbar">
+          <button id="add-rule" type="button" class="secondary">添加规则</button>
+          <button id="save-routing" type="button">保存路由</button>
+          <span id="routing-message" class="message"></span>
+        </div>
+        <div id="routing-list" class="routing-list"></div>
+        <p class="muted">按 host + URL 前缀匹配；local 改道到本地，sit 改道到测试环境。OPTIONS 预检不重定向，只补 CORS 头。</p>
       </div>
 
       <div id="tab-history" class="tab-pane">

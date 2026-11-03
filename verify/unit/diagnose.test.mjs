@@ -81,6 +81,7 @@ test('runs the full diagnosis loop with mock agent', async (t) => {
     assert.equal(result.marker.injected, true);
     assert.equal(result.marker.targets.body, true);
     assert.equal(result.logs.markerMatched, true);
+    assert.equal(result.logs.correlation.strategy, 'marker');
     assert.ok(result.logs.count >= 1);
     assert.match(result.agent.conclusion, /ERROR/);
     assert.equal(result.gates.ok, true, JSON.stringify(result.gates.checks));

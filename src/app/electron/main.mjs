@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { createService } from '../service.mjs';
 import { startServer } from '../server.mjs';
 import { BrowserHost } from './browser-host.mjs';
+import { Router } from './routing.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '../../..');
@@ -22,15 +23,20 @@ function argValue(flag) {
 
 const smoke = process.argv.includes('--smoke');
 const smokeUrl = argValue('--smoke-url');
-const port = Number(argValue('--port') ?? 0);
+const port = Number(argValue('--port') ?? 7080);
 const runsDir = argValue('--runs-dir');
 const configDir = argValue('--config-dir');
 
-function registerIpc(service, getHost) {
+function registerIpc(service, getHost, getRouter, setRules) {
   ipcMain.handle('dc:config', async (_event, payload = {}) => {
     if (payload.action === 'get') return service.getConfig();
     if (payload.action === 'save') {
-      return service.saveConfig({ workspace: payload.workspace, routing: payload.routing });
+      const saved = await service.saveConfig({ workspace: payload.workspace, routing: payload.routing });
+      if (payload.routing !== undefined) {
+        setRules(saved.routing.rules);
+        getRouter()?.apply();
+      }
+      return saved;
     }
     throw new Error(`dc:config: unknown action ${payload.action}`);
   });
@@ -159,7 +165,13 @@ async function runSmoke(window, host) {
     }
 
     clearTimeout(timeout);
-    const result = { ...ui, captured, captureOk };
+    const sample = host.list({ limit: 1 })[0] ?? null;
+    const result = {
+      ...ui,
+      captured,
+      captureOk,
+      captureSample: sample ? { url: sample.url, status: sample.status } : null,
+    };
     console.log(`SMOKE_RESULT ${JSON.stringify(result)}`);
     const ok = Boolean(result.hasDc && result.hasWorkspace && captureOk);
     console.log(ok ? 'SMOKE_OK' : 'SMOKE_FAILED');
@@ -174,8 +186,17 @@ async function runSmoke(window, host) {
 async function bootstrap() {
   app.setName('DebugCopilot');
   const service = createService({ root: ROOT, runsDir, configDir });
+  const initial = await service.getConfig();
   let host = null;
-  registerIpc(service, () => host);
+  let router = null;
+  let currentRules = initial.routing.rules;
+  let pageOrigin = null;
+  registerIpc(
+    service,
+    () => host,
+    () => router,
+    (rules) => { currentRules = rules; },
+  );
 
   const server = await startServer({
     service,
@@ -189,16 +210,35 @@ async function bootstrap() {
   host = new BrowserHost({
     window,
     onEvent: (event) => {
+      if (event.type === 'navigation') {
+        try {
+          pageOrigin = new URL(event.url).origin;
+        } catch {
+          // ignore invalid navigation URLs
+        }
+      }
       if (!window.isDestroyed()) window.webContents.send('dc:capture:event', event);
     },
   });
-  window.on('closed', () => host?.destroy());
+  router = new Router({
+    session: host.session,
+    getRules: () => currentRules,
+    getPageOrigin: () => pageOrigin,
+    onHit: (event) => {
+      if (!window.isDestroyed()) window.webContents.send('dc:capture:event', event);
+    },
+  });
+  window.on('closed', () => {
+    router?.dispose();
+    host?.destroy();
+  });
 
-  try {
-    const config = await service.getConfig();
-    if (!smoke && config.workspace.frontendUrl) host.open(config.workspace.frontendUrl);
-  } catch {
-    // auto-open is best-effort
+  if (!smoke && initial.workspace.frontendUrl) {
+    try {
+      host.open(initial.workspace.frontendUrl);
+    } catch {
+      // auto-open is best-effort
+    }
   }
 
   if (smoke) {
@@ -215,6 +255,10 @@ async function bootstrap() {
 }
 
 app.whenReady().then(bootstrap).catch((error) => {
-  console.error('FATAL', error);
+  if (error?.code === 'EADDRINUSE') {
+    console.error(`FATAL UI port ${port} is already in use; free it or pass --port`);
+  } else {
+    console.error('FATAL', error);
+  }
   app.exit(1);
 });

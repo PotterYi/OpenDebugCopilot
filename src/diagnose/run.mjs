@@ -5,6 +5,7 @@ import { newRunId } from '../core/ids.mjs';
 import { resolveScenarioPaths } from '../core/scenario.mjs';
 import { fireScenario } from '../driver/index.mjs';
 import { readLogs, listThreads } from '../evidence/logs.mjs';
+import { correlateLogs, extractBusinessIds, extractTraceId } from '../evidence/correlate.mjs';
 import { readSource } from '../evidence/source.mjs';
 import { createTools } from '../tools/index.mjs';
 import { runPreflight } from '../doctor/preflight.mjs';
@@ -201,17 +202,22 @@ export async function runDiagnosis(scenario, options = {}) {
     intervalMs: pollIntervalMs,
   });
 
-  let logsResult = wait.result;
-  if (!logsResult || (!wait.matched && logsResult.records.length === 0)) {
-    logsResult = await readLogs({
-      logfiles: paths.logfiles,
-      parser: scenario.parser,
-      encoding: scenario.logEncoding,
-      anchor: fired.firedAt,
-      window: timeWindow,
-      limit: 200,
-    });
-  }
+  const businessIds = extractBusinessIds({ request: fired.request, response: fired.response });
+  const traceId = extractTraceId(fired.request?.headers, fired.response?.headers);
+  const correlation = wait.matched
+    ? { strategy: 'marker', matchedId: marker, result: wait.result }
+    : await correlateLogs({
+        logfiles: paths.logfiles,
+        parser: scenario.parser,
+        encoding: scenario.logEncoding,
+        anchor: fired.firedAt,
+        window: timeWindow,
+        thread: null,
+        businessIds,
+        traceId,
+        limit: 200,
+      });
+  const logsResult = correlation.result;
 
   const threads = await listThreads({
     logfiles: paths.logfiles,
@@ -261,6 +267,12 @@ export async function runDiagnosis(scenario, options = {}) {
       count: logsResult.records.length,
       markerMatched: wait.matched,
       waitedMs: wait.waitedMs,
+      correlation: {
+        strategy: correlation.strategy,
+        matchedId: correlation.matchedId ?? null,
+        businessIds,
+        traceId,
+      },
       stats: logsResult.stats,
       parser: logsResult.parser,
       records: logsResult.records.slice(0, 50).map(compactRecord),

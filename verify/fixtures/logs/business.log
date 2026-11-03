@@ -1,0 +1,2 @@
+2026-11-02 19:30:00.000  INFO 1 --- [thread-a] c.e.demo.OrderService : created orderId=ORD123456 traceId=trace-abc-123
+2026-11-02 19:30:02.000  INFO 1 --- [thread-b] c.e.demo.AsyncWorker : processing orderId=ORD123456
