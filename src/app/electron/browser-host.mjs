@@ -4,7 +4,8 @@ import { log } from '../../core/logger.mjs';
 
 const MAX_RECORDS = 500;
 const MAX_BODY_BYTES = 1024 * 1024;
-const BODY_TYPES = new Set(['XHR', 'Fetch']);
+const BODY_TYPES = new Set(['XHR', 'Fetch', 'Document']);
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function decodeBody(payload) {
   if (!payload) return null;
@@ -31,6 +32,7 @@ export class BrowserHost {
     this.window = window;
     this.onEvent = onEvent;
     this.records = new Map();
+    this.byRequestId = new Map();
     this.order = [];
     this.seq = 0;
     this.attached = false;
@@ -134,6 +136,8 @@ export class BrowserHost {
   trim() {
     while (this.order.length > MAX_RECORDS) {
       const id = this.order.shift();
+      const record = this.records.get(id);
+      if (record) this.byRequestId.delete(record.requestId);
       this.records.delete(id);
     }
   }
@@ -142,7 +146,7 @@ export class BrowserHost {
     if (method === 'Network.requestWillBeSent') {
       const request = params.request ?? {};
       const startedAt = params.wallTime ? Math.round(params.wallTime * 1000) : Date.now();
-      const existing = this.records.get(params.requestId);
+      const existing = this.byRequestId.get(params.requestId);
       if (existing) {
         existing.url = request.url ?? existing.url;
         existing.method = request.method ?? existing.method;
@@ -167,15 +171,17 @@ export class BrowserHost {
         error: null,
         finished: false,
         body: null,
+        bodyError: null,
       };
       this.records.set(record.id, record);
+      this.byRequestId.set(params.requestId, record);
       this.order.push(record.id);
       this.trim();
       this.emit({ type: 'request', record: this.summary(record) });
       return;
     }
 
-    const record = this.records.get(params.requestId);
+    const record = this.byRequestId.get(params.requestId);
     if (!record) return;
 
     if (method === 'Network.responseReceived') {
@@ -213,15 +219,34 @@ export class BrowserHost {
   }
 
   async fetchBody(record) {
-    try {
-      const payload = await this.view.webContents.debugger.sendCommand('Network.getResponseBody', {
-        requestId: record.requestId,
-      });
-      record.body = decodeBody(payload);
-      this.emit({ type: 'update', record: this.summary(record) });
-    } catch {
-      // body is unavailable for redirects / evicted requests
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        const payload = await this.view.webContents.debugger.sendCommand('Network.getResponseBody', {
+          requestId: record.requestId,
+        });
+        record.body = decodeBody(payload);
+        record.bodyError = null;
+        this.emit({ type: 'update', record: this.summary(record) });
+        return;
+      } catch (error) {
+        if (attempt < 2) {
+          await sleep(100);
+          continue;
+        }
+        record.bodyError = error?.message ?? String(error);
+        this.emit({ type: 'update', record: this.summary(record) });
+      }
     }
+  }
+
+  async loadBody(id) {
+    const record = this.records.get(String(id));
+    if (!record) return null;
+    if (!record.body) {
+      record.bodyError = null;
+      await this.fetchBody(record);
+    }
+    return { ...record };
   }
 
   get session() {
@@ -295,6 +320,7 @@ export class BrowserHost {
 
   clear() {
     this.records.clear();
+    this.byRequestId.clear();
     this.order = [];
     this.emit({ type: 'clear' });
   }

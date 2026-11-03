@@ -1,4 +1,5 @@
 import { api } from './api.js';
+import { deriveCandidateRules } from './routing-assist.mjs';
 
 const $ = (id) => document.getElementById(id);
 const statusEl = $('status');
@@ -17,6 +18,7 @@ const configPath = $('config-path');
 const splitter = $('splitter');
 const routingWarning = $('routing-warning');
 const routingStatus = $('routing-status');
+const makeRuleButton = $('make-rule');
 const routingList = $('routing-list');
 const routingMessage = $('routing-message');
 const diagnoseQuestion = $('diagnose-question');
@@ -27,6 +29,7 @@ let currentTab = 'browser';
 let configCache = null;
 let routingRules = [];
 let routingHits = 0;
+let currentRequest = null;
 let currentRequestId = null;
 const captureState = new Map();
 let renderQueued = false;
@@ -43,22 +46,23 @@ function setMessage(text, kind = '') {
 
 function fillForm(config) {
   const workspace = config.workspace ?? {};
-  form.elements.frontendUrl.value = workspace.frontendUrl ?? '';
   form.elements.backendUrl.value = workspace.backendUrl ?? '';
   form.elements.logfiles.value = (workspace.logfiles ?? []).join('\n');
   form.elements.sourceRoot.value = workspace.sourceRoot ?? '';
+  form.elements.frontendSourceRoot.value = workspace.frontendSourceRoot ?? '';
   form.elements.beforeMs.value = workspace.window?.beforeMs ?? 3000;
   form.elements.afterMs.value = workspace.window?.afterMs ?? 2000;
-  if (!browserUrlInput.value) browserUrlInput.value = workspace.frontendUrl ?? '';
+  if (!browserUrlInput.value && workspace.frontendUrl) browserUrlInput.value = workspace.frontendUrl;
 }
 
 function readForm() {
   return {
     workspace: {
-      frontendUrl: form.elements.frontendUrl.value.trim(),
+      frontendUrl: configCache?.workspace?.frontendUrl ?? browserUrlInput.value.trim(),
       backendUrl: form.elements.backendUrl.value.trim(),
       logfiles: form.elements.logfiles.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean),
       sourceRoot: form.elements.sourceRoot.value.trim(),
+      frontendSourceRoot: form.elements.frontendSourceRoot.value.trim(),
       window: {
         beforeMs: Number(form.elements.beforeMs.value) || 0,
         afterMs: Number(form.elements.afterMs.value) || 0,
@@ -215,6 +219,38 @@ function preBlock(text) {
   return el('pre', 'code-block', String(text ?? ''));
 }
 
+function buildBodySection(request) {
+  const block = section('响应体');
+  if (request.body && typeof request.body.text === 'string') {
+    block.append(
+      el('div', 'muted small', `${request.body.bytes ?? request.body.text.length} bytes${request.body.truncated ? '，已截断' : ''}`),
+      preBlock(request.body.text),
+    );
+    return block;
+  }
+  const reason = request.bodyError
+    ? `获取失败：${request.bodyError}`
+    : request.error
+      ? `请求失败：${request.error}`
+      : `无响应体${request.mimeType ? `（${request.mimeType}）` : ''}`;
+  const row = el('div', 'toolbar');
+  row.append(el('span', 'muted', reason));
+  const retry = el('button', 'secondary', '重新获取');
+  retry.type = 'button';
+  retry.addEventListener('click', async () => {
+    retry.disabled = true;
+    try {
+      await api.capture('body', { id: request.id });
+      await showRequest(request.id);
+    } catch {
+      retry.disabled = false;
+    }
+  });
+  row.append(retry);
+  block.append(row);
+  return block;
+}
+
 function renderDiagnosis(response) {
   const result = response.result ?? {};
   const correlation = result.logs?.correlation;
@@ -277,6 +313,7 @@ async function showRequest(id) {
       detailEl.textContent = '请求已被清空或不存在';
       return;
     }
+    currentRequest = request;
     requestTitle.textContent = `${request.method} ${requestPath(request.url)}`;
     requestMeta.textContent = [request.resourceType, request.status ?? '…', request.durationMs != null ? `${request.durationMs}ms` : null]
       .filter(Boolean)
@@ -294,9 +331,7 @@ async function showRequest(id) {
       section('请求头', preBlock(JSON.stringify(request.requestHeaders ?? {}, null, 2))),
       ...(request.postData ? [section('请求体', preBlock(request.postData))] : []),
       section('响应头', preBlock(JSON.stringify(request.responseHeaders ?? {}, null, 2))),
-      ...(request.body?.text
-        ? [section(`响应体${request.body.truncated ? '（已截断）' : ''}`, preBlock(request.body.text))]
-        : []),
+      buildBodySection(request),
     );
   } catch (err) {
     detailEl.textContent = `加载失败：${err.message}`;
@@ -382,6 +417,21 @@ function renderRouting() {
     baseUrl.placeholder = 'http://localhost:8080';
     baseUrl.value = rule.target?.baseUrl ?? '';
 
+    const probe = document.createElement('button');
+    probe.type = 'button';
+    probe.className = 'secondary';
+    probe.textContent = '探测';
+    const probeStatus = document.createElement('span');
+    probeStatus.className = 'probe-status';
+    probeStatus.textContent = '未探测';
+    probe.addEventListener('click', async () => {
+      probeStatus.textContent = '探测中…';
+      probeStatus.className = 'probe-status';
+      const ok = await probeTarget(baseUrl.value.trim());
+      probeStatus.textContent = ok ? '可达' : '不可达';
+      probeStatus.className = `probe-status ${ok ? 'ok' : 'error'}`;
+    });
+
     const remove = document.createElement('button');
     remove.type = 'button';
     remove.className = 'remove';
@@ -392,7 +442,7 @@ function renderRouting() {
       renderRouting();
     });
 
-    row.append(enabled, host, prefix, kind, baseUrl, remove);
+    row.append(enabled, host, prefix, kind, baseUrl, probe, probeStatus, remove);
     routingList.append(row);
   }
 }
@@ -471,6 +521,52 @@ async function runDiagnose(mock) {
   }
 }
 
+function backendDefault() {
+  return (configCache?.workspace?.backendUrl || 'http://localhost:8080').replace('127.0.0.1', 'localhost');
+}
+
+async function probeTarget(url) {
+  if (!url) return false;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 1500);
+  try {
+    await fetch(url, { mode: 'no-cors', cache: 'no-store', signal: controller.signal });
+    return true;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function addCandidateRules(requests) {
+  const candidates = deriveCandidateRules(requests, {
+    existingRules: routingRules,
+    defaultBaseUrl: backendDefault(),
+  });
+  if (!candidates.length) {
+    routingMessage.textContent = '没有可推导的 XHR/Fetch 请求（或前缀已被现有规则覆盖）';
+    routingMessage.className = 'message error';
+    return;
+  }
+  routingRules.push(...candidates);
+  renderRouting();
+  routingMessage.textContent = `已从捕获请求生成 ${candidates.length} 条规则，请确认本地/SIT 后保存`;
+  routingMessage.className = 'message ok';
+}
+
+async function scanLocalPorts() {
+  const ports = [8080, 8081, 8082, 9090, 8000, 3000, 5000];
+  routingStatus.textContent = '扫描中…';
+  const results = await Promise.all(
+    ports.map(async (port) => ({ port, ok: await probeTarget(`http://localhost:${port}/`) })),
+  );
+  const reachable = results.filter((item) => item.ok).map((item) => item.port);
+  routingStatus.textContent = reachable.length
+    ? `本机可达端口：${reachable.join(', ')}`
+    : '未探测到常见本机端口';
+}
+
 async function waitForBrowserIdle(timeoutMs = 15_000) {
   if (!api.isDesktop) return;
   const started = Date.now();
@@ -498,6 +594,10 @@ async function openBrowser(url) {
   }
   const target = (url ?? browserUrlInput.value ?? '').trim();
   try {
+    if (target && configCache?.workspace) {
+      configCache.workspace = { ...configCache.workspace, frontendUrl: target };
+      api.saveConfig({ workspace: configCache.workspace }).catch(() => {});
+    }
     setStatus('正在导航…', '');
     await api.browser('open', { url: target || undefined });
     // loadURL() resolving means navigation started; wait for isLoading() to become false.
@@ -565,6 +665,16 @@ $('clear-requests').addEventListener('click', async () => {
 $('only-errors').addEventListener('change', renderRequests);
 $('refresh-runs').addEventListener('click', loadRuns);
 $('add-rule').addEventListener('click', addRule);
+$('derive-rules').addEventListener('click', () => addCandidateRules([...captureState.values()]));
+$('scan-ports').addEventListener('click', scanLocalPorts);
+makeRuleButton.addEventListener('click', () => {
+  if (!currentRequest) {
+    diagnoseMessage.textContent = '请先选择一条请求';
+    return;
+  }
+  addCandidateRules([currentRequest]);
+  setTab('routing');
+});
 $('diagnose-mock').addEventListener('click', () => runDiagnose(true));
 $('diagnose-live').addEventListener('click', () => runDiagnose(false));
 $('save-routing').addEventListener('click', saveRouting);

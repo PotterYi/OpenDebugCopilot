@@ -172,7 +172,7 @@ button:hover { filter: brightness(1.08); }
 .routing-list { margin: 8px 0; }
 .rule-row {
   display: grid;
-  grid-template-columns: 26px 1.1fr 1fr 100px 1.6fr 32px;
+  grid-template-columns: 26px 1.1fr 1fr 90px 1.5fr 56px 74px 28px;
   gap: 6px;
   align-items: center;
   margin-bottom: 6px;
@@ -253,3 +253,7 @@ button:hover { filter: brightness(1.08); }
 /* Author styles with any display rule beat the UA [hidden] rule.
    Keep the hidden attribute authoritative for the zero-framework UI. */
 [hidden] { display: none !important; }
+
+.probe-status { font-size: 11px; color: var(--muted); }
+.probe-status.ok { color: #5bd693; }
+.probe-status.error { color: var(--danger); }

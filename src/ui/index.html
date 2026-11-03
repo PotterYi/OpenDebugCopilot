@@ -20,17 +20,17 @@
     <section class="panel">
       <h2>工作区</h2>
       <form id="config-form" class="form">
-        <label>前端地址
-          <input name="frontendUrl" placeholder="http://localhost:5173" />
-        </label>
         <label>后端地址
           <input name="backendUrl" placeholder="http://127.0.0.1:8080" />
         </label>
         <label>日志文件（每行一个）
           <textarea name="logfiles" rows="4" placeholder="logs/app.log"></textarea>
         </label>
-        <label>源码根目录
-          <input name="sourceRoot" placeholder="../my-project" />
+        <label>后端源码目录
+          <input name="sourceRoot" placeholder="../backend-project" />
+        </label>
+        <label>前端源码目录
+          <input name="frontendSourceRoot" placeholder="../frontend-project" />
         </label>
         <div class="row">
           <label>时间窗前 (ms)
@@ -84,6 +84,7 @@
               <input id="diagnose-question" class="url-input" placeholder="描述现象（可选，如：下单报错）" />
               <button id="diagnose-mock" type="button">诊断（Mock）</button>
               <button id="diagnose-live" type="button" class="secondary">真实诊断</button>
+              <button id="make-rule" type="button" class="secondary">生成路由规则</button>
               <span id="diagnose-message" class="muted"></span>
             </div>
             <div id="request-detail" class="detail">选择一条请求查看详情</div>
@@ -96,6 +97,8 @@
         <p id="routing-warning" class="message error" hidden>当前是 WebUI：路由与内嵌浏览器只在桌面版生效。</p>
         <div class="toolbar">
           <button id="add-rule" type="button" class="secondary">添加规则</button>
+          <button id="derive-rules" type="button" class="secondary">从捕获请求生成</button>
+          <button id="scan-ports" type="button" class="secondary">扫描本机端口</button>
           <button id="save-routing" type="button">保存路由</button>
           <span id="routing-message" class="message"></span>
           <span id="routing-status" class="muted small"></span>

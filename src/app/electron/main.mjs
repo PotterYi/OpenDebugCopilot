@@ -93,6 +93,8 @@ function registerIpc(service, getHost, getRouter, setRules) {
         return { requests: host.list(payload) };
       case 'detail':
         return { request: host.detail(payload.id) };
+      case 'body':
+        return { request: await host.loadBody(payload.id) };
       case 'clear':
         host.clear();
         return { ok: true };
@@ -281,13 +283,17 @@ async function runSmoke(window, host) {
       pageTitle = await host.view.webContents.executeJavaScript('document.title').catch(() => null);
     }
 
+    await new Promise((resolve) => setTimeout(resolve, 300));
     clearTimeout(timeout);
     const sample = host.list({ limit: 1 })[0] ?? null;
+    const details = host.list({ limit: 50 }).map((item) => host.detail(item.id)).filter(Boolean);
+    const sampleBody = details.find((item) => item.body?.text) ?? null;
     const result = {
       ...ui,
       captured,
       captureOk,
       captureSample: sample ? { url: sample.url, status: sample.status } : null,
+      captureBody: Boolean(sampleBody),
       diagnose,
       pageTitle,
       isLoading: host.status().isLoading,
