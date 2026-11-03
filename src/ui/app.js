@@ -96,6 +96,7 @@ async function loadConfig() {
     routingRules = config.routing?.rules ?? [];
     fillForm(config);
     renderRouting();
+    refreshTargetCandidates().catch(() => {});
     logFiles.value = (config.workspace?.logfiles ?? []).join(String.fromCharCode(10));
     if (config.meta?.logFile) logPath.textContent = `日志文件：${config.meta.logFile}`;
     if (config.meta?.configDir) {
@@ -410,22 +411,45 @@ function setTab(name) {
   if (name === 'history') loadRuns();
 }
 
-function observedOrigins() {
-  const frontendOrigin = (() => {
-    try {
-      return new URL(configCache?.workspace?.frontendUrl ?? '').origin;
-    } catch {
-      return null;
+function normalizeOrigin(value) {
+  try {
+    const parsed = new URL(value);
+    if (['127.0.0.1', '::1', '[::1]'].includes(parsed.hostname.toLowerCase())) {
+      parsed.hostname = 'localhost';
     }
-  })();
+    return parsed.origin;
+  } catch {
+    return null;
+  }
+}
+
+function isLoopbackOrigin(value) {
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    return host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]';
+  } catch {
+    return true;
+  }
+}
+
+function observedOrigins() {
+  const frontendOrigin = normalizeOrigin(configCache?.workspace?.frontendUrl ?? '');
   const origins = new Set();
   for (const item of captureState.values()) {
+    let parsed;
     try {
-      const origin = new URL(item.url).origin;
-      if (origin !== frontendOrigin) origins.add(origin);
+      parsed = new URL(item.url);
     } catch {
-      // ignore invalid URLs
+      continue;
     }
+    // Ignore proxy URLs left over from proxy mode.
+    if (parsed.pathname === '/__dcproxy') continue;
+    const origin = normalizeOrigin(parsed.origin);
+    if (!origin || origin === frontendOrigin) continue;
+    // Loopback addresses are local services; they must be declared (backendUrl / scan),
+    // not inferred from captures. This keeps 127.0.0.1:8080 out of SIT candidates.
+    if (isLoopbackOrigin(origin)) continue;
+    origins.add(origin);
   }
   return [...origins];
 }
@@ -434,12 +458,16 @@ function candidateSets() {
   const local = new Set();
   const sit = new Set();
   const workspace = configCache?.workspace ?? {};
-  const normalize = (url) => String(url ?? '').replace('127.0.0.1', 'localhost').replace(/\/+$/, '');
+  const normalize = (url) => {
+    const origin = normalizeOrigin(String(url ?? ''));
+    return origin ? origin.replace(/\/+$/, '') : '';
+  };
   if (workspace.backendUrl) local.add(normalize(workspace.backendUrl));
   if (workspace.sitUrl) sit.add(normalize(workspace.sitUrl));
   for (const rule of routingRules) {
     if (!rule.target?.baseUrl) continue;
     const url = normalize(rule.target.baseUrl);
+    if (!url) continue;
     if (rule.target.kind === 'sit') sit.add(url);
     else local.add(url);
   }

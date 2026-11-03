@@ -1,6 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 import path from 'node:path';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { access, mkdir, writeFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createService } from '../service.mjs';
 import { startServer } from '../server.mjs';
@@ -455,7 +456,19 @@ async function runSmoke(window, host) {
 
 async function bootstrap() {
   try {
-    setLogFile(path.join(app.getPath('userData'), 'debugcopilot.log'));
+    let logFile = process.env.DC_LOG_FILE || path.join(ROOT, 'logs', 'debugcopilot.log');
+    if (app.isPackaged && !process.env.DC_LOG_FILE) {
+      const besideExe = path.join(path.dirname(app.getPath('exe')), 'logs', 'debugcopilot.log');
+      try {
+        await mkdir(path.dirname(besideExe), { recursive: true });
+        await access(path.dirname(besideExe), constants.W_OK);
+        logFile = besideExe;
+      } catch {
+        logFile = path.join(app.getPath('userData'), 'logs', 'debugcopilot.log');
+      }
+    }
+    setLogFile(logFile);
+    log.info('[config] log file:', logFile);
   } catch {
     // file logging is optional
   }
