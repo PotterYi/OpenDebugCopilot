@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DebugCopilot</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">DebugCopilot</div>
+    <div id="status" class="status">连接中…</div>
+  </header>
+
+  <main class="layout">
+    <section class="panel">
+      <h2>工作区</h2>
+      <form id="config-form" class="form">
+        <label>前端地址
+          <input name="frontendUrl" placeholder="http://localhost:5173" />
+        </label>
+        <label>后端地址
+          <input name="backendUrl" placeholder="http://127.0.0.1:8080" />
+        </label>
+        <label>日志文件（每行一个）
+          <textarea name="logfiles" rows="4" placeholder="logs/app.log"></textarea>
+        </label>
+        <label>源码根目录
+          <input name="sourceRoot" placeholder="../my-project" />
+        </label>
+        <div class="row">
+          <label>时间窗前 (ms)
+            <input name="beforeMs" type="number" min="0" step="500" />
+          </label>
+          <label>时间窗后 (ms)
+            <input name="afterMs" type="number" min="0" step="500" />
+          </label>
+        </div>
+        <button type="submit">保存配置</button>
+        <p id="config-message" class="message"></p>
+      </form>
+    </section>
+
+    <section class="panel grow">
+      <div class="panel-head">
+        <h2>诊断历史</h2>
+        <button id="refresh-runs" type="button" class="secondary">刷新</button>
+      </div>
+      <ul id="runs" class="run-list"></ul>
+      <article id="report" class="report">
+        <p class="muted">选择一条历史查看报告</p>
+      </article>
+    </section>
+  </main>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

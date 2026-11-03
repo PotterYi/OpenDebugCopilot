@@ -1,0 +1,13 @@
+{
+  "name": "fixture-demo",
+  "baseUrl": "http://127.0.0.1:8080",
+  "method": "POST",
+  "path": "/api/order",
+  "body": { "qty": 2 },
+  "logfiles": ["../verify/fixtures/logs/logback.log"],
+  "logEncoding": "auto",
+  "parser": { "preset": "logback" },
+  "source": { "root": "../verify/fixtures/source" },
+  "marker": { "mode": "none" },
+  "window": { "beforeMs": 3000, "afterMs": 2000 }
+}

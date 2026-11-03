@@ -76,3 +76,22 @@ test('scrubs absolute paths and tokens from conclusion text', () => {
   assert.match(markdown, /<path>/);
   assert.match(markdown, /\/api\/order/);
 });
+
+test('renders fixes and needsMoreInfo with scrubbing', () => {
+  const bs = String.fromCharCode(92);
+  const winPath = `G:${bs}tmp${bs}file.java`;
+  const withAdvice = {
+    ...result,
+    agent: {
+      ...result.agent,
+      fixes: [`修复 ${winPath}`, '增加库存校验'],
+      needsMoreInfo: [`补充 ${winPath} 的版本`, '确认库存数据'],
+    },
+  };
+  const markdown = renderMarkdown(buildReport(withAdvice));
+  assert.match(markdown, /## 修复建议/);
+  assert.match(markdown, /增加库存校验/);
+  assert.match(markdown, /## 待补充信息/);
+  assert.match(markdown, /确认库存数据/);
+  assert.equal(markdown.includes(winPath), false);
+});

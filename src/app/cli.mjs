@@ -9,6 +9,7 @@ import { UsageError, toErrorPayload } from '../core/errors.mjs';
 import { runDiagnosis } from '../diagnose/run.mjs';
 import { createMockAgent } from '../agent/mock.mjs';
 import { createClaudeAgent } from '../agent/claude.mjs';
+import { startWeb } from './web.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '../..');
@@ -18,6 +19,13 @@ const HELP = `DebugCopilot CLI
 
 Usage:
   node src/app/cli.mjs run <scenario.json> [options]
+  node src/app/cli.mjs serve [options]
+
+Serve options:
+  --port <n>        WebUI port (default: 7080; 0 = random)
+  --host <addr>     Bind address (default: 127.0.0.1)
+  --runs-dir <dir>  Run history directory (default: runs)
+  --config-dir <dir> Config directory (default: configs)
 
 Options:
   --check           Validate the scenario and stop (no request is fired)
@@ -50,6 +58,37 @@ function parseArgv(argv) {
   }
   if (command === 'version' || command === '--version' || command === '-v') {
     return { command: 'version' };
+  }
+  if (command === 'serve') {
+    const opts = { command: 'serve', port: 7080, host: '127.0.0.1', runsDir: undefined, configDir: undefined };
+    for (let i = 1; i < argv.length; i += 1) {
+      const arg = argv[i];
+      if (arg === '-h' || arg === '--help') return { command: 'help' };
+      const value = argv[i + 1];
+      if (arg === '--port') {
+        if (value === undefined) throw new UsageError('--port requires a value');
+        i += 1;
+        opts.port = Number(value);
+        if (!Number.isInteger(opts.port) || opts.port < 0 || opts.port > 65535) {
+          throw new UsageError('--port must be an integer between 0 and 65535');
+        }
+      } else if (arg === '--host') {
+        if (value === undefined) throw new UsageError('--host requires a value');
+        i += 1;
+        opts.host = value;
+      } else if (arg === '--runs-dir') {
+        if (value === undefined) throw new UsageError('--runs-dir requires a value');
+        i += 1;
+        opts.runsDir = value;
+      } else if (arg === '--config-dir') {
+        if (value === undefined) throw new UsageError('--config-dir requires a value');
+        i += 1;
+        opts.configDir = value;
+      } else {
+        throw new UsageError(`Unknown option for serve: ${arg}`);
+      }
+    }
+    return opts;
   }
   if (command !== 'run') {
     throw new UsageError(`Unknown command: ${command}`);
@@ -144,7 +183,7 @@ function buildSummary(scenario, driver, opts) {
     mode: 'check',
     recheck: opts.recheck,
     status: 'validated',
-    note: 'validated; no request fired',
+    note: 'no request fired (check mode)',
   };
 }
 
@@ -205,6 +244,25 @@ export async function main(argv = process.argv.slice(2), { root = ROOT } = {}) {
     }
     if (parsed.command === 'version') {
       console.log(await readVersion(root));
+      return 0;
+    }
+    if (parsed.command === 'serve') {
+      const handle = await startWeb({
+        root,
+        host: parsed.host,
+        port: parsed.port,
+        runsDir: parsed.runsDir ? path.resolve(parsed.runsDir) : undefined,
+        configDir: parsed.configDir ? path.resolve(parsed.configDir) : undefined,
+      });
+      console.log(`DebugCopilot WebUI: ${handle.url}`);
+      await new Promise((resolve) => {
+        const stop = async () => {
+          await handle.close();
+          resolve();
+        };
+        process.once('SIGINT', stop);
+        process.once('SIGTERM', stop);
+      });
       return 0;
     }
 

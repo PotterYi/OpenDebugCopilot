@@ -10,6 +10,7 @@ import { createTools } from '../tools/index.mjs';
 import { runPreflight } from '../doctor/preflight.mjs';
 import { createMockAgent } from '../agent/mock.mjs';
 import { buildReport, renderMarkdown } from '../report/report.mjs';
+import { evaluateRecheck } from './recheck.mjs';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const DEFAULT_MARKER_TIMEOUT_MS = 2000;
@@ -145,11 +146,6 @@ function evaluateGates(fired, agentResult) {
   return { ok: checks.every((check) => check.ok), checks };
 }
 
-function judgeRecheck(results) {
-  const conclusions = results.map((result) => (result?.conclusion ?? '').trim());
-  if (conclusions.some((text) => !text)) return 'undetermined';
-  return new Set(conclusions).size === 1 ? 'consistent' : 'inconsistent';
-}
 
 /**
  * Run one diagnosis: preflight -> fire -> marker wait -> evidence -> agent -> gates -> persist.
@@ -286,12 +282,17 @@ export async function runDiagnosis(scenario, options = {}) {
 
   const gates = evaluateGates(fired, agentResult);
   const recheckInfo = recheck > 1
-    ? {
-        runs: recheck,
-        verdict: judgeRecheck(agentRuns),
-        conclusions: agentRuns.map((run) => run?.conclusion ?? ''),
-        note: '一致不等于正确',
-      }
+    ? (() => {
+        const evaluation = evaluateRecheck(agentRuns, { responseStatus: fired.response?.status ?? null });
+        return {
+          runs: recheck,
+          verdict: evaluation.verdict,
+          checks: evaluation.checks,
+          detail: evaluation.detail,
+          conclusions: agentRuns.map((run) => run?.conclusion ?? ''),
+          note: '一致不等于正确',
+        };
+      })()
     : null;
 
   const endedAt = Date.now();

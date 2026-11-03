@@ -39,6 +39,8 @@ export function buildReport(result) {
     symptom: scrubText(result.meta?.question?.trim() ? result.meta.question : '(未提供描述)'),
     durationMs: result.meta?.durationMs ?? 0,
     conclusion: scrubText(agent.conclusion ?? ''),
+    fixes: (agent.fixes ?? []).map((fix) => scrubText(fix)),
+    needsMoreInfo: (agent.needsMoreInfo ?? []).map((item) => scrubText(item)),
     request: {
       method: result.request?.method ?? null,
       path: requestPath(result.request?.url),
@@ -55,7 +57,13 @@ export function buildReport(result) {
     },
     selfCheck: (result.gates?.checks ?? []).map((check) => ({ name: check.name, ok: check.ok })),
     recheck: result.recheck
-      ? { verdict: result.recheck.verdict, runs: result.recheck.runs, note: result.recheck.note }
+      ? {
+          verdict: result.recheck.verdict,
+          runs: result.recheck.runs,
+          note: result.recheck.note,
+          checks: result.recheck.checks ?? [],
+          detail: result.recheck.detail ?? '',
+        }
       : null,
     meta: {
       runId: result.meta?.runId ?? null,
@@ -87,6 +95,16 @@ export function renderMarkdown(report) {
     '## 结论',
     '',
     report.conclusion || '(无结论)',
+  ];
+
+  if (report.fixes.length > 0) {
+    lines.push('', '## 修复建议', '', ...report.fixes.map((fix) => `- ${fix}`));
+  }
+  if (report.needsMoreInfo.length > 0) {
+    lines.push('', '## 待补充信息', '', ...report.needsMoreInfo.map((item) => `- ${item}`));
+  }
+
+  lines.push(
     '',
     '## 请求摘要',
     '',
@@ -105,7 +123,7 @@ export function renderMarkdown(report) {
     '## 自检',
     '',
     ...report.selfCheck.map((check) => `- ${check.name}：${yesNo(check.ok)}`),
-  ];
+  );
 
   if (report.recheck) {
     lines.push(
@@ -114,6 +132,9 @@ export function renderMarkdown(report) {
       '',
       `- 运行次数：${report.recheck.runs}`,
       `- 判定：${report.recheck.verdict}`,
+      ...(report.recheck.checks ?? []).map(
+        (check) => `- 检查 ${check.name}：${check.ok ? '通过' : '不一致'}（${check.detail}）`,
+      ),
       `- 说明：${report.recheck.note}`,
     );
   }
