@@ -16,7 +16,7 @@ const requestTitle = $('request-title');
 const requestMeta = $('request-meta');
 const configPath = $('config-path');
 const logPath = $('log-path');
-const logFiles = $('log-files');
+const logSource = $('log-source');
 const logParser = $('log-parser');
 const logRegex = $('log-regex');
 const logAnchor = $('log-anchor');
@@ -97,7 +97,7 @@ async function loadConfig() {
     fillForm(config);
     renderRouting();
     refreshTargetCandidates().catch(() => {});
-    logFiles.value = (config.workspace?.logfiles ?? []).join(String.fromCharCode(10));
+    renderLogSource(config.workspace?.logfiles ?? []);
     if (config.meta?.logFile) logPath.textContent = `日志文件：${config.meta.logFile}`;
     if (config.meta?.configDir) {
       const dir = config.meta.configDir;
@@ -849,13 +849,24 @@ function renderLogResult(result, anchorRequest) {
   }
 }
 
+function renderLogSource(files) {
+  logSource.textContent = files.length > 0
+    ? `日志来源：${files.join('；')}（在左侧工作区修改）`
+    : '日志来源：未配置（请在左侧工作区填写并保存）';
+}
+
 async function queryLogsTab() {
   if (!api.isDesktop) {
     logMessage.textContent = '日志查询仅在桌面版可用';
     logMessage.className = 'message error';
     return;
   }
-  const files = logFiles.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const files = [...(configCache?.workspace?.logfiles ?? [])];
+  if (files.length === 0) {
+    logMessage.textContent = '工作区还没有配置日志文件，请先在左侧填写并保存';
+    logMessage.className = 'message error';
+    return;
+  }
   const anchorValue = logAnchor.value;
   let anchor = Date.now();
   let anchorRequest = null;
@@ -960,6 +971,7 @@ form.addEventListener('submit', async (event) => {
   try {
     const saved = await api.saveConfig(readForm());
     configCache = saved;
+    renderLogSource(saved.workspace?.logfiles ?? []);
     if (saved.meta?.configDir) configPath.textContent = `配置目录：${saved.meta.configDir}`;
     setMessage(saved.meta?.configDir ? `已保存到 ${saved.meta.configDir}` : '已保存', 'ok');
   } catch (err) {
@@ -1003,21 +1015,7 @@ $('open-log').addEventListener('click', async () => {
     setMessage(`打开日志失败：${err.message}`, 'error');
   }
 });
-$('pick-logs').addEventListener('click', async () => {
-  try {
-    const result = await api.pickLogs();
-    const paths = result?.paths ?? [];
-    if (paths.length === 0) return;
-    logFiles.value = paths.join(String.fromCharCode(10));
-    if (configCache?.workspace) {
-      configCache.workspace = { ...configCache.workspace, logfiles: paths };
-      api.saveConfig({ workspace: configCache.workspace }).catch(() => {});
-    }
-  } catch (err) {
-    logMessage.textContent = `选择文件失败：${err.message}`;
-    logMessage.className = 'message error';
-  }
-});
+
 logParser.addEventListener('change', () => {
   logRegex.hidden = logParser.value !== 'regex';
 });

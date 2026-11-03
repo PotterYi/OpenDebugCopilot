@@ -143,8 +143,6 @@
       <div id="tab-logs" class="tab-pane">
         <p id="logs-warning" class="message error" hidden>日志查询仅在桌面版可用。</p>
         <div class="toolbar log-toolbar">
-          <textarea id="log-files" class="log-files-input" rows="2" placeholder="日志文件，每行一个"></textarea>
-          <button id="pick-logs" type="button" class="secondary">选文件</button>
           <select id="log-parser">
             <option value="auto">自动探测</option>
             <option value="pipe">竖线分隔 pipe</option>
@@ -159,6 +157,7 @@
           <button id="query-logs" type="button">查询</button>
           <span id="log-message" class="message"></span>
         </div>
+        <div id="log-source" class="muted small"></div>
         <div id="log-summary" class="muted small"></div>
         <div id="log-output" class="log-output">选择请求与解析器后查询</div>
       </div>

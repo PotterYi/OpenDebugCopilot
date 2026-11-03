@@ -151,6 +151,7 @@ test('electron shell boots, captures, routes and diagnoses', {
   assert.match(stdout, /"questionIsTextarea":true/);
   assert.match(stdout, /"targetSelect":true/);
   assert.match(stdout, /"sitUrlField":true/);
+  assert.match(stdout, /"logSourcePresent":true/);
   assert.match(stdout, /"captureOk":true/);
   assert.match(stdout, /"captured":[1-9]/);
   assert.match(stdout, /"pageTitle":"ok"/);

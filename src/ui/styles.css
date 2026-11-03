@@ -272,16 +272,6 @@ button:hover { filter: brightness(1.08); }
 .small.error { color: var(--danger); }
 
 .log-toolbar { flex-wrap: wrap; align-items: flex-start; }
-.log-files-input {
-  min-width: 260px;
-  background: var(--panel-2);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  color: var(--text);
-  padding: 6px 8px;
-  font: inherit;
-  resize: vertical;
-}
 .log-output {
   flex: 1;
   overflow: auto;
@@ -339,3 +329,15 @@ button:hover { filter: brightness(1.08); }
 }
 .console-list .console-message { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .console-list button { padding: 3px 6px; font-size: 11px; }
+
+.log-toolbar select {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 7px 10px;
+  font: inherit;
+  min-width: 150px;
+}
+.log-toolbar select:focus { outline: 1px solid var(--accent); }
+#log-anchor { min-width: 280px; }

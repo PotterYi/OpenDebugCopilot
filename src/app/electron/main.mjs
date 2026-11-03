@@ -324,6 +324,7 @@ async function runSmoke(window, host) {
           questionIsTextarea: document.getElementById('diagnose-question')?.tagName === 'TEXTAREA',
           targetSelect: document.querySelector('[data-field="baseUrl"]')?.tagName === 'SELECT',
           sitUrlField: Boolean(document.querySelector('input[name="sitUrl"]')),
+          logSourcePresent: Boolean(document.getElementById('log-source')),
           hiddenAttrWorks: (() => {
             const element = document.getElementById('diagnose-result');
             return Boolean(element && element.hidden && getComputedStyle(element).display === 'none');
