@@ -206,6 +206,7 @@ async function runSmoke(window, host) {
     let captured = 0;
     let captureOk = true;
     let diagnose = null;
+    let pageTitle = null;
     if (smokeUrl) {
       host.open(smokeUrl);
       captureOk = await waitForCapture(host, 10_000);
@@ -229,6 +230,11 @@ async function runSmoke(window, host) {
       }
     }
 
+    if (smokeUrl) {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      pageTitle = await host.view.webContents.executeJavaScript('document.title').catch(() => null);
+    }
+
     clearTimeout(timeout);
     const sample = host.list({ limit: 1 })[0] ?? null;
     const result = {
@@ -237,6 +243,7 @@ async function runSmoke(window, host) {
       captureOk,
       captureSample: sample ? { url: sample.url, status: sample.status } : null,
       diagnose,
+      pageTitle,
     };
     console.log(`SMOKE_RESULT ${JSON.stringify(result)}`);
     const ok = Boolean(

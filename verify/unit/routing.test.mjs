@@ -113,7 +113,7 @@ test('router redirects actual requests, keeps OPTIONS and adds CORS', () => {
 
   let optionsResult = null;
   handlers.before(
-    { id: 2, url: 'https://api.example.com/api/order/1', method: 'OPTIONS', resourceType: 'xhr' },
+    { id: 2, url: 'https://api.example.com/api/order/1', method: 'OPTIONS', resourceType: 'other' },
     (result) => { optionsResult = result; },
   );
   assert.deepEqual(optionsResult, {});
@@ -123,6 +123,13 @@ test('router redirects actual requests, keeps OPTIONS and adds CORS', () => {
     (result) => { optionsHeaders = result; },
   );
   assert.deepEqual(optionsHeaders.responseHeaders['Access-Control-Allow-Origin'], ['http://localhost:5173']);
+
+  let fallbackHeaders = null;
+  handlers.headers(
+    { id: 99, method: 'GET', url: 'http://127.0.0.1:8080/api/order/1', responseHeaders: {} },
+    (result) => { fallbackHeaders = result; },
+  );
+  assert.deepEqual(fallbackHeaders.responseHeaders['Access-Control-Allow-Origin'], ['http://localhost:5173']);
 
   router.dispose();
   assert.equal(handlers.before, null);

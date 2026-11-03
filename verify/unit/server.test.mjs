@@ -76,3 +76,18 @@ test('lists and returns run artifacts', async (t) => {
   assert.equal(run.report, '# report');
   assert.equal((await fetch(`${server.url}/api/runs/missing`)).status, 404);
 });
+
+test('reports EADDRINUSE when the port is already taken', async (t) => {
+  await rm(TMP, { recursive: true, force: true });
+  const service = createService({ root: TMP, configDir: path.join(TMP, 'configs'), runsDir: path.join(TMP, 'runs') });
+  const first = await startServer({ service, uiDir: UI_DIR, port: 0 });
+  t.after(async () => {
+    await first.close();
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  await assert.rejects(
+    startServer({ service, uiDir: UI_DIR, port: first.port }),
+    (err) => err.code === 'EADDRINUSE',
+  );
+});

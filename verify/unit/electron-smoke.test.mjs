@@ -5,9 +5,9 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import { existsSync } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import http from 'node:http';
 import { once } from 'node:events';
-import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -23,15 +23,15 @@ try {
 }
 const available = Boolean(electronPath && existsSync(electronPath));
 
-test('electron shell boots and exposes dc IPC', {
+test('electron shell boots, captures, routes and diagnoses', {
   skip: available ? false : 'Electron binary is not installed',
   timeout: 90_000,
 }, async (t) => {
   await mkdir(TMP, { recursive: true });
   t.after(async () => { await rm(TMP, { recursive: true, force: true }); });
 
-  let pageApiHits = 0;
   let backendHits = 0;
+  let pageApiHits = 0;
 
   const backendServer = http.createServer((req, res) => {
     if (req.url === '/api/ping') {
@@ -43,26 +43,33 @@ test('electron shell boots and exposes dc IPC', {
     res.statusCode = 404;
     res.end('not found');
   });
-  backendServer.listen(0, '127.0.0.1');
+  backendServer.listen(0);
   await once(backendServer, 'listening');
   t.after(() => new Promise((resolve) => backendServer.close(resolve)));
 
   const pageServer = http.createServer((req, res) => {
     if (req.url === '/page') {
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
-      res.end('<!doctype html><html><body><script>setTimeout(() => fetch("/api/ping").then(r=>r.json()), 300)</script></body></html>');
+      res.end(`<!doctype html><html><body><script>
+        setTimeout(() => {
+          fetch('/api/ping')
+            .then((r) => r.json())
+            .then(() => { document.title = 'ok'; })
+            .catch((e) => { document.title = 'blocked:' + e.message; });
+        }, 300);
+      </script></body></html>`);
       return;
     }
     if (req.url === '/api/ping') {
       pageApiHits += 1;
       res.setHeader('Content-Type', 'application/json');
-      res.end('{"ok":true}');
+      res.end('{"from":"page"}');
       return;
     }
     res.statusCode = 404;
     res.end('not found');
   });
-  pageServer.listen(0, '127.0.0.1');
+  pageServer.listen(0);
   await once(pageServer, 'listening');
   t.after(() => new Promise((resolve) => pageServer.close(resolve)));
 
@@ -110,8 +117,9 @@ test('electron shell boots and exposes dc IPC', {
   assert.match(stdout, /"hasWorkspace":true/);
   assert.match(stdout, /"captureOk":true/);
   assert.match(stdout, /"captured":[1-9]/);
-  assert.ok(backendHits >= 1, `expected redirect to backend, got ${backendHits}`);
+  assert.match(stdout, /"pageTitle":"ok"/);
   assert.match(stdout, /"diagnose":\{"ok":true/);
   assert.match(stdout, /"gates":true/);
+  assert.ok(backendHits >= 1, `expected redirect to backend, got ${backendHits}`);
   assert.equal(pageApiHits, 0, `request should have been redirected, page hits: ${pageApiHits}`);
 });

@@ -74,6 +74,34 @@ export function buildRedirectUrl(rule, requestUrl) {
   return target.toString();
 }
 
+/**
+ * True when a URL points at any enabled local routing target.
+ * Redirected requests may get a new webRequest id, so headersReceived cannot rely on the pending map alone.
+ *
+ * @param {Array<any>} rules
+ * @param {string} url
+ */
+export function isLocalTargetUrl(rules, url) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  return (rules ?? []).some((rule) => {
+    if (rule.enabled === false || rule.target?.kind !== 'local') return false;
+    try {
+      const target = new URL(rule.target.baseUrl);
+      const sameHost = isLocalHostname(target.hostname) && isLocalHostname(parsed.hostname)
+        ? true
+        : target.hostname.toLowerCase() === parsed.hostname.toLowerCase();
+      return sameHost && (target.port || '80') === (parsed.port || '80');
+    } catch {
+      return false;
+    }
+  });
+}
+
 function deleteHeaderCaseInsensitive(headers, name) {
   const lower = name.toLowerCase();
   for (const key of Object.keys(headers)) {
@@ -149,7 +177,9 @@ export class Router {
   }
 
   beforeRequest(details, callback) {
-    const rule = matchRule(this.getRules(), details.url, details.resourceType ?? null);
+    const rule = details.method === 'OPTIONS'
+      ? matchRule(this.getRules(), details.url, null)
+      : matchRule(this.getRules(), details.url, details.resourceType ?? null);
     if (!rule) {
       callback({});
       return;
@@ -191,11 +221,13 @@ export class Router {
 
   headersReceived(details, callback) {
     const hit = this.pending.get(details.id);
-    if (!hit) {
+    const localTarget = hit?.rule?.target?.kind === 'local'
+      || (!hit && isLocalTargetUrl(this.getRules(), details.url));
+    if (!hit && !localTarget) {
       callback({ responseHeaders: details.responseHeaders });
       return;
     }
-    if (hit.options && ((details.statusCode ?? 200) < 200 || (details.statusCode ?? 200) >= 300)) {
+    if (hit?.options && ((details.statusCode ?? 200) < 200 || (details.statusCode ?? 200) >= 300)) {
       this.onHit({
         type: 'cors-warning',
         message: 'Preflight returned a non-2xx status; the browser will block the request',
@@ -203,14 +235,13 @@ export class Router {
         status: details.statusCode ?? null,
       });
     }
-    const localTarget = hit.rule?.target?.kind === 'local';
-    if (!localTarget && !hit.options) {
+    if (!localTarget && !hit?.options) {
       callback({ responseHeaders: details.responseHeaders });
       return;
     }
     const responseHeaders = applyCorsHeaders(details.responseHeaders, {
       origin: this.getPageOrigin(),
-      requestHeaders: hit.requestHeaders ?? {},
+      requestHeaders: hit?.requestHeaders ?? {},
     });
     callback({ responseHeaders });
   }

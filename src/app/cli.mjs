@@ -236,8 +236,9 @@ function printHuman(summary) {
  * @returns {Promise<number>} exit code
  */
 export async function main(argv = process.argv.slice(2), { root = ROOT } = {}) {
+  let parsed = null;
   try {
-    const parsed = parseArgv(argv);
+    parsed = parseArgv(argv);
     if (parsed.command === 'help') {
       console.log(HELP);
       return 0;
@@ -299,6 +300,10 @@ export async function main(argv = process.argv.slice(2), { root = ROOT } = {}) {
     }
     return 0;
   } catch (err) {
+    if (err?.code === 'EADDRINUSE') {
+      console.error(`[PORT_IN_USE] ${parsed?.port ?? ''} is already in use; free it or pass --port`);
+      return 3;
+    }
     const payload = toErrorPayload(err);
     if (process.env.DC_DEBUG) console.error(err);
     console.error(`[${payload.code}] ${payload.message}`);
