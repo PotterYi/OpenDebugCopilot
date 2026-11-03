@@ -18,6 +18,9 @@ async function http(path, options = {}) {
  * - WebUI: /api/*
  */
 export const api = {
+  get isDesktop() {
+    return Boolean(dc?.invoke);
+  },
   async health() {
     if (dc?.invoke) return { ok: true };
     return http('/api/health');
@@ -37,5 +40,17 @@ export const api = {
   async getRun(runId) {
     if (dc?.invoke) return dc.invoke('dc:runs', { action: 'get', runId });
     return http(`/api/runs/${encodeURIComponent(runId)}`);
+  },
+  async browser(action, payload = {}) {
+    if (!dc?.invoke) return { pending: true };
+    return dc.invoke('dc:browser', { action, ...payload });
+  },
+  async capture(action, payload = {}) {
+    if (!dc?.invoke) return action === 'list' ? { requests: [] } : { pending: true };
+    return dc.invoke('dc:capture', { action, ...payload });
+  },
+  onCapture(handler) {
+    if (!dc?.on) return () => {};
+    return dc.on('dc:capture:event', handler);
   },
 };

@@ -1,10 +1,21 @@
 import { api } from './api.js';
 
-const statusEl = document.getElementById('status');
-const form = document.getElementById('config-form');
-const messageEl = document.getElementById('config-message');
-const runsEl = document.getElementById('runs');
-const reportEl = document.getElementById('report');
+const $ = (id) => document.getElementById(id);
+const statusEl = $('status');
+const form = $('config-form');
+const messageEl = $('config-message');
+const runsEl = $('runs');
+const reportEl = $('report');
+const requestsEl = $('requests');
+const detailEl = $('request-detail');
+const hintEl = $('capture-hint');
+const browserUrlInput = $('browser-url');
+const browserSlot = $('browser-slot');
+
+let currentTab = 'browser';
+let configCache = null;
+const captureState = new Map();
+let renderQueued = false;
 
 function setStatus(text, kind = '') {
   statusEl.textContent = text;
@@ -24,6 +35,7 @@ function fillForm(config) {
   form.elements.sourceRoot.value = workspace.sourceRoot ?? '';
   form.elements.beforeMs.value = workspace.window?.beforeMs ?? 3000;
   form.elements.afterMs.value = workspace.window?.afterMs ?? 2000;
+  if (!browserUrlInput.value) browserUrlInput.value = workspace.frontendUrl ?? '';
 }
 
 function readForm() {
@@ -44,10 +56,13 @@ function readForm() {
 async function loadConfig() {
   try {
     const config = await api.getConfig();
+    configCache = config;
     fillForm(config);
-    setStatus('已连接', 'ok');
+    setStatus(api.isDesktop ? '桌面版已连接' : 'WebUI 已连接', 'ok');
+    return config;
   } catch (err) {
     setStatus(`连接失败：${err.message}`, 'error');
+    return null;
   }
 }
 
@@ -89,18 +104,197 @@ async function showRun(runId) {
   }
 }
 
+function requestPath(url) {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.pathname}${parsed.search}`;
+  } catch {
+    return url;
+  }
+}
+
+function scheduleRender() {
+  if (renderQueued) return;
+  renderQueued = true;
+  requestAnimationFrame(() => {
+    renderQueued = false;
+    renderRequests();
+  });
+}
+
+function renderRequests() {
+  const errorsOnly = $('only-errors').checked;
+  const items = [...captureState.values()].sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0));
+  const filtered = items.filter((item) => !errorsOnly || item.error || (item.status ?? 0) >= 400);
+  requestsEl.textContent = '';
+  for (const item of filtered) {
+    const li = document.createElement('li');
+    const method = document.createElement('span');
+    method.className = 'method';
+    method.textContent = item.method ?? '';
+    const url = document.createElement('span');
+    url.className = 'url';
+    url.textContent = requestPath(item.url);
+    url.title = item.url;
+    const status = document.createElement('span');
+    status.className = `status ${item.error ? 'error' : (item.status ?? 0) >= 400 ? 'error' : 'ok'}`;
+    status.textContent = item.error ? 'FAIL' : item.status ?? '…';
+    const duration = document.createElement('span');
+    duration.textContent = item.durationMs != null ? `${item.durationMs}ms` : '';
+    const type = document.createElement('span');
+    type.className = 'muted';
+    type.textContent = item.resourceType ?? '';
+    li.append(method, url, status, duration, type);
+    li.addEventListener('click', () => showRequest(item.id));
+    requestsEl.append(li);
+  }
+  hintEl.textContent = api.isDesktop
+    ? `${items.length} 条（显示 ${filtered.length}）`
+    : '内嵌浏览器仅在桌面版可用';
+}
+
+async function refreshRequests() {
+  if (!api.isDesktop) {
+    captureState.clear();
+    renderRequests();
+    return;
+  }
+  try {
+    const { requests } = await api.capture('list');
+    captureState.clear();
+    for (const item of requests) captureState.set(item.id, item);
+    renderRequests();
+  } catch (err) {
+    hintEl.textContent = `加载请求失败：${err.message}`;
+  }
+}
+
+async function showRequest(id) {
+  detailEl.textContent = '加载中…';
+  try {
+    const { request } = await api.capture('detail', { id });
+    if (!request) {
+      detailEl.textContent = '请求已被清空或不存在';
+      return;
+    }
+    detailEl.textContent = JSON.stringify({
+      method: request.method,
+      url: request.url,
+      status: request.status,
+      statusText: request.statusText,
+      resourceType: request.resourceType,
+      durationMs: request.durationMs,
+      error: request.error,
+      requestHeaders: request.requestHeaders,
+      postData: request.postData,
+      responseHeaders: request.responseHeaders,
+      mimeType: request.mimeType,
+      body: request.body,
+    }, null, 2);
+  } catch (err) {
+    detailEl.textContent = `加载失败：${err.message}`;
+  }
+}
+
+function syncBounds() {
+  if (!browserSlot) return;
+  const rect = browserSlot.getBoundingClientRect();
+  const visible = currentTab === 'browser' && rect.width > 4 && rect.height > 4;
+  api.browser('setBounds', {
+    x: rect.left,
+    y: rect.top,
+    width: rect.width,
+    height: rect.height,
+    visible,
+  }).catch(() => {});
+}
+
+function setTab(name) {
+  currentTab = name;
+  for (const tab of document.querySelectorAll('.tab')) {
+    tab.classList.toggle('active', tab.dataset.tab === name);
+  }
+  for (const pane of document.querySelectorAll('.tab-pane')) {
+    pane.classList.toggle('active', pane.id === `tab-${name}`);
+  }
+  if (name === 'browser') {
+    requestAnimationFrame(syncBounds);
+  } else {
+    api.browser('setBounds', { visible: false }).catch(() => {});
+  }
+  if (name === 'requests') refreshRequests();
+  if (name === 'history') loadRuns();
+}
+
+async function openBrowser(url) {
+  const target = (url ?? browserUrlInput.value ?? '').trim();
+  try {
+    await api.browser('open', { url: target || undefined });
+    setStatus('页面加载中…', '');
+  } catch (err) {
+    setStatus(`打开失败：${err.message}`, 'error');
+  }
+}
+
 form.addEventListener('submit', async (event) => {
   event.preventDefault();
   setMessage('保存中…');
   try {
-    await api.saveConfig(readForm());
+    const saved = await api.saveConfig(readForm());
+    configCache = saved;
     setMessage('已保存', 'ok');
   } catch (err) {
     setMessage(`保存失败：${err.message}`, 'error');
   }
 });
 
-document.getElementById('refresh-runs').addEventListener('click', loadRuns);
+$('browser-open').addEventListener('click', () => openBrowser());
+browserUrlInput.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    openBrowser();
+  }
+});
+$('browser-reload').addEventListener('click', () => api.browser('reload').catch(() => {}));
+$('browser-devtools').addEventListener('click', () => api.browser('devtools').catch(() => {}));
+$('clear-requests').addEventListener('click', async () => {
+  try {
+    await api.capture('clear');
+    captureState.clear();
+    renderRequests();
+  } catch (err) {
+    hintEl.textContent = `清空失败：${err.message}`;
+  }
+});
+$('only-errors').addEventListener('change', renderRequests);
+$('refresh-runs').addEventListener('click', loadRuns);
+for (const tab of document.querySelectorAll('.tab')) {
+  tab.addEventListener('click', () => setTab(tab.dataset.tab));
+}
 
-await loadConfig();
+api.onCapture((event) => {
+  if (event.type === 'request' || event.type === 'update') {
+    captureState.set(event.record.id, event.record);
+    scheduleRender();
+  } else if (event.type === 'clear') {
+    captureState.clear();
+    renderRequests();
+  } else if (event.type === 'navigation') {
+    browserUrlInput.value = event.url;
+  } else if (event.type === 'error') {
+    setStatus(event.message, 'error');
+  }
+});
+
+window.addEventListener('resize', () => requestAnimationFrame(syncBounds));
+if (typeof ResizeObserver !== 'undefined') {
+  new ResizeObserver(() => requestAnimationFrame(syncBounds)).observe(browserSlot);
+}
+
+const initialConfig = await loadConfig();
+if (initialConfig?.workspace?.frontendUrl) browserUrlInput.value = initialConfig.workspace.frontendUrl;
 await loadRuns();
+setTab('browser');
+requestAnimationFrame(syncBounds);
+setTimeout(syncBounds, 300);
+await refreshRequests();
