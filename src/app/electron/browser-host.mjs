@@ -39,6 +39,7 @@ export class BrowserHost {
     this.networkEnabled = false;
     this.pendingUrl = null;
     this.loading = false;
+    this.consoleEvents = [];
     this.visible = false;
     this.bounds = { x: 0, y: 0, width: 0, height: 0 };
 
@@ -99,6 +100,7 @@ export class BrowserHost {
       if (this.networkEnabled) return;
       this.networkEnabled = true;
       contents.debugger.sendCommand('Network.enable').catch(() => {});
+      contents.debugger.sendCommand('Runtime.enable').catch(() => {});
     };
     // WebContentsView has no renderer target before the first navigation;
     // calling Network.enable that early can hang the CDP session.
@@ -142,7 +144,59 @@ export class BrowserHost {
     }
   }
 
+  pushConsole(event) {
+    this.consoleEvents.push(event);
+    if (this.consoleEvents.length > 200) this.consoleEvents.shift();
+    this.emit({ type: 'console', event });
+  }
+
+  listConsole({ limit = 50 } = {}) {
+    return this.consoleEvents.slice(-limit);
+  }
+
+  clearConsole() {
+    this.consoleEvents = [];
+    this.emit({ type: 'console-clear' });
+  }
+
   handleCdp(method, params) {
+    if (method === 'Runtime.exceptionThrown') {
+      const details = params.exceptionDetails ?? {};
+      const frames = (details.stackTrace?.callFrames ?? []).map(
+        (frame) => `at ${frame.functionName || '<anonymous>'} (${frame.url || '<anonymous>'}:${(frame.lineNumber ?? 0) + 1}:${(frame.columnNumber ?? 0) + 1})`,
+      );
+      this.pushConsole({
+        kind: 'exception',
+        ts: Date.now(),
+        message: details.exception?.description || details.text || 'Uncaught exception',
+        url: details.url,
+        line: (details.lineNumber ?? 0) + 1,
+        column: (details.columnNumber ?? 0) + 1,
+        stack: frames,
+      });
+      return;
+    }
+
+    if (method === 'Runtime.consoleAPICalled') {
+      if (params.type !== 'error' && params.type !== 'assert') return;
+      const message = (params.args ?? [])
+        .map((arg) => arg.value ?? arg.description ?? arg.type ?? '')
+        .join(' ');
+      const frames = (params.stackTrace?.callFrames ?? []).map(
+        (frame) => `at ${frame.functionName || '<anonymous>'} (${frame.url || '<anonymous>'}:${(frame.lineNumber ?? 0) + 1}:${(frame.columnNumber ?? 0) + 1})`,
+      );
+      this.pushConsole({
+        kind: 'console-error',
+        ts: Date.now(),
+        message,
+        url: params.stackTrace?.callFrames?.[0]?.url,
+        line: (params.stackTrace?.callFrames?.[0]?.lineNumber ?? 0) + 1,
+        column: (params.stackTrace?.callFrames?.[0]?.columnNumber ?? 0) + 1,
+        stack: frames,
+      });
+      return;
+    }
+
     if (method === 'Network.requestWillBeSent') {
       const request = params.request ?? {};
       const startedAt = params.wallTime ? Math.round(params.wallTime * 1000) : Date.now();
@@ -322,6 +376,7 @@ export class BrowserHost {
     this.records.clear();
     this.byRequestId.clear();
     this.order = [];
+    this.consoleEvents = [];
     this.emit({ type: 'clear' });
   }
 

@@ -56,6 +56,8 @@ export function buildReport(result) {
       confidence: agent.confidence ?? null,
       correlation: result.logs?.correlation?.strategy ?? null,
       correlationId: result.logs?.correlation?.matchedId ?? null,
+      frontendErrors: result.frontend?.errors?.length ?? 0,
+      frontendSources: result.frontend?.files?.length ?? 0,
     },
     selfCheck: (result.gates?.checks ?? []).map((check) => ({ name: check.name, ok: check.ok })),
     recheck: result.recheck
@@ -123,6 +125,9 @@ export function renderMarkdown(report) {
     `- 工具调用：${report.summary.toolCalls} 次`,
     ...(report.summary.correlation
       ? [`- 关联方式：${report.summary.correlation}${report.summary.correlationId ? `（${report.summary.correlationId}）` : ''}`]
+      : []),
+    ...(report.summary.frontendErrors
+      ? [`- 前端错误：${report.summary.frontendErrors} 条（源码片段 ${report.summary.frontendSources} 处）`]
       : []),
     '',
     '## 自检',

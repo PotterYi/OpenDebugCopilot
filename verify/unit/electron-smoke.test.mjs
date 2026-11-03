@@ -116,7 +116,6 @@ test('electron shell boots, captures, routes and diagnoses', {
     });
   });
 
-  console.log('COUNTERS', { backendHits, backendOptions, pageOptionsHits, pageApiHits });
   assert.equal(code, 0, `electron exited ${code}\nstdout:\n${stdout}\nstderr:\n${stderr}`);
   assert.match(stdout, /SMOKE_OK/);
   assert.doesNotMatch(stdout, /DebugCopilot Electron/);
@@ -132,6 +131,7 @@ test('electron shell boots, captures, routes and diagnoses', {
   assert.match(stdout, /"captureBody":true/);
   assert.match(stdout, /"diagnose":\{"ok":true/);
   assert.match(stdout, /"gates":true/);
+  assert.match(stdout, /"frontendErrors":[1-9]/);
   assert.ok(backendHits >= 1, `expected redirect to backend, got ${backendHits}`);
   assert.equal(backendOptions, 0, 'preflight should be answered by the local proxy');
   assert.equal(pageOptionsHits, 0, 'preflight should not reach the page server');

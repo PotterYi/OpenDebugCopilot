@@ -99,6 +99,11 @@ function registerIpc(service, getHost, getRouter, setRules) {
       case 'clear':
         host.clear();
         return { ok: true };
+      case 'console':
+        return { events: host.listConsole({ limit: payload.limit ?? 50 }) };
+      case 'console-clear':
+        host.clearConsole();
+        return { ok: true };
       default:
         throw new Error(`dc:capture: unknown action ${payload.action}`);
     }
@@ -134,6 +139,8 @@ function registerIpc(service, getHost, getRouter, setRules) {
       ruleId: payload.ruleId ?? null,
     };
 
+    const frontendErrors = host.listConsole({ limit: 20 });
+
     const agent = payload.mock === false
       ? createClaudeAgent({
           cwd: workspace.sourceRoot ? path.resolve(ROOT, workspace.sourceRoot) : undefined,
@@ -147,6 +154,7 @@ function registerIpc(service, getHost, getRouter, setRules) {
       question: payload.question ?? '',
       recheck: payload.recheck ?? 1,
       agent,
+      frontendErrors,
     });
   });
 }
@@ -252,6 +260,13 @@ async function runSmoke(window, host) {
       if (smokeClick) {
         await waitForIdle(host, 8_000);
         await host.view.webContents.executeJavaScript(`(() => {
+          const script = document.createElement('script');
+          script.textContent = 'console.error("smoke-frontend-error"); setTimeout(function () { throw new Error("smoke-frontend-error"); }, 0);';
+          document.body.appendChild(script);
+          return true;
+        })()`);
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        await host.view.webContents.executeJavaScript(`(() => {
           const element = document.querySelector(${JSON.stringify(smokeClick)});
           if (!element) throw new Error('smoke-click selector not found');
           element.click();
@@ -275,6 +290,7 @@ async function runSmoke(window, host) {
             runId: response.runId,
             gates: Boolean(response.result?.gates?.ok),
             mode: response.result?.meta?.mode ?? null,
+            frontendErrors: response.result?.frontend?.errors?.length ?? 0,
           };
         })()`);
       }

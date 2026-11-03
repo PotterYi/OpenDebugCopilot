@@ -3,6 +3,7 @@ import path from 'node:path';
 import { AppError } from '../core/errors.mjs';
 import { newRunId } from '../core/ids.mjs';
 import { resolveScenarioPaths } from '../core/scenario.mjs';
+import { resolveFrontendSources } from '../evidence/frontend.mjs';
 import { fireScenario } from '../driver/index.mjs';
 import { readLogs, listThreads } from '../evidence/logs.mjs';
 import { correlateLogs, extractBusinessIds, extractTraceId } from '../evidence/correlate.mjs';
@@ -221,6 +222,17 @@ async function diagnoseWithFired({
   });
 
   const source = await collectSource(paths.sourceRoot, logsResult.records);
+  const frontendErrors = (fired.consoleErrors ?? []).slice(0, 10).map((error) => ({
+    kind: error.kind,
+    message: error.message,
+    url: error.url,
+    line: error.line,
+    stack: (error.stack ?? []).slice(0, 10),
+  }));
+  const frontendSources = await resolveFrontendSources({
+    frontendSourceRoot: scenario.frontendSourceRoot ?? null,
+    errors: frontendErrors,
+  });
   const toolsBundle = createTools({
     scenario,
     anchor: fired.firedAt,
@@ -272,6 +284,11 @@ async function diagnoseWithFired({
     },
     threads: { total: threads.total, threads: threads.threads.slice(0, 10) },
     source,
+    frontend: {
+      available: frontendSources.available,
+      files: frontendSources.files,
+      errors: frontendErrors,
+    },
   };
 
   const agentResult = await agent.diagnose({
@@ -346,6 +363,7 @@ async function diagnoseWithFired({
     logs: evidence.logs,
     threads: evidence.threads,
     source: evidence.source,
+    frontend: evidence.frontend,
     agent: agentResult,
     gates,
     recheck: recheckInfo,
@@ -424,7 +442,8 @@ export async function runDiagnosis(scenario, options = {}) {
  *   workspace?: any, root?: string, runId?: string, runsDir?: string,
  *   question?: string, agent?: any, recheck?: number,
  *   markerTimeoutMs?: number, pollIntervalMs?: number,
- *   window?: { beforeMs: number, afterMs: number }, preflight?: any
+ *   window?: { beforeMs: number, afterMs: number }, preflight?: any,
+ *   frontendErrors?: any[]
  * }} [options]
  */
 export async function runCaptureDiagnosis(observation, options = {}) {
@@ -445,6 +464,7 @@ export async function runCaptureDiagnosis(observation, options = {}) {
   const startedAt = Date.now();
   const logfiles = (workspace.logfiles ?? []).map((file) => path.resolve(root, file));
   const sourceRoot = workspace.sourceRoot ? path.resolve(root, workspace.sourceRoot) : null;
+  const frontendSourceRoot = workspace.frontendSourceRoot ? path.resolve(root, workspace.frontendSourceRoot) : null;
   const scenario = {
     name: `capture-${observation.request?.method ?? 'GET'} ${requestPathOf(observation.request?.url) ?? ''}`.trim(),
     driverKind: 'capture',
@@ -454,6 +474,7 @@ export async function runCaptureDiagnosis(observation, options = {}) {
     },
     logfiles,
     source: sourceRoot ? { root: sourceRoot } : undefined,
+    frontendSourceRoot,
     parser: { preset: 'auto' },
     logEncoding: 'auto',
     marker: { mode: 'none', header: 'X-DC-Probe' },
@@ -481,6 +502,7 @@ export async function runCaptureDiagnosis(observation, options = {}) {
     response: observation.response,
     firedAt: observation.firedAt ?? startedAt,
     marker: { mode: 'none', injected: false, value: null, targets: { header: false, body: false } },
+    consoleErrors: options.frontendErrors ?? observation.consoleErrors ?? [],
   };
 
   return diagnoseWithFired({

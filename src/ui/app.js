@@ -30,6 +30,7 @@ let configCache = null;
 let routingRules = [];
 let routingHits = 0;
 let currentRequest = null;
+let consoleErrorCount = 0;
 let currentRequestId = null;
 const captureState = new Map();
 let renderQueued = false;
@@ -180,7 +181,7 @@ function renderRequests() {
     requestsEl.append(li);
   }
   hintEl.textContent = api.isDesktop
-    ? `${items.length} 条（显示 ${filtered.length}）`
+    ? `${items.length} 条（显示 ${filtered.length}）${consoleErrorCount ? ` · 页面错误 ${consoleErrorCount}` : ''}`
     : '内嵌浏览器仅在桌面版可用';
 }
 
@@ -194,6 +195,8 @@ async function refreshRequests() {
     const { requests } = await api.capture('list');
     captureState.clear();
     for (const item of requests) captureState.set(item.id, item);
+    const consoleResult = await api.capture('console', { limit: 200 }).catch(() => ({ events: [] }));
+    consoleErrorCount = Array.isArray(consoleResult?.events) ? consoleResult.events.length : 0;
     renderRequests();
   } catch (err) {
     hintEl.textContent = `加载请求失败：${err.message}`;
@@ -275,6 +278,8 @@ function renderDiagnosis(response) {
     ['日志', `${result.logs?.count ?? 0} 条`],
     ['线程', String(result.threads?.total ?? 0)],
     ['工具调用', String(result.agent?.toolCalls?.length ?? 0)],
+    ['前端错误', String(result.frontend?.errors?.length ?? 0)],
+    ['前端源码', String(result.frontend?.files?.length ?? 0)],
     ['耗时', `${result.meta?.durationMs ?? 0} ms`],
   ])));
 
@@ -662,7 +667,9 @@ $('browser-devtools').addEventListener('click', () => api.browser('devtools').ca
 $('clear-requests').addEventListener('click', async () => {
   try {
     await api.capture('clear');
+    await api.capture('console-clear').catch(() => {});
     captureState.clear();
+    consoleErrorCount = 0;
     renderRequests();
   } catch (err) {
     hintEl.textContent = `清空失败：${err.message}`;
@@ -702,6 +709,12 @@ api.onCapture((event) => {
     setStatus(event.isLoading ? '加载中…' : '页面已加载', event.isLoading ? '' : 'ok');
   } else if (event.type === 'load-failed') {
     setStatus(`加载失败：${event.description ?? event.code ?? 'unknown'}`, 'error');
+  } else if (event.type === 'console') {
+    consoleErrorCount += 1;
+    scheduleRender();
+  } else if (event.type === 'console-clear') {
+    consoleErrorCount = 0;
+    scheduleRender();
   } else if (event.type === 'routing-miss') {
     routingStatus.textContent = `最近未命中：${event.method} ${event.url}`;
   } else if (event.type === 'cors-warning') {

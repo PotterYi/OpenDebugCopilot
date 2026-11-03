@@ -46,12 +46,20 @@ test('diagnoses a captured request without replay and correlates by business id'
     },
     firedAt: Date.now(),
     resourceType: 'xhr',
+    consoleErrors: [{
+      kind: 'exception',
+      message: 'Uncaught Error: inventory ui boom',
+      url: 'http://localhost:5173/src/App.vue',
+      line: 7,
+      stack: ['at submit (http://localhost:5173/src/App.vue:7:9)'],
+    }],
   };
 
   const { result, runDir } = await runCaptureDiagnosis(observation, {
     workspace: {
       logfiles: [logFile],
       sourceRoot: path.join(ROOT, 'verify/fixtures/source'),
+      frontendSourceRoot: path.join(ROOT, 'verify/fixtures/frontend'),
       window: { beforeMs: 5000, afterMs: 5000 },
     },
     root: ROOT,
@@ -68,11 +76,16 @@ test('diagnoses a captured request without replay and correlates by business id'
   assert.equal(result.logs.count, 2);
   assert.equal(result.gates.ok, true, JSON.stringify(result.gates.checks));
   assert.ok(result.logs.records.every((record) => record.thread));
+  assert.equal(result.frontend.errors.length, 1);
+  assert.equal(result.frontend.files.length, 1);
+  assert.equal(result.frontend.files[0].path, 'src/App.vue');
+  assert.match(result.frontend.files[0].content, /inventory ui boom/);
 
   const persisted = JSON.parse(await readFile(path.join(runDir, 'result.json'), 'utf8'));
   assert.equal(persisted.meta.driver, 'capture');
   const report = await readFile(path.join(runDir, 'report.md'), 'utf8');
   assert.match(report, /DebugCopilot 诊断报告/);
+  assert.match(report, /前端错误：1 条/);
 });
 
 test('capture diagnosis works without log evidence', async (t) => {

@@ -79,6 +79,7 @@ function sanitizeEvidence(evidence) {
     },
     threads: evidence.threads,
     source: evidence.source,
+    frontend: evidence.frontend,
   };
 }
 
