@@ -26,7 +26,13 @@ docker compose ps
 
 - 镜像源：`docker.m.daocloud.io/library/mysql:8.0`、`redis:7`（Docker Hub 直连被阻断时使用）
 - 数据库：`ry-vue`，root 密码 `ruoyi123`
-- 导入：`backend/sql/ry_20260417.sql`、`quartz.sql`
+- 导入（**必须指定客户端字符集**，否则中文会双重编码乱码）：
+
+```bash
+docker exec -i ruoyi-mysql mysql --default-character-set=utf8mb4 -uroot -pruoyi123 ry-vue < backend/sql/ry_20260417.sql
+docker exec -i ruoyi-mysql mysql --default-character-set=utf8mb4 -uroot -pruoyi123 ry-vue < backend/sql/quartz.sql
+```
+
 - 关闭验证码：
 
 ```sql
@@ -157,3 +163,4 @@ docker compose down
 2. SIT 日志单独在 `logs-sit/`；当前工作区只配置了本地日志，SIT 请求的诊断证据会偏少，可按需追加。
 3. 前端使用绝对 API 地址是为了制造真实跨源；若只想测同源，改回 `/dev-api` 并保持 Vite 代理。
 4. Docker Hub 不可直连时使用镜像前缀；MySQL/Redis 版本与 RuoYi 兼容。
+5. **中文乱码**：`docker exec -i mysql` 不指定 `--default-character-set=utf8mb4` 时，UTF-8 SQL 会按 latin1 入库，前端显示 `ç³»ç»Ÿ...`。修复：DROP/CREATE 库后按上面命令重导；Java 启动带 `-Dfile.encoding=UTF-8` 可让日志中文正常。
