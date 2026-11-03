@@ -1,5 +1,6 @@
 import { WebContentsView } from 'electron';
 import { normalizeLocalhost } from './routing.mjs';
+import { log } from '../../core/logger.mjs';
 
 const MAX_RECORDS = 500;
 const MAX_BODY_BYTES = 1024 * 1024;
@@ -65,8 +66,12 @@ export class BrowserHost {
       this.pendingUrl = null;
       this.emit({ type: 'loading', isLoading: false, url: contents.getURL(), pendingUrl: null });
     });
+    contents.on('console-message', (_event, level, message, line, sourceId) => {
+      if (level >= 2) log.warn('[browser console]', `${message} (${sourceId}:${line})`);
+    });
     contents.on('did-fail-load', (_event, code, description, url) => {
       this.loading = contents.isLoading();
+      log.warn('[browser load failed]', `${code} ${description} ${url}`);
       this.emit({ type: 'load-failed', code, description, url });
     });
     contents.on('did-navigate', (_event, url) => {
@@ -202,6 +207,7 @@ export class BrowserHost {
       record.finished = true;
       record.error = params.errorText ?? 'request failed';
       record.durationMs = record.startedAt ? Date.now() - record.startedAt : null;
+      log.warn('[browser request failed]', `${record.method} ${record.url} ${record.error}`);
       this.emit({ type: 'update', record: this.summary(record) });
     }
   }

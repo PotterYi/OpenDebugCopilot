@@ -35,7 +35,7 @@ function pageHtml() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ qty: 2, orderId: 'ORD-MANUAL-001' }),
         });
-        result.textContent = 'HTTP ' + response.status + '\n' + await response.text();
+        result.textContent = 'HTTP ' + response.status + String.fromCharCode(10) + await response.text();
       } catch (error) {
         result.textContent = '请求失败：' + error.message;
       }

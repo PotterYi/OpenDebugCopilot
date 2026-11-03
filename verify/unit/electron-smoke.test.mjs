@@ -58,17 +58,20 @@ test('electron shell boots, captures, routes and diagnoses', {
   const pageServer = http.createServer((req, res) => {
     if (req.url === '/page') {
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
-      res.end(`<!doctype html><html><body><script>
-        setTimeout(() => {
-          fetch('/api/order', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ qty: 2 }),
-          }).then((r) => r.json())
-            .then(() => { document.title = 'ok'; })
-            .catch((e) => { document.title = 'blocked:' + e.message; });
-        }, 300);
-      </script></body></html>`);
+      res.end(`<!doctype html><html><body>
+        <button id="create">create</button>
+        <script>
+          document.getElementById('create').addEventListener('click', () => {
+            fetch('/api/order', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ qty: 2 }),
+            }).then((r) => r.json())
+              .then(() => { document.title = 'ok'; })
+              .catch((e) => { document.title = 'blocked:' + e.message; });
+          });
+        </script>
+      </body></html>`);
       return;
     }
     if (req.url === '/api/order' && req.method === 'OPTIONS') {
@@ -108,6 +111,7 @@ test('electron shell boots, captures, routes and diagnoses', {
     '--smoke',
     '--port', '0',
     `--smoke-url=http://localhost:${pageServer.address().port}/page`,
+    '--smoke-click=#create',
     '--runs-dir', path.join(TMP, 'runs'),
     '--config-dir', path.join(TMP, 'configs'),
   ], { env: { ...process.env } });

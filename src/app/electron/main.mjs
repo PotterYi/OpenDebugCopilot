@@ -27,6 +27,7 @@ function argValue(flag) {
 
 const smoke = process.argv.includes('--smoke');
 const smokeUrl = argValue('--smoke-url');
+const smokeClick = argValue('--smoke-click');
 const port = Number(argValue('--port') ?? 7080);
 const runsDir = argValue('--runs-dir');
 const configDir = argValue('--config-dir');
@@ -242,6 +243,15 @@ async function runSmoke(window, host) {
     let pageTitle = null;
     if (smokeUrl) {
       host.open(smokeUrl);
+      if (smokeClick) {
+        await waitForIdle(host, 8_000);
+        await host.view.webContents.executeJavaScript(`(() => {
+          const element = document.querySelector(${JSON.stringify(smokeClick)});
+          if (!element) throw new Error('smoke-click selector not found');
+          element.click();
+          return true;
+        })()`);
+      }
       captureOk = await waitForCapture(host, 10_000);
       await waitForIdle(host, 8_000);
       captured = host.list({ limit: 500 }).length;
