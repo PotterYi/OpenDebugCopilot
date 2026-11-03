@@ -129,6 +129,7 @@ export async function readLogs(options = {}) {
     window,
     limit = 200,
     earlyStop = true,
+    tail = false,
   } = options;
   const scanner = await createLogScanner(options);
   const records = [];
@@ -137,14 +138,19 @@ export async function readLogs(options = {}) {
   const windowEnd = window ? anchor + window.afterMs : null;
 
   for await (const record of scanner.records) {
-    if (earlyStop && windowEnd !== null && record.ts !== null && record.ts > windowEnd + EARLY_STOP_SLACK_MS) {
+    if (!tail && earlyStop && windowEnd !== null && record.ts !== null && record.ts > windowEnd + EARLY_STOP_SLACK_MS) {
       stoppedEarly = true;
       break;
     }
-    if (!inWindow(record.ts, anchor, window)) continue;
+    if (!tail && !inWindow(record.ts, anchor, window)) continue;
     if (!matchesRecord(record, options)) continue;
     records.push(record);
-    if (records.length >= limit) {
+    if (tail) {
+      if (records.length > limit) {
+        records.shift();
+        truncated = true;
+      }
+    } else if (records.length >= limit) {
       truncated = true;
       break;
     }

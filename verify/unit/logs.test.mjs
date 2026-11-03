@@ -138,3 +138,14 @@ test('orders rotated files by modification time', async (t) => {
   const result = await readLogs({ logfiles: [newer], parser: { preset: 'logback' } });
   assert.deepEqual(result.records.map((record) => record.message), ['older-file', 'newer-file']);
 });
+
+test('tail mode returns the most recent records instead of the oldest', async () => {
+  const tailed = await readLogs({ logfiles: [logback], parser: { preset: 'logback' }, tail: true, limit: 2 });
+  assert.equal(tailed.records.length, 2);
+  assert.deepEqual(tailed.records.map((record) => record.level), ['WARN', 'INFO']);
+  assert.match(tailed.records[1].message, /tick/);
+  assert.equal(tailed.truncated, true);
+
+  const head = await readLogs({ logfiles: [logback], parser: { preset: 'logback' }, limit: 2 });
+  assert.deepEqual(head.records.map((record) => record.level), ['INFO', 'ERROR']);
+});

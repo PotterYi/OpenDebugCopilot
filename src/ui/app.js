@@ -815,8 +815,8 @@ function renderLogAnchors() {
   const current = logAnchor.value;
   logAnchor.textContent = '';
   const nowOption = document.createElement('option');
-  nowOption.value = 'now';
-  nowOption.textContent = '当前时间';
+  nowOption.value = 'latest';
+  nowOption.textContent = '最近日志（最后 N 条）';
   logAnchor.append(nowOption);
   const items = [...captureState.values()].sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0));
   for (const item of items) {
@@ -835,11 +835,13 @@ function currentLogParser() {
   return logParser.value;
 }
 
-function renderLogResult(result, anchorRequest) {
+function renderLogResult(result, anchorRequest, tailMode = false) {
   const stats = result.stats ?? {};
-  const anchorText = anchorRequest
-    ? `${anchorRequest.method} ${requestPath(anchorRequest.url)} [${anchorRequest.status ?? '…'}] @ ${new Date(anchorRequest.startedAt ?? Date.now()).toLocaleString()}`
-    : `当前时间 @ ${new Date().toLocaleString()}`;
+  const anchorText = tailMode
+    ? `最近日志（最后 ${result.records?.length ?? 0} 条）`
+    : anchorRequest
+      ? `${anchorRequest.method} ${requestPath(anchorRequest.url)} [${anchorRequest.status ?? '…'}] @ ${new Date(anchorRequest.startedAt ?? Date.now()).toLocaleString()}`
+      : `时间窗 @ ${new Date().toLocaleString()}`;
   logSummary.textContent = `${anchorText} · 解析器 ${result.parser ?? '-'} · 文件 ${stats.files ?? 0} · 行 ${stats.lines ?? 0} · 解析 ${stats.parsed ?? 0} · 续行 ${stats.continuations ?? 0} · 未解析 ${stats.unparsed ?? 0}`;
   logOutput.textContent = '';
   if (!result.records || result.records.length === 0) {
@@ -883,9 +885,10 @@ async function queryLogsTab() {
     return;
   }
   const anchorValue = logAnchor.value;
+  const tail = !anchorValue || anchorValue === 'latest';
   let anchor = Date.now();
   let anchorRequest = null;
-  if (anchorValue && anchorValue !== 'now') {
+  if (!tail) {
     anchorRequest = captureState.get(anchorValue) ?? null;
     if (anchorRequest?.startedAt) anchor = anchorRequest.startedAt;
   }
@@ -901,11 +904,10 @@ async function queryLogsTab() {
     const result = await api.queryLogs({
       logfiles: files,
       parser,
-      anchor,
-      window: configCache?.workspace?.window,
+      ...(tail ? { tail: true } : { anchor, window: configCache?.workspace?.window }),
       limit: 300,
     });
-    renderLogResult(result, anchorRequest);
+    renderLogResult(result, anchorRequest, tail);
     logMessage.textContent = `查询完成：${result.records?.length ?? 0} 条`;
     logMessage.className = 'message ok';
   } catch (err) {

@@ -122,6 +122,7 @@ function registerIpc(service, getHost, getRouter, setRules) {
         window: payload.window ?? workspace.window,
         limit: payload.limit ?? 300,
         encoding: 'auto',
+        tail: payload.tail === true,
       });
       return { ...result, logfiles };
     }
