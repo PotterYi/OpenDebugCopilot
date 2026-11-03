@@ -169,7 +169,18 @@ button:hover { filter: brightness(1.08); }
   font-size: 12px;
 }
 
-.routing-list { margin: 8px 0; }
+.routing-list { margin: 4px 0 8px; }
+.rule-header {
+  display: grid;
+  grid-template-columns: 26px 1.1fr 1fr 90px 1.5fr 56px 74px 28px;
+  gap: 6px;
+  align-items: center;
+  padding: 4px 0;
+  margin-top: 6px;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 11px;
+}
 .rule-row {
   display: grid;
   grid-template-columns: 26px 1.1fr 1fr 90px 1.5fr 56px 74px 28px;

@@ -443,11 +443,15 @@ function renderRouting() {
       kind.append(option);
     }
     kind.value = rule.target?.kind ?? 'local';
+    kind.addEventListener('change', () => {
+      baseUrl.placeholder = kind.value === 'sit' ? 'https://sit.example.com' : 'http://localhost:8080';
+    });
 
     const baseUrl = document.createElement('input');
     baseUrl.type = 'text';
     baseUrl.dataset.field = 'baseUrl';
     baseUrl.placeholder = 'http://localhost:8080';
+    baseUrl.title = '目标服务 baseUrl（含协议和端口），例如 http://localhost:8080 或 https://sit.example.com';
     baseUrl.value = rule.target?.baseUrl ?? '';
 
     const probe = document.createElement('button');

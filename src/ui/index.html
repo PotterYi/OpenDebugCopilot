@@ -114,11 +114,24 @@
           <span id="routing-message" class="message"></span>
           <span id="routing-status" class="muted small"></span>
         </div>
+        <div class="rule-header">
+          <span>启用</span>
+          <span>Host（留空=任意）</span>
+          <span>URL 前缀</span>
+          <span>类型</span>
+          <span>目标地址（baseUrl）</span>
+          <span>探测</span>
+          <span>状态</span>
+          <span>操作</span>
+        </div>
         <div id="routing-list" class="routing-list"></div>
         <p class="muted">
           规则匹配浏览器实际请求的 host + 路径前缀；host 留空表示任意。
           若前端通过 dev server 代理，请填前端域名（如 localhost:5173）。
           HTTPS 页面不能改道到 http 本地地址。
+          <br />
+          类型「本地」= 改道到本机服务（自动补 CORS/预检）；类型「SIT」= 转发到测试环境（网关的 CORS/状态原样透传）。
+          目标地址填完整 baseUrl（含端口），例如 http://localhost:8080 或 https://sit.example.com。
         </p>
       </div>
 
