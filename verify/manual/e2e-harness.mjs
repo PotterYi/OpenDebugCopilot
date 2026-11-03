@@ -28,14 +28,7 @@ const logFile = path.join(TMP, 'app.log');
 await writeFile(logFile, '', 'utf8');
 
 let backendHits = 0;
-let backendOptions = 0;
 const backend = http.createServer(async (req, res) => {
-  if (req.url === '/api/order' && req.method === 'OPTIONS') {
-    backendOptions += 1;
-    res.statusCode = 204;
-    res.end();
-    return;
-  }
   if (req.url === '/api/order' && req.method === 'POST') {
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
@@ -63,7 +56,7 @@ let frontendOptions = 0;
 const frontend = http.createServer((req, res) => {
   if (req.url === '/') {
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
-    res.end(pageHtml());
+    res.end(pageHtml(backendUrl));
     return;
   }
   if (req.url === '/api/order' && req.method === 'OPTIONS') {
@@ -119,7 +112,7 @@ log.info('');
 
 const code = await new Promise((resolve) => child.on('close', resolve));
 log.info(`Electron 退出码: ${code}`);
-log.info(`后端命中次数: ${backendHits}（期望 >= 1）；预检后端 ${backendOptions} 次 / 前端 ${frontendOptions} 次（期望 >= 1）`);
+log.info(`后端命中次数: ${backendHits}（期望 >= 1）；预检由内置代理处理（前端收到 ${frontendOptions} 次）`);
 log.info(`临时目录: ${TMP}${KEEP ? '（已保留）' : ''}`);
 
 backend.close();

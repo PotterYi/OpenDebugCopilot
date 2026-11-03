@@ -83,27 +83,28 @@ export function buildRedirectUrl(rule, requestUrl, proxyBaseUrl = null) {
 }
 
 /**
- * True when a URL points at any enabled local routing target.
+ * True when a URL points at any enabled routing target (local or SIT).
  * Redirected requests may get a new webRequest id, so headersReceived cannot rely on the pending map alone.
  *
  * @param {Array<any>} rules
  * @param {string} url
  */
-export function isLocalTargetUrl(rules, url) {
+export function isTargetUrl(rules, url) {
   let parsed;
   try {
     parsed = new URL(url);
   } catch {
     return false;
   }
+  const portOf = (value) => value.port || (value.protocol === 'https:' ? '443' : '80');
   return (rules ?? []).some((rule) => {
-    if (rule.enabled === false || rule.target?.kind !== 'local') return false;
+    if (rule.enabled === false) return false;
     try {
       const target = new URL(rule.target.baseUrl);
       const sameHost = isLocalHostname(target.hostname) && isLocalHostname(parsed.hostname)
         ? true
         : target.hostname.toLowerCase() === parsed.hostname.toLowerCase();
-      return sameHost && (target.port || '80') === (parsed.port || '80');
+      return sameHost && portOf(target) === portOf(parsed);
     } catch {
       return false;
     }
@@ -171,6 +172,7 @@ export class Router {
     this.onHit = onHit;
     this.onMiss = onMiss;
     this.proxyBaseUrl = proxyBaseUrl;
+    this.originByUrl = new Map();
     this.pending = new Map();
     this.filter = { urls: ['<all_urls>'] };
 
@@ -223,35 +225,38 @@ export class Router {
   beforeSendHeaders(details, callback) {
     const hit = this.pending.get(details.id);
     const requestHeaders = { ...(details.requestHeaders ?? {}) };
-    if (hit) {
-      hit.requestHeaders = { ...requestHeaders };
-      const origin = this.getPageOrigin();
-      if (origin) {
-        const existing = Object.keys(requestHeaders).find((key) => key.toLowerCase() === 'origin');
-        if (existing) requestHeaders[existing] = origin;
-        else requestHeaders.Origin = origin;
+    const originKey = Object.keys(requestHeaders).find((key) => key.toLowerCase() === 'origin');
+    const origin = originKey ? requestHeaders[originKey] : null;
+    if (origin) {
+      if (hit) hit.origin = origin;
+      if (details.url) {
+        this.originByUrl.set(details.url, origin);
+        if (this.originByUrl.size > 200) {
+          const oldest = this.originByUrl.keys().next().value;
+          this.originByUrl.delete(oldest);
+        }
       }
     }
+    if (hit) hit.requestHeaders = { ...requestHeaders };
     callback({ requestHeaders });
   }
 
   headersReceived(details, callback) {
     const hit = this.pending.get(details.id);
-    const localTarget = hit?.rule?.target?.kind === 'local'
-      || (!hit && isLocalTargetUrl(this.getRules(), details.url));
-    if (!hit && !localTarget) {
-      callback({ responseHeaders: details.responseHeaders });
-      return;
-    }
-    const isPreflight = Boolean(hit?.options) || details.method === 'OPTIONS';
-    const statusCode = details.statusCode ?? 200;
-    if (!localTarget && !isPreflight) {
+    const related = Boolean(hit) || isTargetUrl(this.getRules(), details.url);
+    if (!related) {
       callback({ responseHeaders: details.responseHeaders });
       return;
     }
 
+    const isPreflight = Boolean(hit?.options) || details.method === 'OPTIONS';
+    const statusCode = details.statusCode ?? 200;
+    const origin = hit?.origin
+      ?? (details.url ? this.originByUrl.get(details.url) : null)
+      ?? this.getPageOrigin()
+      ?? null;
     const responseHeaders = applyCorsHeaders(details.responseHeaders, {
-      origin: this.getPageOrigin(),
+      origin,
       requestHeaders: hit?.requestHeaders ?? {},
     });
 
@@ -289,5 +294,6 @@ export class Router {
     this.session.webRequest.onCompleted(null);
     this.session.webRequest.onErrorOccurred(null);
     this.pending.clear();
+    this.originByUrl.clear();
   }
 }

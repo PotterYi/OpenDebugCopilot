@@ -60,6 +60,10 @@ test('adds CORS headers for local responses', () => {
   assert.deepEqual(headers['Access-Control-Allow-Headers'], ['content-type']);
   assert.deepEqual(headers['Access-Control-Allow-Credentials'], ['true']);
   assert.deepEqual(headers['Access-Control-Max-Age'], ['0']);
+
+  const nullOrigin = applyCorsHeaders({}, { origin: 'null' });
+  assert.deepEqual(nullOrigin['Access-Control-Allow-Origin'], ['null']);
+  assert.deepEqual(nullOrigin['Access-Control-Allow-Credentials'], ['true']);
   assert.deepEqual(headers['content-type'], ['application/json']);
 });
 
@@ -102,14 +106,14 @@ test('router redirects actual requests, keeps OPTIONS and adds CORS', () => {
     { id: 1, requestHeaders: { Origin: 'https://api.example.com' } },
     (result) => { sent = result; },
   );
-  assert.equal(sent.requestHeaders.Origin, 'http://localhost:5173');
+  assert.equal(sent.requestHeaders.Origin, 'https://api.example.com');
 
   let received = null;
   handlers.headers(
     { id: 1, method: 'POST', responseHeaders: { 'content-type': ['application/json'] } },
     (result) => { received = result; },
   );
-  assert.deepEqual(received.responseHeaders['Access-Control-Allow-Origin'], ['http://localhost:5173']);
+  assert.deepEqual(received.responseHeaders['Access-Control-Allow-Origin'], ['https://api.example.com']);
 
   let optionsResult = null;
   handlers.before(
@@ -190,6 +194,57 @@ test('router uses the proxy for local rules', () => {
   const parsed = new URL(redirect.redirectURL);
   assert.equal(parsed.pathname, '/__dcproxy');
   assert.equal(parsed.searchParams.get('target'), 'http://127.0.0.1:8080');
+  router.dispose();
+});
+
+test('echoes the actual request Origin, including null', () => {
+  const handlers = {};
+  const session = {
+    webRequest: {
+      onBeforeRequest: (_filter, listener) => { handlers.before = listener ?? null; },
+      onBeforeSendHeaders: (_filter, listener) => { handlers.send = listener ?? null; },
+      onHeadersReceived: (_filter, listener) => { handlers.headers = listener ?? null; },
+      onCompleted: (_filter, listener) => { handlers.completed = listener ?? null; },
+      onErrorOccurred: (_filter, listener) => { handlers.error = listener ?? null; },
+    },
+  };
+  const router = new Router({
+    session,
+    getRules: () => rules,
+    getPageOrigin: () => 'http://localhost:5173',
+  });
+  handlers.before({ id: 1, url: 'https://api.example.com/api/order/1', method: 'POST', resourceType: 'xhr' }, () => {});
+  handlers.send({ id: 1, requestHeaders: { Origin: 'null' } }, () => {});
+  let received = null;
+  handlers.headers(
+    { id: 1, method: 'POST', statusCode: 200, responseHeaders: {} },
+    (result) => { received = result; },
+  );
+  assert.deepEqual(received.responseHeaders['Access-Control-Allow-Origin'], ['null']);
+  assert.deepEqual(received.responseHeaders['Access-Control-Allow-Credentials'], ['true']);
+  router.dispose();
+});
+
+test('adds CORS headers for SIT targets too', () => {
+  const handlers = {};
+  const session = {
+    webRequest: {
+      onBeforeRequest: (_filter, listener) => { handlers.before = listener ?? null; },
+      onBeforeSendHeaders: (_filter, listener) => { handlers.send = listener ?? null; },
+      onHeadersReceived: (_filter, listener) => { handlers.headers = listener ?? null; },
+      onCompleted: (_filter, listener) => { handlers.completed = listener ?? null; },
+      onErrorOccurred: (_filter, listener) => { handlers.error = listener ?? null; },
+    },
+  };
+  const router = new Router({ session, getRules: () => rules, getPageOrigin: () => 'http://localhost:5173' });
+  handlers.before({ id: 7, url: 'https://api.example.com/api/user/1', method: 'GET', resourceType: 'xhr' }, () => {});
+  handlers.send({ id: 7, requestHeaders: { Origin: 'http://localhost:5173' } }, () => {});
+  let received = null;
+  handlers.headers(
+    { id: 7, method: 'GET', statusCode: 200, url: 'https://sit.example.com/api/user/1', responseHeaders: {} },
+    (result) => { received = result; },
+  );
+  assert.deepEqual(received.responseHeaders['Access-Control-Allow-Origin'], ['http://localhost:5173']);
   router.dispose();
 });
 

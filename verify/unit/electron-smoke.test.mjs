@@ -34,12 +34,14 @@ test('electron shell boots, captures, routes and diagnoses', {
 
   let backendHits = 0;
   let pageApiHits = 0;
+  let backendOrigin = null;
   let pageOptionsHits = 0;
 
   let backendOptions = 0;
   const backendServer = http.createServer((req, res) => {
     if (req.url === '/api/order' && req.method === 'POST') {
       backendHits += 1;
+      backendOrigin = req.headers.origin ?? null;
       res.setHeader('Content-Type', 'application/json');
       res.end('{"from":"backend"}');
       return;
@@ -54,7 +56,7 @@ test('electron shell boots, captures, routes and diagnoses', {
   const pageServer = http.createServer((req, res) => {
     if (req.url === '/page') {
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
-      res.end(pageHtml());
+      res.end(pageHtml(`http://localhost:${backendServer.address().port}`));
 
       return;
     }
@@ -137,4 +139,5 @@ test('electron shell boots, captures, routes and diagnoses', {
   assert.equal(backendOptions, 0, 'preflight should be answered by the local proxy');
   assert.equal(pageOptionsHits, 0, 'preflight should not reach the page server');
   assert.equal(pageApiHits, 0, `request should have been redirected, page hits: ${pageApiHits}`);
+  assert.ok(backendOrigin, 'backend should receive an Origin header');
 });
