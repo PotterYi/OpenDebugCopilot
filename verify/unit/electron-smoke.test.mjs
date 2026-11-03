@@ -38,6 +38,23 @@ test('electron shell boots, captures, routes and diagnoses', {
   let pageOptionsHits = 0;
 
   let backendOptions = 0;
+  let envHits = 0;
+  const envServer = http.createServer((req, res) => {
+    if (req.method === 'OPTIONS') {
+      res.statusCode = 204;
+      res.end();
+      return;
+    }
+    envHits += 1;
+    res.statusCode = 500;
+    res.setHeader('Content-Type', 'application/json');
+    res.end('{"from":"env"}');
+  });
+  envServer.listen(0);
+  await once(envServer, 'listening');
+  t.after(() => new Promise((resolve) => envServer.close(resolve)));
+  const envUrl = `http://localhost:${envServer.address().port}`;
+
   const backendServer = http.createServer((req, res) => {
     if (req.url === '/api/order' && req.method === 'POST') {
       backendHits += 1;
@@ -56,7 +73,7 @@ test('electron shell boots, captures, routes and diagnoses', {
   const pageServer = http.createServer((req, res) => {
     if (req.url === '/page') {
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
-      res.end(pageHtml(`http://localhost:${backendServer.address().port}`));
+      res.end(pageHtml(envUrl));
 
       return;
     }
@@ -148,5 +165,6 @@ test('electron shell boots, captures, routes and diagnoses', {
   assert.equal(backendOptions, 0, 'preflight should be answered by the local proxy');
   assert.equal(pageOptionsHits, 0, 'preflight should not reach the page server');
   assert.equal(pageApiHits, 0, `request should have been redirected, page hits: ${pageApiHits}`);
+  assert.equal(envHits, 0, `request should have been redirected to local, env hits: ${envHits}`);
   assert.ok(backendOrigin, 'backend should receive an Origin header');
 });

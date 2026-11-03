@@ -42,6 +42,7 @@ export class BrowserHost {
     this.consoleEvents = [];
     this.consoleSeq = 0;
     this.headersByPath = new Map();
+    this.headersByUrl = new Map();
     this.visible = false;
     this.bounds = { x: 0, y: 0, width: 0, height: 0 };
 
@@ -161,6 +162,10 @@ export class BrowserHost {
     return this.headersByPath.get(pathAndQuery) ?? null;
   }
 
+  findRequestHeaders(url) {
+    return this.headersByUrl.get(url) ?? null;
+  }
+
   listConsole({ limit = 50 } = {}) {
     return this.consoleEvents.slice(-limit);
   }
@@ -169,6 +174,7 @@ export class BrowserHost {
     this.consoleEvents = [];
     this.consoleSeq = 0;
     this.headersByPath = new Map();
+    this.headersByUrl = new Map();
     this.emit({ type: 'console-clear' });
   }
 
@@ -216,9 +222,14 @@ export class BrowserHost {
         try {
           const parsed = new URL(request.url);
           this.headersByPath.set(`${parsed.pathname}${parsed.search}`, request.headers ?? {});
-          if (this.headersByPath.size > 300) {
+          this.headersByUrl.set(request.url, request.headers ?? {});
+          while (this.headersByPath.size > 300) {
             const oldest = this.headersByPath.keys().next().value;
             this.headersByPath.delete(oldest);
+          }
+          while (this.headersByUrl.size > 300) {
+            const oldest = this.headersByUrl.keys().next().value;
+            this.headersByUrl.delete(oldest);
           }
         } catch {
           // ignore invalid URLs
@@ -406,6 +417,7 @@ export class BrowserHost {
     this.consoleEvents = [];
     this.consoleSeq = 0;
     this.headersByPath = new Map();
+    this.headersByUrl = new Map();
     this.emit({ type: 'clear' });
   }
 

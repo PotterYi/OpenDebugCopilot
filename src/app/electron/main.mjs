@@ -488,11 +488,14 @@ async function bootstrap() {
       return false;
     }
   });
-  try {
-    proxy = await startLocalProxy({ isAllowedTarget });
-    log.info('[proxy] routing proxy:', proxy.url);
-  } catch (error) {
-    log.error('[proxy] failed to start; falling back to direct redirects', error);
+  const useProxy = process.env.DC_ROUTING_PROXY === '1';
+  if (useProxy) {
+    try {
+      proxy = await startLocalProxy({ isAllowedTarget });
+      log.info('[proxy] routing proxy:', proxy.url);
+    } catch (error) {
+      log.error('[proxy] failed to start; falling back to direct redirects', error);
+    }
   }
   registerIpc(
     service,
@@ -535,7 +538,17 @@ async function bootstrap() {
       if (!window.isDestroyed()) window.webContents.send('dc:capture:event', { type: 'routing-miss', ...event });
     },
     proxyBaseUrl: proxy?.url ?? null,
-    getOriginalHeaders: (pathAndQuery) => host?.findRequestHeadersByPath(pathAndQuery) ?? null,
+    getOriginalHeaders: (url) => {
+      if (!host) return null;
+      const direct = host.findRequestHeaders(url);
+      if (direct) return direct;
+      try {
+        const parsed = new URL(url);
+        return host.findRequestHeadersByPath(`${parsed.pathname}${parsed.search}`);
+      } catch {
+        return null;
+      }
+    },
   });
   window.on('closed', () => {
     router?.dispose();

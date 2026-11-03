@@ -243,18 +243,15 @@ export class Router {
     let hasAuth = Object.keys(requestHeaders).some((key) => key.toLowerCase() === 'authorization');
     if (!hasAuth) {
       try {
-        const proxied = new URL(details.url);
-        if (proxied.pathname === '/__dcproxy') {
-          const pathAndQuery = proxied.searchParams.get('url');
-          const original = this.getOriginalHeaders(pathAndQuery) ?? {};
-          const authKey = Object.keys(original).find((key) => key.toLowerCase() === 'authorization');
-          if (authKey) {
-            requestHeaders.Authorization = original[authKey];
-            hasAuth = true;
-          }
+        const originalUrl = hit?.originalUrl ?? details.url;
+        const original = this.getOriginalHeaders(originalUrl) ?? {};
+        const authKey = Object.keys(original).find((key) => key.toLowerCase() === 'authorization');
+        if (authKey) {
+          requestHeaders.Authorization = original[authKey];
+          hasAuth = true;
         }
       } catch {
-        // ignore malformed proxy URLs
+        // ignore malformed URLs
       }
     }
     log.debug('[routing headers]', details.url, hasAuth ? 'auth' : 'no-auth');

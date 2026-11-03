@@ -346,8 +346,8 @@ test('restores Authorization stripped by browser redirects', () => {
     session,
     getRules: () => rules,
     proxyBaseUrl: 'http://localhost:9999',
-    getOriginalHeaders: (pathAndQuery) =>
-      pathAndQuery === '/api/order/1?x=1' ? { Authorization: 'Bearer abc' } : null,
+    getOriginalHeaders: (url) =>
+      String(url).includes('/api/order/1?x=1') ? { Authorization: 'Bearer abc' } : null,
   });
   handlers.before(
     { id: 1, url: 'https://api.example.com/api/order/1?x=1', method: 'GET', resourceType: 'xhr' },
