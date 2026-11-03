@@ -86,6 +86,7 @@ test('mock run executes the full loop through the CLI', async (t) => {
 
     const result = await runCliAsync(['run', scenarioPath, '--mock', '--json', '-q', '下单失败', '--runs-dir', path.join(TMP, 'runs')]);
     assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim().startsWith('{'), true, 'stdout must contain only the JSON result');
     const parsed = JSON.parse(result.stdout);
     assert.equal(parsed.meta.mode, 'mock');
     assert.equal(parsed.marker.injected, true);

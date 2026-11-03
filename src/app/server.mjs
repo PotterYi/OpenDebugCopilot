@@ -2,6 +2,7 @@ import http from 'node:http';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { AppError } from '../core/errors.mjs';
+import { log } from '../core/logger.mjs';
 
 const MIME = Object.freeze({
   '.html': 'text/html; charset=utf-8',
@@ -117,7 +118,7 @@ export async function startServer({ service, uiDir, host = '127.0.0.1', port = 7
       await serveStatic(res, uiDir, decodeURIComponent(pathname));
     } catch (err) {
       const status = httpStatusFor(err);
-      if (status >= 500) console.error('[web]', err);
+      if (status >= 500) log.error('[web]', err);
       sendJson(res, status, {
         error: err instanceof AppError ? err.code : 'internal_error',
         message: err?.message ?? String(err),

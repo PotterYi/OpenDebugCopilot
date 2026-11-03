@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { mkdir, readFile, rm, writeFile, appendFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
+import { log } from '../../src/core/logger.mjs';
 
 const require = createRequire(import.meta.url);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -110,23 +111,23 @@ const child = spawn(electronPath, [
   '--runs-dir', path.join(TMP, 'runs'),
 ], { stdio: 'inherit' });
 
-console.log('');
-console.log('=== DebugCopilot 手工 E2E ===');
-console.log(`UI: ${`http://127.0.0.1:${UI_PORT}`}`);
-console.log(`前端: ${frontendUrl}`);
-console.log(`后端: ${backendUrl}`);
-console.log('步骤：');
-console.log('1. 窗口打开后，在“浏览器”页看到 Manual E2E Frontend，用真实鼠标点击“创建订单”');
-console.log('2. 切到“请求”，确认出现 POST /api/order，状态 500，URL 指向后端端口');
-console.log('3. 选中该请求，点“诊断（Mock）”，确认出现 Run ID、Gates: ok 与结论');
-console.log('4. 切到“历史”，确认新增一条记录并能打开报告');
-console.log('5. 关闭窗口结束（临时文件会自动清理）');
-console.log('');
+log.info('');
+log.info('=== DebugCopilot 手工 E2E ===');
+log.info(`UI: ${`http://127.0.0.1:${UI_PORT}`}`);
+log.info(`前端: ${frontendUrl}`);
+log.info(`后端: ${backendUrl}`);
+log.info('步骤：');
+log.info('1. 窗口打开后，在“浏览器”页看到 Manual E2E Frontend，用真实鼠标点击“创建订单”');
+log.info('2. 切到“请求”，确认出现 POST /api/order，状态 500，URL 指向后端端口');
+log.info('3. 选中该请求，点“诊断（Mock）”，确认出现 Run ID、Gates: ok 与结论');
+log.info('4. 切到“历史”，确认新增一条记录并能打开报告');
+log.info('5. 关闭窗口结束（临时文件会自动清理）');
+log.info('');
 
 const code = await new Promise((resolve) => child.on('close', resolve));
-console.log(`Electron 退出码: ${code}`);
-console.log(`后端命中次数: ${backendHits}（期望 >= 1）`);
-console.log(`临时目录: ${TMP}${KEEP ? '（已保留）' : ''}`);
+log.info(`Electron 退出码: ${code}`);
+log.info(`后端命中次数: ${backendHits}（期望 >= 1）`);
+log.info(`临时目录: ${TMP}${KEEP ? '（已保留）' : ''}`);
 
 backend.close();
 frontend.close();

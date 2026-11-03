@@ -8,6 +8,7 @@ import { Router } from './routing.mjs';
 import { runCaptureDiagnosis } from '../../diagnose/run.mjs';
 import { createMockAgent } from '../../agent/mock.mjs';
 import { createClaudeAgent } from '../../agent/claude.mjs';
+import { log, setLogFile } from '../../core/logger.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '../../..');
@@ -200,7 +201,7 @@ async function waitForCapture(host, timeoutMs) {
 
 async function runSmoke(window, host) {
   const timeout = setTimeout(() => {
-    console.error('SMOKE_TIMEOUT');
+    log.error('SMOKE_TIMEOUT');
     app.exit(1);
   }, 20_000);
 
@@ -290,13 +291,18 @@ async function runSmoke(window, host) {
     return ok;
   } catch (error) {
     clearTimeout(timeout);
-    console.error('SMOKE_FAILED', error);
+    log.error('SMOKE_FAILED', error);
     return false;
   }
 }
 
 async function bootstrap() {
   app.setName('DebugCopilot');
+  try {
+    setLogFile(path.join(app.getPath('userData'), 'debugcopilot.log'));
+  } catch {
+    // file logging is optional
+  }
   const service = createService({ root: ROOT, runsDir, configDir });
   const initial = await service.getConfig();
   let host = null;
@@ -316,7 +322,7 @@ async function bootstrap() {
     host: HOST,
     port: Number.isFinite(port) ? port : 0,
   });
-  console.log(`DebugCopilot Electron: ${server.url}`);
+  log.info(`DebugCopilot Electron: ${server.url}`);
 
   const window = createWindow(server.url);
   host = new BrowserHost({
@@ -368,9 +374,9 @@ async function bootstrap() {
 
 app.whenReady().then(bootstrap).catch((error) => {
   if (error?.code === 'EADDRINUSE') {
-    console.error(`FATAL UI port ${port} is already in use; free it or pass --port`);
+    log.error(`FATAL UI port ${port} is already in use; free it or pass --port`);
   } else {
-    console.error('FATAL', error);
+    log.error('FATAL', error);
   }
   app.exit(1);
 });

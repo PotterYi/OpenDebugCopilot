@@ -113,6 +113,7 @@ test('electron shell boots, captures, routes and diagnoses', {
 
   assert.equal(code, 0, `electron exited ${code}\nstdout:\n${stdout}\nstderr:\n${stderr}`);
   assert.match(stdout, /SMOKE_OK/);
+  assert.doesNotMatch(stdout, /DebugCopilot Electron/);
   assert.match(stdout, /"hasDc":true/);
   assert.match(stdout, /"hasWorkspace":true/);
   assert.match(stdout, /"uiReady":true/);

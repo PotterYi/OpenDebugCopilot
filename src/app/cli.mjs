@@ -10,6 +10,7 @@ import { runDiagnosis } from '../diagnose/run.mjs';
 import { createMockAgent } from '../agent/mock.mjs';
 import { createClaudeAgent } from '../agent/claude.mjs';
 import { startWeb } from './web.mjs';
+import { log } from '../core/logger.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '../..');
@@ -301,12 +302,12 @@ export async function main(argv = process.argv.slice(2), { root = ROOT } = {}) {
     return 0;
   } catch (err) {
     if (err?.code === 'EADDRINUSE') {
-      console.error(`[PORT_IN_USE] ${parsed?.port ?? ''} is already in use; free it or pass --port`);
+      log.error(`[PORT_IN_USE] ${parsed?.port ?? ''} is already in use; free it or pass --port`);
       return 3;
     }
     const payload = toErrorPayload(err);
-    if (process.env.DC_DEBUG) console.error(err);
-    console.error(`[${payload.code}] ${payload.message}`);
+    if (process.env.DC_DEBUG) log.debug(err);
+    log.error(`[${payload.code}] ${payload.message}`);
     return payload.exitCode;
   }
 }
