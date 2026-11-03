@@ -49,6 +49,10 @@ export const api = {
     if (!dc?.invoke) return action === 'list' ? { requests: [] } : { pending: true };
     return dc.invoke('dc:capture', { action, ...payload });
   },
+  async diagnose(payload) {
+    if (dc?.invoke) return dc.invoke('dc:diagnose', payload);
+    return http('/api/diagnose', { method: 'POST', body: JSON.stringify(payload) });
+  },
   onCapture(handler) {
     if (!dc?.on) return () => {};
     return dc.on('dc:capture:event', handler);

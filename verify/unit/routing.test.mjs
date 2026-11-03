@@ -59,6 +59,7 @@ test('adds CORS headers for local responses', () => {
   assert.deepEqual(headers['Access-Control-Allow-Methods'], ['POST']);
   assert.deepEqual(headers['Access-Control-Allow-Headers'], ['content-type']);
   assert.deepEqual(headers['Access-Control-Allow-Credentials'], ['true']);
+  assert.deepEqual(headers['Access-Control-Max-Age'], ['0']);
   assert.deepEqual(headers['content-type'], ['application/json']);
 });
 
@@ -81,9 +82,16 @@ test('router redirects actual requests, keeps OPTIONS and adds CORS', () => {
     onHit: (event) => hits.push(event),
   });
 
+  let docRedirect = null;
+  handlers.before(
+    { id: 9, url: 'https://api.example.com/api/order/1', method: 'GET', resourceType: 'mainFrame' },
+    (result) => { docRedirect = result; },
+  );
+  assert.deepEqual(docRedirect, {});
+
   let redirect = null;
   handlers.before(
-    { id: 1, url: 'https://api.example.com/api/order/1?x=1', method: 'POST' },
+    { id: 1, url: 'https://api.example.com/api/order/1?x=1', method: 'POST', resourceType: 'xhr' },
     (result) => { redirect = result; },
   );
   assert.equal(redirect.redirectURL, 'http://localhost:8080/api/order/1?x=1');
@@ -105,7 +113,7 @@ test('router redirects actual requests, keeps OPTIONS and adds CORS', () => {
 
   let optionsResult = null;
   handlers.before(
-    { id: 2, url: 'https://api.example.com/api/order/1', method: 'OPTIONS' },
+    { id: 2, url: 'https://api.example.com/api/order/1', method: 'OPTIONS', resourceType: 'xhr' },
     (result) => { optionsResult = result; },
   );
   assert.deepEqual(optionsResult, {});

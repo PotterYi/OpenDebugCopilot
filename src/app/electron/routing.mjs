@@ -39,7 +39,7 @@ function joinPath(basePath, requestPath) {
  * @param {string} url
  * @returns {any | null}
  */
-export function matchRule(rules, url) {
+export function matchRule(rules, url, resourceType = null) {
   let parsed;
   try {
     parsed = new URL(url);
@@ -50,6 +50,11 @@ export function matchRule(rules, url) {
     if (rule.enabled === false) continue;
     if (rule.match?.host && rule.match.host.toLowerCase() !== parsed.hostname.toLowerCase()) continue;
     if (!parsed.pathname.startsWith(rule.match?.prefix ?? '')) continue;
+    // Never rewrite document/script/stylesheet requests: only XHR/Fetch by default.
+    if (resourceType !== null) {
+      const allowed = rule.match?.resourceTypes ?? ['xhr'];
+      if (!allowed.includes(resourceType)) continue;
+    }
     return rule;
   }
   return null;
@@ -98,6 +103,8 @@ export function applyCorsHeaders(responseHeaders = {}, { origin = null, requestH
     Vary: 'Origin',
   };
   if (allowOrigin !== '*') values['Access-Control-Allow-Credentials'] = 'true';
+  // Preflight caching makes failures look green later; never cache in dev.
+  values['Access-Control-Max-Age'] = '0';
 
   for (const [name, value] of Object.entries(values)) {
     deleteHeaderCaseInsensitive(headers, name);
@@ -142,7 +149,7 @@ export class Router {
   }
 
   beforeRequest(details, callback) {
-    const rule = matchRule(this.getRules(), details.url);
+    const rule = matchRule(this.getRules(), details.url, details.resourceType ?? null);
     if (!rule) {
       callback({});
       return;
@@ -188,6 +195,14 @@ export class Router {
       callback({ responseHeaders: details.responseHeaders });
       return;
     }
+    if (hit.options && ((details.statusCode ?? 200) < 200 || (details.statusCode ?? 200) >= 300)) {
+      this.onHit({
+        type: 'cors-warning',
+        message: 'Preflight returned a non-2xx status; the browser will block the request',
+        url: details.url,
+        status: details.statusCode ?? null,
+      });
+    }
     const localTarget = hit.rule?.target?.kind === 'local';
     if (!localTarget && !hit.options) {
       callback({ responseHeaders: details.responseHeaders });
@@ -204,8 +219,10 @@ export class Router {
     this.pending.delete(details.id);
   }
 
-  /** Rules are read dynamically; this hook exists for explicit config refresh events. */
-  apply() {}
+  /** Rules are read dynamically; clear cached preflights so old results cannot mask changes. */
+  apply() {
+    this.session.clearCache().catch(() => {});
+  }
 
 
   dispose() {

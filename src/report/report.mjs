@@ -54,6 +54,8 @@ export function buildReport(result) {
       sourceFiles: result.source?.files?.length ?? 0,
       toolCalls: agent.toolCalls?.length ?? 0,
       confidence: agent.confidence ?? null,
+      correlation: result.logs?.correlation?.strategy ?? null,
+      correlationId: result.logs?.correlation?.matchedId ?? null,
     },
     selfCheck: (result.gates?.checks ?? []).map((check) => ({ name: check.name, ok: check.ok })),
     recheck: result.recheck
@@ -119,6 +121,9 @@ export function renderMarkdown(report) {
     `- 线程数：${report.summary.threads}`,
     `- 源码片段：${report.summary.sourceFiles} 处`,
     `- 工具调用：${report.summary.toolCalls} 次`,
+    ...(report.summary.correlation
+      ? [`- 关联方式：${report.summary.correlation}${report.summary.correlationId ? `（${report.summary.correlationId}）` : ''}`]
+      : []),
     '',
     '## 自检',
     '',

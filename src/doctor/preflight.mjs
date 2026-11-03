@@ -65,3 +65,31 @@ export async function runPreflight(scenario) {
   const ok = checks.every((check) => check.ok || check.severity === 'warn');
   return { ok, checks };
 }
+
+/**
+ * Preflight for captured-request diagnosis: no driver/baseUrl to fire.
+ *
+ * @param {{ logfiles?: string[], sourceRoot?: string | null }} [input]
+ * @returns {Promise<{ ok: boolean, checks: Array<{ name: string, severity: 'error' | 'warn', ok: boolean, detail?: string }> }>}
+ */
+export async function runCapturePreflight({ logfiles = [], sourceRoot = null } = {}) {
+  const checks = [];
+  const add = (name, severity, ok, detail) => checks.push({ name, severity, ok, detail });
+
+  if (logfiles.length === 0) {
+    add('logfiles', 'warn', true, 'no logfiles declared; diagnosis will run without log evidence');
+  } else {
+    for (const file of logfiles) {
+      add('logfile', 'error', await isReadable(file), file);
+    }
+  }
+
+  if (!sourceRoot) {
+    add('source-root', 'warn', true, 'no source.root declared; source tools will be unavailable');
+  } else {
+    add('source-root', 'error', await isDirectory(path.resolve(sourceRoot)), sourceRoot);
+  }
+
+  const ok = checks.every((check) => check.ok || check.severity === 'warn');
+  return { ok, checks };
+}

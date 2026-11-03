@@ -13,10 +13,14 @@ const browserUrlInput = $('browser-url');
 const browserSlot = $('browser-slot');
 const routingList = $('routing-list');
 const routingMessage = $('routing-message');
+const diagnoseQuestion = $('diagnose-question');
+const diagnoseMessage = $('diagnose-message');
+const diagnoseResult = $('diagnose-result');
 
 let currentTab = 'browser';
 let configCache = null;
 let routingRules = [];
+let currentRequestId = null;
 const captureState = new Map();
 let renderQueued = false;
 
@@ -175,6 +179,7 @@ async function refreshRequests() {
 }
 
 async function showRequest(id) {
+  currentRequestId = id;
   detailEl.textContent = '加载中…';
   try {
     const { request } = await api.capture('detail', { id });
@@ -338,6 +343,46 @@ async function saveRouting() {
   }
 }
 
+async function runDiagnose(mock) {
+  if (!currentRequestId) {
+    diagnoseMessage.textContent = '请先选择一条请求';
+    return;
+  }
+  diagnoseMessage.textContent = mock ? 'Mock 诊断中…' : '真实诊断中…';
+  diagnoseMessage.className = 'muted';
+  diagnoseResult.hidden = true;
+  const buttons = [$('diagnose-mock'), $('diagnose-live')];
+  for (const button of buttons) button.disabled = true;
+  try {
+    const response = await api.diagnose({
+      requestId: currentRequestId,
+      question: diagnoseQuestion.value.trim(),
+      mock,
+      recheck: 1,
+    });
+    const result = response.result;
+    const correlation = result.logs?.correlation;
+    diagnoseResult.hidden = false;
+    diagnoseResult.textContent = [
+      `Run ID : ${response.runId}`,
+      `Agent  : ${result.meta.agent} (${result.meta.mode})`,
+      `Gates  : ${result.gates.ok ? 'ok' : 'failed'}`,
+      `关联   : ${correlation?.strategy ?? 'n/a'}${correlation?.matchedId ? ` (${correlation.matchedId})` : ''}`,
+      `结论   : ${result.agent?.conclusion ?? ''}`,
+      '',
+      response.report ?? '',
+    ].join('\n');
+    diagnoseMessage.textContent = '诊断完成';
+    diagnoseMessage.className = 'message ok';
+    await loadRuns();
+  } catch (err) {
+    diagnoseMessage.textContent = `诊断失败：${err.message}`;
+    diagnoseMessage.className = 'message error';
+  } finally {
+    for (const button of buttons) button.disabled = false;
+  }
+}
+
 async function openBrowser(url) {
   const target = (url ?? browserUrlInput.value ?? '').trim();
   try {
@@ -381,6 +426,8 @@ $('clear-requests').addEventListener('click', async () => {
 $('only-errors').addEventListener('change', renderRequests);
 $('refresh-runs').addEventListener('click', loadRuns);
 $('add-rule').addEventListener('click', addRule);
+$('diagnose-mock').addEventListener('click', () => runDiagnose(true));
+$('diagnose-live').addEventListener('click', () => runDiagnose(false));
 $('save-routing').addEventListener('click', saveRouting);
 for (const tab of document.querySelectorAll('.tab')) {
   tab.addEventListener('click', () => setTab(tab.dataset.tab));

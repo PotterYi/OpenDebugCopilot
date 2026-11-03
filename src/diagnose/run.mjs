@@ -8,12 +8,22 @@ import { readLogs, listThreads } from '../evidence/logs.mjs';
 import { correlateLogs, extractBusinessIds, extractTraceId } from '../evidence/correlate.mjs';
 import { readSource } from '../evidence/source.mjs';
 import { createTools } from '../tools/index.mjs';
-import { runPreflight } from '../doctor/preflight.mjs';
+import { runCapturePreflight, runPreflight } from '../doctor/preflight.mjs';
 import { createMockAgent } from '../agent/mock.mjs';
 import { buildReport, renderMarkdown } from '../report/report.mjs';
 import { evaluateRecheck } from './recheck.mjs';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function requestPathOf(url) {
+  if (!url) return null;
+  try {
+    const parsed = new URL(url);
+    return `${parsed.pathname}${parsed.search}`;
+  } catch {
+    return null;
+  }
+}
 const DEFAULT_MARKER_TIMEOUT_MS = 2000;
 const DEFAULT_POLL_INTERVAL_MS = 250;
 const MAX_BODY_CHARS = 8000;
@@ -158,38 +168,21 @@ function evaluateGates(fired, agentResult) {
  *   window?: { beforeMs: number, afterMs: number }, preflight?: { ok: boolean, checks: any[] }
  * }} [options]
  */
-export async function runDiagnosis(scenario, options = {}) {
-  const {
-    runId = newRunId(),
-    runsDir = path.resolve('runs'),
-    question = '',
-    agent = createMockAgent(),
-    recheck = 1,
-    markerTimeoutMs = DEFAULT_MARKER_TIMEOUT_MS,
-    pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
-    driverContext = {},
-    window,
-    preflight: preflightOverride,
-  } = options;
-
-  const startedAt = Date.now();
-  const preflight = preflightOverride ?? (await runPreflight(scenario));
-  if (!preflight.ok) {
-    const failed = preflight.checks.filter((check) => !check.ok && check.severity === 'error');
-    throw new AppError(
-      'PREFLIGHT_FAILED',
-      `Preflight failed: ${failed.map((check) => `${check.name}(${check.detail})`).join('; ')}`,
-      { exitCode: 3, details: { checks: preflight.checks } },
-    );
-  }
-
-  const runDir = path.resolve(runsDir, runId);
-  await mkdir(runDir, { recursive: true });
-
-  const paths = resolveScenarioPaths(scenario);
-  const timeWindow = window ?? scenario.window;
-  const fired = await fireScenario(scenario, driverContext);
-
+async function diagnoseWithFired({
+  fired,
+  scenario,
+  paths,
+  timeWindow,
+  runId,
+  runDir,
+  question,
+  agent,
+  recheck,
+  markerTimeoutMs,
+  pollIntervalMs,
+  preflight,
+  startedAt,
+}) {
   const marker = fired.marker?.injected ? fired.marker.value : null;
   const wait = await waitForMarker({
     logfiles: paths.logfiles,
@@ -308,14 +301,25 @@ export async function runDiagnosis(scenario, options = {}) {
     : null;
 
   const endedAt = Date.now();
-  const target = scenario.driverKind === 'browser'
-    ? {
-        driver: 'browser',
-        path: scenario.browser.path,
-        match: scenario.browser.match,
-        actions: scenario.browser.actions.length,
-      }
-    : { driver: 'http', method: scenario.http.method, path: scenario.http.path };
+  let target;
+  if (scenario.driverKind === 'browser') {
+    target = {
+      driver: 'browser',
+      path: scenario.browser.path,
+      match: scenario.browser.match,
+      actions: scenario.browser.actions.length,
+    };
+  } else if (scenario.driverKind === 'http') {
+    target = { driver: 'http', method: scenario.http.method, path: scenario.http.path };
+  } else {
+    target = {
+      driver: 'capture',
+      method: fired.request?.method ?? null,
+      path: requestPathOf(fired.request?.url),
+      resourceType: scenario.capture?.resourceType ?? null,
+      ruleId: scenario.capture?.ruleId ?? null,
+    };
+  }
 
   const result = {
     meta: {
@@ -357,4 +361,141 @@ export async function runDiagnosis(scenario, options = {}) {
   );
 
   return { result, runDir, runId, report };
+}
+
+export async function runDiagnosis(scenario, options = {}) {
+  const {
+    runId = newRunId(),
+    runsDir = path.resolve('runs'),
+    question = '',
+    agent = createMockAgent(),
+    recheck = 1,
+    markerTimeoutMs = DEFAULT_MARKER_TIMEOUT_MS,
+    pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
+    driverContext = {},
+    window,
+    preflight: preflightOverride,
+  } = options;
+
+  const startedAt = Date.now();
+  const preflight = preflightOverride ?? (await runPreflight(scenario));
+  if (!preflight.ok) {
+    const failed = preflight.checks.filter((check) => !check.ok && check.severity === 'error');
+    throw new AppError(
+      'PREFLIGHT_FAILED',
+      `Preflight failed: ${failed.map((check) => `${check.name}(${check.detail})`).join('; ')}`,
+      { exitCode: 3, details: { checks: preflight.checks } },
+    );
+  }
+
+  const runDir = path.resolve(runsDir, runId);
+  await mkdir(runDir, { recursive: true });
+
+  const paths = resolveScenarioPaths(scenario);
+  const timeWindow = window ?? scenario.window;
+  const fired = await fireScenario(scenario, driverContext);
+
+  return diagnoseWithFired({
+    fired,
+    scenario,
+    paths,
+    timeWindow,
+    runId,
+    runDir,
+    question,
+    agent,
+    recheck,
+    markerTimeoutMs,
+    pollIntervalMs,
+    preflight,
+    startedAt,
+  });
+
+}
+
+/**
+ * Diagnose a captured request (no replay, no marker injection).
+ *
+ * @param {{
+ *   request: any, response: any, firedAt?: number,
+ *   resourceType?: string | null, ruleId?: string | null
+ * }} observation
+ * @param {{
+ *   workspace?: any, root?: string, runId?: string, runsDir?: string,
+ *   question?: string, agent?: any, recheck?: number,
+ *   markerTimeoutMs?: number, pollIntervalMs?: number,
+ *   window?: { beforeMs: number, afterMs: number }, preflight?: any
+ * }} [options]
+ */
+export async function runCaptureDiagnosis(observation, options = {}) {
+  const {
+    workspace = {},
+    root = process.cwd(),
+    runId = newRunId(),
+    runsDir = path.resolve('runs'),
+    question = '',
+    agent = createMockAgent(),
+    recheck = 1,
+    markerTimeoutMs = DEFAULT_MARKER_TIMEOUT_MS,
+    pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
+    window,
+    preflight: preflightOverride,
+  } = options;
+
+  const startedAt = Date.now();
+  const logfiles = (workspace.logfiles ?? []).map((file) => path.resolve(root, file));
+  const sourceRoot = workspace.sourceRoot ? path.resolve(root, workspace.sourceRoot) : null;
+  const scenario = {
+    name: `capture-${observation.request?.method ?? 'GET'} ${requestPathOf(observation.request?.url) ?? ''}`.trim(),
+    driverKind: 'capture',
+    capture: {
+      resourceType: observation.resourceType ?? null,
+      ruleId: observation.ruleId ?? null,
+    },
+    logfiles,
+    source: sourceRoot ? { root: sourceRoot } : undefined,
+    parser: { preset: 'auto' },
+    logEncoding: 'auto',
+    marker: { mode: 'none', header: 'X-DC-Probe' },
+    window: window ?? workspace.window ?? { beforeMs: 3000, afterMs: 2000 },
+    filePath: undefined,
+    dir: root,
+  };
+
+  const preflight = preflightOverride ?? (await runCapturePreflight({ logfiles, sourceRoot }));
+  if (!preflight.ok) {
+    const failed = preflight.checks.filter((check) => !check.ok && check.severity === 'error');
+    throw new AppError(
+      'PREFLIGHT_FAILED',
+      `Preflight failed: ${failed.map((check) => `${check.name}(${check.detail})`).join('; ')}`,
+      { exitCode: 3, details: { checks: preflight.checks } },
+    );
+  }
+
+  const runDir = path.resolve(runsDir, runId);
+  await mkdir(runDir, { recursive: true });
+  const paths = resolveScenarioPaths(scenario);
+  const timeWindow = scenario.window;
+  const fired = {
+    request: observation.request,
+    response: observation.response,
+    firedAt: observation.firedAt ?? startedAt,
+    marker: { mode: 'none', injected: false, value: null, targets: { header: false, body: false } },
+  };
+
+  return diagnoseWithFired({
+    fired,
+    scenario,
+    paths,
+    timeWindow,
+    runId,
+    runDir,
+    question,
+    agent,
+    recheck,
+    markerTimeoutMs,
+    pollIntervalMs,
+    preflight,
+    startedAt,
+  });
 }

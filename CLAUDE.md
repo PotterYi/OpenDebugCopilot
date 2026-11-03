@@ -42,6 +42,6 @@
 
 - M0（DEMO 验证）已完成：内嵌浏览器 + 请求捕获 + 对话式定位；**DEMO 代码未留档**。
 - M1（CLI 闭环）已完成并通过真实模型验证，代码已推送 GitHub。
-- 当前阶段：M2（Electron 桌面版 + 共享 WebUI）。S1（UI 服务/API/配置）、S2（Electron 壳 + dc:* IPC）、S3（WebContentsView + CDP 捕获）、S4（三钩子路由 + CORS + 三层日志关联）已完成；下一步 S5 点选诊断与诊断面板。
+- 当前阶段：M2（Electron 桌面版 + 共享 WebUI）。S1（UI 服务/API/配置）、S2（Electron 壳 + dc:* IPC）、S3（WebContentsView + CDP 捕获）、S4（三钩子路由 + CORS + 三层日志关联）、S5（点选诊断不回放 + 诊断面板）已完成；下一步 S6 收尾验证。
 - 采用**方案 B**：依据 `docs/08-DEMO实现现状.md` 从零重建；未覆盖的细节按 `docs/06` 的 T 项继续向需求方确认。
 - 开发前必须先确认 M1 开发方案（目录结构、模块接口、验证方式）。

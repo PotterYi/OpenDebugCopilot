@@ -5,6 +5,9 @@ import { createService } from '../service.mjs';
 import { startServer } from '../server.mjs';
 import { BrowserHost } from './browser-host.mjs';
 import { Router } from './routing.mjs';
+import { runCaptureDiagnosis } from '../../diagnose/run.mjs';
+import { createMockAgent } from '../../agent/mock.mjs';
+import { createClaudeAgent } from '../../agent/claude.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '../../..');
@@ -95,7 +98,51 @@ function registerIpc(service, getHost, getRouter, setRules) {
     }
   });
 
-  ipcMain.handle('dc:diagnose', async () => ({ pending: 'not implemented in M2-S2' }));
+  ipcMain.handle('dc:diagnose', async (_event, payload = {}) => {
+    const host = getHost();
+    if (!host) throw new Error('browser host is not ready');
+    const record = host.detail(payload.requestId);
+    if (!record) throw new Error(`captured request not found: ${payload.requestId}`);
+
+    const workspace = (await service.getConfig()).workspace;
+    const observation = {
+      request: {
+        method: record.method,
+        url: record.url,
+        headers: record.requestHeaders,
+        body: record.postData,
+        startedAt: record.startedAt,
+      },
+      response: {
+        status: record.status,
+        statusText: record.statusText,
+        ok: (record.status ?? 0) >= 200 && (record.status ?? 0) < 400,
+        headers: record.responseHeaders,
+        body: record.body?.text ?? null,
+        truncated: record.body?.truncated ?? false,
+        durationMs: record.durationMs,
+        error: record.error,
+      },
+      firedAt: record.startedAt,
+      resourceType: record.resourceType,
+      ruleId: payload.ruleId ?? null,
+    };
+
+    const agent = payload.mock === false
+      ? createClaudeAgent({
+          cwd: workspace.sourceRoot ? path.resolve(ROOT, workspace.sourceRoot) : undefined,
+        })
+      : createMockAgent();
+
+    return runCaptureDiagnosis(observation, {
+      workspace,
+      root: ROOT,
+      runsDir: service.runsRoot,
+      question: payload.question ?? '',
+      recheck: payload.recheck ?? 1,
+      agent,
+    });
+  });
 }
 
 function createWindow(url) {
@@ -158,10 +205,28 @@ async function runSmoke(window, host) {
 
     let captured = 0;
     let captureOk = true;
+    let diagnose = null;
     if (smokeUrl) {
       host.open(smokeUrl);
       captureOk = await waitForCapture(host, 10_000);
       captured = host.list({ limit: 500 }).length;
+      if (captureOk) {
+        diagnose = await window.webContents.executeJavaScript(`(async () => {
+          const { requests } = await window.dc.invoke('dc:capture', { action: 'list' });
+          if (!requests.length) return { ok: false, reason: 'no captures' };
+          const response = await window.dc.invoke('dc:diagnose', {
+            requestId: requests[0].id,
+            question: 'smoke diagnosis',
+            mock: true,
+          });
+          return {
+            ok: true,
+            runId: response.runId,
+            gates: Boolean(response.result?.gates?.ok),
+            mode: response.result?.meta?.mode ?? null,
+          };
+        })()`);
+      }
     }
 
     clearTimeout(timeout);
@@ -171,9 +236,15 @@ async function runSmoke(window, host) {
       captured,
       captureOk,
       captureSample: sample ? { url: sample.url, status: sample.status } : null,
+      diagnose,
     };
     console.log(`SMOKE_RESULT ${JSON.stringify(result)}`);
-    const ok = Boolean(result.hasDc && result.hasWorkspace && captureOk);
+    const ok = Boolean(
+      result.hasDc &&
+      result.hasWorkspace &&
+      captureOk &&
+      (!smokeUrl || (diagnose?.ok && diagnose.gates)),
+    );
     console.log(ok ? 'SMOKE_OK' : 'SMOKE_FAILED');
     return ok;
   } catch (error) {

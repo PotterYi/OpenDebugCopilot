@@ -111,5 +111,7 @@ test('electron shell boots and exposes dc IPC', {
   assert.match(stdout, /"captureOk":true/);
   assert.match(stdout, /"captured":[1-9]/);
   assert.ok(backendHits >= 1, `expected redirect to backend, got ${backendHits}`);
+  assert.match(stdout, /"diagnose":\{"ok":true/);
+  assert.match(stdout, /"gates":true/);
   assert.equal(pageApiHits, 0, `request should have been redirected, page hits: ${pageApiHits}`);
 });
