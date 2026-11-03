@@ -32,9 +32,17 @@ test('electron shell boots, captures, routes and diagnoses', {
 
   let backendHits = 0;
   let pageApiHits = 0;
+  let pageOptionsHits = 0;
 
+  let backendOptions = 0;
   const backendServer = http.createServer((req, res) => {
-    if (req.url === '/api/ping') {
+    if (req.url === '/api/order' && req.method === 'OPTIONS') {
+      backendOptions += 1;
+      res.statusCode = 204;
+      res.end();
+      return;
+    }
+    if (req.url === '/api/order' && req.method === 'POST') {
       backendHits += 1;
       res.setHeader('Content-Type', 'application/json');
       res.end('{"from":"backend"}');
@@ -52,15 +60,24 @@ test('electron shell boots, captures, routes and diagnoses', {
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
       res.end(`<!doctype html><html><body><script>
         setTimeout(() => {
-          fetch('/api/ping')
-            .then((r) => r.json())
+          fetch('/api/order', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ qty: 2 }),
+          }).then((r) => r.json())
             .then(() => { document.title = 'ok'; })
             .catch((e) => { document.title = 'blocked:' + e.message; });
         }, 300);
       </script></body></html>`);
       return;
     }
-    if (req.url === '/api/ping') {
+    if (req.url === '/api/order' && req.method === 'OPTIONS') {
+      pageOptionsHits += 1;
+      res.statusCode = 204;
+      res.end();
+      return;
+    }
+    if (req.url === '/api/order') {
       pageApiHits += 1;
       res.setHeader('Content-Type', 'application/json');
       res.end('{"from":"page"}');
@@ -125,5 +142,6 @@ test('electron shell boots, captures, routes and diagnoses', {
   assert.match(stdout, /"diagnose":\{"ok":true/);
   assert.match(stdout, /"gates":true/);
   assert.ok(backendHits >= 1, `expected redirect to backend, got ${backendHits}`);
+  assert.ok(backendOptions + pageOptionsHits >= 1, 'expected a preflight to be answered with 2xx');
   assert.equal(pageApiHits, 0, `request should have been redirected, page hits: ${pageApiHits}`);
 });

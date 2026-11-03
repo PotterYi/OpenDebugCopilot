@@ -179,6 +179,14 @@ export class BrowserHost {
       record.responseHeaders = params.response?.headers ?? {};
       record.mimeType = params.response?.mimeType ?? '';
       this.emit({ type: 'update', record: this.summary(record) });
+      if (record.method === 'OPTIONS' && (record.status ?? 0) >= 400) {
+        this.emit({
+          type: 'cors-warning',
+          url: record.url,
+          status: record.status,
+          message: 'Preflight (OPTIONS) returned a non-2xx status; the browser will block the request',
+        });
+      }
       return;
     }
 

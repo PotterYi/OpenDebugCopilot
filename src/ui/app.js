@@ -549,6 +549,10 @@ api.onCapture((event) => {
     setStatus(event.isLoading ? '加载中…' : '页面已加载', event.isLoading ? '' : 'ok');
   } else if (event.type === 'load-failed') {
     setStatus(`加载失败：${event.description ?? event.code ?? 'unknown'}`, 'error');
+  } else if (event.type === 'cors-warning') {
+    setStatus(`预检失败：OPTIONS ${event.status}`, 'error');
+    routingMessage.textContent = `预检失败（HTTP ${event.status}）：${event.url}。后端需对 OPTIONS 返回 2xx`;
+    routingMessage.className = 'message error';
   } else if (event.type === 'routing') {
     routingMessage.textContent = `改道：${event.method} ${event.url} → ${event.target ?? 'OPTIONS（仅补 CORS）'}`;
     routingMessage.className = 'message ok';
