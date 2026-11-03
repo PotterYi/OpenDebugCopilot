@@ -9,11 +9,16 @@
   },
   "scripts": {
     "test": "node --test \"verify/unit/*.test.mjs\"",
-    "cli": "node src/app/cli.mjs"
+    "cli": "node src/app/cli.mjs",
+    "desktop": "electron src/app/electron/main.mjs",
+    "desktop:smoke": "electron src/app/electron/main.mjs --smoke --port 0"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.316",
     "iconv-lite": "^0.7.3",
     "playwright-core": "^1.64.1"
+  },
+  "devDependencies": {
+    "electron": "^45.2.1"
   }
 }

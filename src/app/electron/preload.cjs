@@ -1,0 +1,31 @@
+const { contextBridge, ipcRenderer } = require('electron');
+
+const CHANNELS = new Set([
+  'dc:config',
+  'dc:browser',
+  'dc:capture',
+  'dc:diagnose',
+  'dc:runs',
+]);
+
+const EVENTS = new Set([
+  'dc:capture:event',
+  'dc:diagnose:progress',
+]);
+
+contextBridge.exposeInMainWorld('dc', {
+  invoke(channel, payload) {
+    if (!CHANNELS.has(channel)) {
+      return Promise.reject(new Error(`IPC channel not allowed: ${channel}`));
+    }
+    return ipcRenderer.invoke(channel, payload);
+  },
+  on(event, handler) {
+    if (!EVENTS.has(event)) {
+      throw new Error(`IPC event not allowed: ${event}`);
+    }
+    const listener = (_event, data) => handler(data);
+    ipcRenderer.on(event, listener);
+    return () => ipcRenderer.removeListener(event, listener);
+  },
+});
