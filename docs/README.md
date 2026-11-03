@@ -4,7 +4,7 @@
 | --- | --- |
 | 产品名 | DebugCopilot |
 | 定位 | 本地运行的后端开发辅助软件：内嵌浏览器 + 流量路由控制 + 请求/日志/源码聚合 + AI 诊断 |
-| 文档版本 | v0.35 |
+| 文档版本 | v0.36 |
 | 更新日期 | 2026-10-28 |
 | 仓库路径 | G:\develop\project\DebugCopilot |
 
@@ -75,6 +75,7 @@
 
 | 版本 | 日期 | 变更内容 |
 | --- | --- | --- |
+| v0.36 | 2026-11-03 | 预检兜底：非 2xx OPTIONS 用 statusLine 改写为 HTTP/1.1 200 OK；UI 显示 repaired；96 个测试通过 |
 | v0.35 | 2026-11-03 | M3 T24：electron-builder --dir 构建成功；打包 exe 冒烟通过；userData 配置路径、asarUnpack SDK、字体与弃用 API 修正 |
 | v0.34 | 2026-11-03 | M3：捕获前端异常/console.error，frontendSourceRoot 解析前端堆栈并纳入证据/报告；95 个测试通过 |
 | v0.33 | 2026-11-03 | M3 T22：内置本地反向代理，local 规则自动经代理，OPTIONS 由代理 204 应答；新增代理单测与冒烟验证 |

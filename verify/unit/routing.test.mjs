@@ -192,3 +192,44 @@ test('router uses the proxy for local rules', () => {
   assert.equal(parsed.searchParams.get('target'), 'http://127.0.0.1:8080');
   router.dispose();
 });
+
+test('rewrites non-2xx preflight status to 200 OK', () => {
+  const handlers = {};
+  const session = {
+    webRequest: {
+      onBeforeRequest: (_filter, listener) => { handlers.before = listener ?? null; },
+      onBeforeSendHeaders: (_filter, listener) => { handlers.send = listener ?? null; },
+      onHeadersReceived: (_filter, listener) => { handlers.headers = listener ?? null; },
+      onCompleted: (_filter, listener) => { handlers.completed = listener ?? null; },
+      onErrorOccurred: (_filter, listener) => { handlers.error = listener ?? null; },
+    },
+  };
+  const events = [];
+  const router = new Router({
+    session,
+    getRules: () => rules,
+    getPageOrigin: () => 'http://localhost:5173',
+    onHit: (event) => events.push(event),
+  });
+
+  handlers.before({ id: 3, url: 'https://api.example.com/api/order/1', method: 'OPTIONS', resourceType: 'other' }, () => {});
+  let result = null;
+  handlers.headers(
+    { id: 3, method: 'OPTIONS', statusCode: 404, responseHeaders: {} },
+    (value) => { result = value; },
+  );
+  assert.equal(result.statusLine, 'HTTP/1.1 200 OK');
+  assert.deepEqual(result.responseHeaders['Access-Control-Allow-Origin'], ['http://localhost:5173']);
+  const repaired = events.find((event) => event.repaired === true);
+  assert.ok(repaired);
+  assert.equal(repaired.status, 404);
+
+  let postResult = null;
+  handlers.headers(
+    { id: 4, method: 'POST', statusCode: 500, url: 'http://127.0.0.1:8080/api/order/1', responseHeaders: {} },
+    (value) => { postResult = value; },
+  );
+  assert.equal(postResult.statusLine, undefined);
+
+  router.dispose();
+});

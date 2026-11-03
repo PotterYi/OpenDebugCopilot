@@ -241,22 +241,32 @@ export class Router {
       callback({ responseHeaders: details.responseHeaders });
       return;
     }
-    if (hit?.options && ((details.statusCode ?? 200) < 200 || (details.statusCode ?? 200) >= 300)) {
-      this.onHit({
-        type: 'cors-warning',
-        message: 'Preflight returned a non-2xx status; the browser will block the request',
-        url: details.url,
-        status: details.statusCode ?? null,
-      });
-    }
-    if (!localTarget && !hit?.options) {
+    const isPreflight = Boolean(hit?.options) || details.method === 'OPTIONS';
+    const statusCode = details.statusCode ?? 200;
+    if (!localTarget && !isPreflight) {
       callback({ responseHeaders: details.responseHeaders });
       return;
     }
+
     const responseHeaders = applyCorsHeaders(details.responseHeaders, {
       origin: this.getPageOrigin(),
       requestHeaders: hit?.requestHeaders ?? {},
     });
+
+    // Demo fallback: a preflight must be 2xx or the browser blocks the request.
+    // Rewrite the status line instead of only warning.
+    if (isPreflight && (statusCode < 200 || statusCode >= 300)) {
+      this.onHit({
+        type: 'cors-warning',
+        repaired: true,
+        message: 'Preflight status rewritten to 200 OK',
+        url: details.url,
+        status: statusCode,
+      });
+      callback({ responseHeaders, statusLine: 'HTTP/1.1 200 OK' });
+      return;
+    }
+
     callback({ responseHeaders });
   }
 

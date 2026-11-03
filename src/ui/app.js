@@ -718,9 +718,15 @@ api.onCapture((event) => {
   } else if (event.type === 'routing-miss') {
     routingStatus.textContent = `最近未命中：${event.method} ${event.url}`;
   } else if (event.type === 'cors-warning') {
-    setStatus(`预检失败：OPTIONS ${event.status}`, 'error');
-    routingMessage.textContent = `预检失败（HTTP ${event.status}）：${event.url}。后端需对 OPTIONS 返回 2xx`;
-    routingMessage.className = 'message error';
+    if (event.repaired) {
+      setStatus(`预检已兜底为 200（原 ${event.status}）`, 'ok');
+      routingMessage.textContent = `预检已兜底：OPTIONS 原状态 ${event.status} → 200 OK`;
+      routingMessage.className = 'message ok';
+    } else {
+      setStatus(`预检失败：OPTIONS ${event.status}`, 'error');
+      routingMessage.textContent = `预检失败（HTTP ${event.status}）：${event.url}。后端需对 OPTIONS 返回 2xx`;
+      routingMessage.className = 'message error';
+    }
   } else if (event.type === 'routing') {
     routingHits += 1;
     routingMessage.textContent = `改道：${event.method} ${event.url} → ${event.target ?? 'OPTIONS（仅补 CORS）'}`;
