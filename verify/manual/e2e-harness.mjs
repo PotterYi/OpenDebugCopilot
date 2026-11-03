@@ -6,6 +6,7 @@ import { createRequire } from 'node:module';
 import { mkdir, readFile, rm, writeFile, appendFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { log } from '../../src/core/logger.mjs';
+import { pageHtml } from './page.mjs';
 
 const require = createRequire(import.meta.url);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -20,29 +21,6 @@ function localTimestamp() {
   return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}.${pad(now.getMilliseconds(), 3)}`;
 }
 
-function pageHtml() {
-  return `<!doctype html>
-<html><body>
-  <h2>Manual E2E Frontend</h2>
-  <button id="create">创建订单</button>
-  <pre id="result">等待点击…</pre>
-  <script>
-    document.getElementById('create').addEventListener('click', async () => {
-      const result = document.getElementById('result');
-      try {
-        const response = await fetch('/api/order', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ qty: 2, orderId: 'ORD-MANUAL-001' }),
-        });
-        result.textContent = 'HTTP ' + response.status + String.fromCharCode(10) + await response.text();
-      } catch (error) {
-        result.textContent = '请求失败：' + error.message;
-      }
-    });
-  </script>
-</body></html>`;
-}
 
 await rm(TMP, { recursive: true, force: true });
 await mkdir(path.join(TMP, 'configs'), { recursive: true });

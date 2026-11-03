@@ -8,6 +8,7 @@ import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import http from 'node:http';
 import { once } from 'node:events';
+import { pageHtml } from '../manual/page.mjs';
 
 const require = createRequire(import.meta.url);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -58,20 +59,8 @@ test('electron shell boots, captures, routes and diagnoses', {
   const pageServer = http.createServer((req, res) => {
     if (req.url === '/page') {
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
-      res.end(`<!doctype html><html><body>
-        <button id="create">create</button>
-        <script>
-          document.getElementById('create').addEventListener('click', () => {
-            fetch('/api/order', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ qty: 2 }),
-            }).then((r) => r.json())
-              .then(() => { document.title = 'ok'; })
-              .catch((e) => { document.title = 'blocked:' + e.message; });
-          });
-        </script>
-      </body></html>`);
+      res.end(pageHtml());
+
       return;
     }
     if (req.url === '/api/order' && req.method === 'OPTIONS') {
