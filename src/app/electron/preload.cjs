@@ -9,6 +9,7 @@ const CHANNELS = new Set([
   'dc:runs',
   'dc:devserver',
   'dc:fixes',
+  'dc:verify',
 ]);
 
 const EVENTS = new Set([

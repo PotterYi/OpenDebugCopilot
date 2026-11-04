@@ -10,6 +10,7 @@ export const DEFAULT_WORKSPACE = Object.freeze({
   frontendSourceRoot: '',
   frontendProjectRoot: '',
   frontendStartCommand: '',
+  verifyCommand: '',
   window: { beforeMs: 3000, afterMs: 2000 },
 });
 
@@ -31,6 +32,7 @@ export function validateWorkspace(value) {
     frontendSourceRoot: String(value.frontendSourceRoot ?? ''),
     frontendProjectRoot: String(value.frontendProjectRoot ?? ''),
     frontendStartCommand: String(value.frontendStartCommand ?? ''),
+    verifyCommand: String(value.verifyCommand ?? ''),
     window: {
       beforeMs: Number(value.window?.beforeMs ?? DEFAULT_WORKSPACE.window.beforeMs),
       afterMs: Number(value.window?.afterMs ?? DEFAULT_WORKSPACE.window.afterMs),

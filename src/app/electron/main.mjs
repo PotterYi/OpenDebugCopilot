@@ -10,6 +10,8 @@ import { isLocalHostname, Router } from './routing.mjs';
 import { startLocalProxy } from './local-proxy.mjs';
 import { createDevServerManager } from './dev-server.mjs';
 import { applyFix, revertFix } from '../../core/fix-apply.mjs';
+import { resolveFrontendProjectRoot } from '../../core/frontend-service.mjs';
+import { runVerifyCommand } from './verify-command.mjs';
 import { readLogs } from '../../evidence/logs.mjs';
 import { runCaptureDiagnosis } from '../../diagnose/run.mjs';
 import { createMockAgent } from '../../agent/mock.mjs';
@@ -194,6 +196,86 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
     }
 
     throw new Error(`dc:fixes: unknown action ${payload.action}`);
+  });
+
+  handle('dc:verify', async (event, payload = {}) => {
+    if (payload.action !== 'run') throw new Error(`dc:verify: unknown action ${payload.action}`);
+    const workspace = (await service.getConfig()).workspace;
+    const command = String(workspace.verifyCommand ?? '').trim();
+    if (!command) throw new Error('未配置验证命令（工作区 → 验证命令）');
+    const root = await resolveFrontendProjectRoot(workspace, { rootDir: ROOT });
+    if (!root.ok) throw new Error(root.reason);
+
+    const parent = BrowserWindow.fromWebContents(event.sender) ?? mainWindow;
+    if (!smoke) {
+      const ok = await confirmFixDialog(parent, {
+        title: '运行验证命令',
+        message: command,
+        detail: `工作目录：${root.cwd}\n\n验证命令会以当前用户权限执行。`,
+      });
+      if (!ok) return { cancelled: true };
+    }
+
+    const timeoutMs = Math.min(Math.max(Number(payload.timeoutMs) || 120_000, 1_000), 600_000);
+    const run = await runVerifyCommand({ command, cwd: root.cwd, timeoutMs });
+
+    const runId = payload.runId ? String(payload.runId) : null;
+    const fixIndex = Number(payload.fixIndex);
+    const hasFix = Boolean(runId) && Number.isInteger(fixIndex) && fixIndex >= 0;
+    const fixContext = hasFix ? await loadRunFix(service, runId, fixIndex) : null;
+    const runDir = fixContext?.runDir ?? null;
+    let logFile = null;
+    if (runDir) {
+      await mkdir(runDir, { recursive: true });
+      logFile = path.join(runDir, `verification-${Date.now()}.log`);
+      await writeFile(logFile, `${command}\n\n${run.output}`, 'utf8');
+    }
+
+    let restarted = false;
+    let restartMessage = null;
+    if (payload.restart && run.ok) {
+      const devServer = getDevServer();
+      if (devServer) {
+        const state = await devServer.restart();
+        restarted = state.status === 'starting' || state.status === 'running';
+        restartMessage = state.message ?? null;
+      } else {
+        restartMessage = '前端服务管理器不可用';
+      }
+    }
+
+    const verification = {
+      ok: run.ok,
+      exitCode: run.exitCode,
+      timedOut: run.timedOut,
+      durationMs: run.durationMs,
+      command,
+      cwd: root.cwd,
+      at: Date.now(),
+      truncated: run.truncated,
+      output: run.output,
+      restarted,
+      restartMessage,
+    };
+
+    if (fixContext) {
+      const { result, fix, runDir: dir } = fixContext;
+      if (fix.applied) {
+        fix.applied.verification = {
+          ...verification,
+          log: logFile ? path.relative(dir, logFile).split(path.sep).join('/') : null,
+        };
+        await writeJsonAtomic(path.join(dir, 'result.json'), result);
+        await appendFile(
+          path.join(dir, 'fixes.log'),
+          `${new Date().toISOString()} verify ok=${verification.ok} exit=${verification.exitCode} command=${command}\n`,
+          'utf8',
+        ).catch(() => {});
+      }
+    }
+
+    log.info('[verify]', command, verification.ok ? 'ok' : `failed (${verification.exitCode})`);
+    return verification;
   });
 
   handle('dc:devserver', async (_event, payload = {}) => {

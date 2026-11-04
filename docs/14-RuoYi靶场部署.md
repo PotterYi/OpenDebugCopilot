@@ -97,6 +97,7 @@ npm run dev        # http://127.0.0.1:5173
   "frontendSourceRoot": "G:/develop/project/test-targets/ruoyi/frontend/src",
   "frontendProjectRoot": "G:/develop/project/test-targets/ruoyi/frontend",
   "frontendStartCommand": "npm run dev",
+  "verifyCommand": "npm run build:prod",
   "window": { "beforeMs": 5000, "afterMs": 5000 }
 }
 ```

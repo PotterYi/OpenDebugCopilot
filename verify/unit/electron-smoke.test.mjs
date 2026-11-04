@@ -346,7 +346,7 @@ http.createServer((req, res) => { res.end('frontend-ok'); }).listen(${frontendPo
   }, 5_000), 'dev server should be stopped when the app exits');
 });
 
-test('applies and reverts a structured fix through IPC', {
+test('applies, verifies and reverts a structured fix through IPC', {
   skip: available ? false : 'Electron binary is not installed',
   timeout: 60_000,
 }, async (t) => {
@@ -366,11 +366,24 @@ test('applies and reverts a structured fix through IPC', {
     '}',
   ].join('\n');
 
+  const frontend = path.join(DIR, 'frontend');
   await rm(DIR, { recursive: true, force: true });
   await mkdir(path.join(DIR, 'configs'), { recursive: true });
   await mkdir(path.join(runDir, 'backups'), { recursive: true });
   await mkdir(path.dirname(sourceFile), { recursive: true });
+  await mkdir(frontend, { recursive: true });
   await writeFile(sourceFile, original, 'utf8');
+  await writeFile(path.join(frontend, 'verify.mjs'), "console.log('verify-ok');\n", 'utf8');
+  await writeFile(path.join(DIR, 'configs', 'workspace.json'), JSON.stringify({
+    frontendUrl: 'http://127.0.0.1:5173',
+    backendUrl: 'http://127.0.0.1:8080',
+    frontendProjectRoot: frontend,
+    verifyCommand: 'node verify.mjs',
+    logfiles: [],
+    sourceRoot: '',
+    frontendSourceRoot: '',
+    window: { beforeMs: 3000, afterMs: 2000 },
+  }), 'utf8');
   t.after(async () => { await rm(DIR, { recursive: true, force: true }); });
 
   const fix = {
@@ -397,10 +410,13 @@ test('applies and reverts a structured fix through IPC', {
 
   const uiScript = `(async () => {
     const applied = await window.dc.invoke('dc:fixes', { action: 'apply', runId: '${runId}', fixIndex: 0 });
+    const verified = await window.dc.invoke('dc:verify', { action: 'run', runId: '${runId}', fixIndex: 0, restart: false });
     const undone = await window.dc.invoke('dc:fixes', { action: 'undo', runId: '${runId}', fixIndex: 0 });
     return {
       applied: applied.ok === true,
       appliedFile: applied.fix?.applied?.file ?? null,
+      verified: verified.ok === true,
+      verifyOutput: String(verified.output ?? '').includes('verify-ok'),
       undone: undone.ok === true,
       reverted: Boolean(undone.fix?.applied?.revertedAt),
     };
@@ -439,6 +455,8 @@ test('applies and reverts a structured fix through IPC', {
   assert.deepEqual(smoke.uiEvalResult, {
     applied: true,
     appliedFile: 'com/demo/OrderService.java',
+    verified: true,
+    verifyOutput: true,
     undone: true,
     reverted: true,
   });
@@ -446,7 +464,11 @@ test('applies and reverts a structured fix through IPC', {
   assert.equal(await readFile(sourceFile, 'utf8'), original);
   const persisted = JSON.parse(await readFile(path.join(runDir, 'result.json'), 'utf8'));
   assert.ok(persisted.agent.fixes[0].applied.revertedAt);
+  assert.equal(persisted.agent.fixes[0].applied.verification.ok, true);
+  assert.equal(persisted.agent.fixes[0].applied.verification.exitCode, 0);
   const backups = await readdir(path.join(runDir, 'backups'));
   assert.equal(backups.length, 1);
-  assert.match(await readFile(path.join(runDir, 'fixes.log'), 'utf8'), /apply .*undo /s);
+  const files = await readdir(runDir);
+  assert.ok(files.some((name) => name.startsWith('verification-') && name.endsWith('.log')));
+  assert.match(await readFile(path.join(runDir, 'fixes.log'), 'utf8'), /apply .*verify ok=true .*undo /s);
 });

@@ -329,6 +329,21 @@ button:hover { filter: brightness(1.08); }
 .diff-del { color: var(--danger); }
 .diff-meta { color: var(--muted); }
 .diff-context { color: #c9d1d9; }
+.verify-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.verify-log {
+  margin: 6px 0 0;
+  max-height: 160px;
+  overflow: auto;
+  background: #12151c;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
 
 /* Author styles with any display rule beat the UA [hidden] rule.
    Keep the hidden attribute authoritative for the zero-framework UI. */

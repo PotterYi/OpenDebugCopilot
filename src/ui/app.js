@@ -92,6 +92,7 @@ function fillForm(config) {
   form.elements.frontendSourceRoot.value = workspace.frontendSourceRoot ?? '';
   form.elements.frontendProjectRoot.value = workspace.frontendProjectRoot ?? '';
   form.elements.frontendStartCommand.value = workspace.frontendStartCommand ?? '';
+  form.elements.verifyCommand.value = workspace.verifyCommand ?? '';
   form.elements.beforeMs.value = workspace.window?.beforeMs ?? 3000;
   form.elements.afterMs.value = workspace.window?.afterMs ?? 2000;
   if (!browserUrlInput.value && workspace.frontendUrl) browserUrlInput.value = workspace.frontendUrl;
@@ -107,6 +108,7 @@ function readForm() {
       frontendSourceRoot: form.elements.frontendSourceRoot.value.trim(),
       frontendProjectRoot: form.elements.frontendProjectRoot.value.trim(),
       frontendStartCommand: form.elements.frontendStartCommand.value.trim(),
+      verifyCommand: form.elements.verifyCommand.value.trim(),
       window: {
         beforeMs: Number(form.elements.beforeMs.value) || 0,
         afterMs: Number(form.elements.afterMs.value) || 0,
@@ -425,6 +427,32 @@ function buildBodySection(request) {
   return block;
 }
 
+async function runVerification(fixIndex) {
+  const response = currentDiagnosis;
+  const runId = response?.runId ?? response?.result?.meta?.runId;
+  if (!runId) return;
+  diagnoseMessage.textContent = '正在运行验证命令…';
+  diagnoseMessage.className = 'muted';
+  try {
+    const verification = await api.verify('run', { runId, fixIndex, restart: true });
+    if (verification?.cancelled) {
+      diagnoseMessage.textContent = '已取消验证';
+      diagnoseMessage.className = 'muted';
+      return;
+    }
+    const fix = response.result?.agent?.fixes?.[fixIndex];
+    if (fix) fix.applied = { ...(fix.applied ?? {}), verification };
+    renderDiagnosis(response);
+    diagnoseMessage.textContent = verification.ok
+      ? `验证通过（${verification.durationMs}ms）${verification.restarted ? '，前端已重启' : ''}`
+      : `验证失败${verification.timedOut ? '（超时）' : `（退出码 ${verification.exitCode}）`}`;
+    diagnoseMessage.className = verification.ok ? 'message ok' : 'message error';
+  } catch (error) {
+    diagnoseMessage.textContent = `验证失败：${error.message}`;
+    diagnoseMessage.className = 'message error';
+  }
+}
+
 async function runFixAction(action, fixIndex) {
   const response = currentDiagnosis;
   const runId = response?.runId ?? response?.result?.meta?.runId;
@@ -486,6 +514,15 @@ function renderFixCard(fix, runId, fixIndex) {
     bar.append(copy);
     if (api.isDesktop && fix.kind === 'edit') {
       if (applied) {
+        const verifyCmd = configCache?.workspace?.verifyCommand;
+        if (verifyCmd) {
+          const verify = el('button', 'secondary', '运行验证');
+          verify.type = 'button';
+          verify.title = verifyCmd;
+          verify.disabled = !runId;
+          verify.addEventListener('click', () => runVerification(fixIndex));
+          bar.append(verify);
+        }
         const undo = el('button', 'secondary', '撤销');
         undo.type = 'button';
         undo.disabled = !runId;
@@ -515,6 +552,25 @@ function renderFixCard(fix, runId, fixIndex) {
     card.append(el('p', 'error-text small', `无法生成预览：${preview.message}`));
   } else if (preview?.status === 'no-change' || preview?.status === 'skipped') {
     card.append(el('p', 'muted small', preview.message));
+  }
+
+  const verification = applied ? fix.applied?.verification : null;
+  if (verification) {
+    const line = el('div', 'verify-summary');
+    line.append(el(
+      'span',
+      `badge ${verification.ok ? 'ok' : 'error'}`,
+      verification.ok ? '验证通过' : verification.timedOut ? '验证超时' : '验证失败',
+    ));
+    line.append(el('span', 'muted small', `${verification.command ?? ''} · ${verification.durationMs ?? 0} ms`));
+    if (verification.restarted) line.append(el('span', 'muted small', '前端已重启'));
+    else if (verification.restartMessage) line.append(el('span', 'muted small', verification.restartMessage));
+    card.append(line);
+    const output = String(verification.output ?? '').trimEnd();
+    if (output) {
+      const tail = output.split('\n').slice(-40).join('\n');
+      card.append(el('pre', 'verify-log', tail));
+    }
   }
   return card;
 }
@@ -1244,6 +1300,7 @@ form.addEventListener('submit', async (event) => {
     if (saved.meta?.configDir) configPath.textContent = `配置目录：${saved.meta.configDir}`;
     setMessage(saved.meta?.configDir ? `已保存到 ${saved.meta.configDir}` : '已保存', 'ok');
     refreshDevServer().catch(() => {});
+    if (currentDiagnosis) renderDiagnosis(currentDiagnosis);
   } catch (err) {
     setMessage(`保存失败：${err.message}`, 'error');
   }

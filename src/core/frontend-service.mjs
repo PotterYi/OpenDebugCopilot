@@ -73,14 +73,13 @@ export async function detectStartCommand(projectRoot) {
 }
 
 /**
- * Resolve the frontend launch command from workspace settings.
- * Explicit `frontendStartCommand` wins; otherwise infer the project root and dev script.
+ * Resolve the frontend project root (the directory containing package.json).
  *
  * @param {Record<string, any>} workspace
  * @param {{ rootDir?: string }} [options]
- * @returns {Promise<{ ok: true, cwd: string, command: string, source: string, packageManager: string | null, script: string | null } | { ok: false, reason: string, cwd?: string }>}
+ * @returns {Promise<{ ok: true, cwd: string } | { ok: false, reason: string, cwd?: string }>}
  */
-export async function resolveFrontendLaunch(workspace = {}, { rootDir = process.cwd() } = {}) {
+export async function resolveFrontendProjectRoot(workspace = {}, { rootDir = process.cwd() } = {}) {
   const explicitRoot = String(workspace.frontendProjectRoot ?? '').trim();
   const sourceRoot = String(workspace.frontendSourceRoot ?? '').trim();
 
@@ -101,6 +100,21 @@ export async function resolveFrontendLaunch(workspace = {}, { rootDir = process.
   if (await pathKind(projectRoot) !== 'dir') {
     return { ok: false, reason: `前端项目目录不存在：${projectRoot}`, cwd: projectRoot };
   }
+  return { ok: true, cwd: projectRoot };
+}
+
+/**
+ * Resolve the frontend launch command from workspace settings.
+ * Explicit `frontendStartCommand` wins; otherwise infer the project root and dev script.
+ *
+ * @param {Record<string, any>} workspace
+ * @param {{ rootDir?: string }} [options]
+ * @returns {Promise<{ ok: true, cwd: string, command: string, source: string, packageManager: string | null, script: string | null } | { ok: false, reason: string, cwd?: string }>}
+ */
+export async function resolveFrontendLaunch(workspace = {}, { rootDir = process.cwd() } = {}) {
+  const root = await resolveFrontendProjectRoot(workspace, { rootDir });
+  if (!root.ok) return root;
+  const projectRoot = root.cwd;
 
   const command = String(workspace.frontendStartCommand ?? '').trim();
   if (command) {

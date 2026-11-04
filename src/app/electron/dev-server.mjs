@@ -17,7 +17,7 @@ async function defaultProbe(url, timeoutMs = 1000) {
   }
 }
 
-function killProcessTree(pid) {
+export function killProcessTree(pid) {
   if (!pid) return Promise.resolve();
   if (process.platform === 'win32') {
     return new Promise((resolve) => {
@@ -38,7 +38,7 @@ function killProcessTree(pid) {
   return Promise.resolve();
 }
 
-function waitForExit(child, timeoutMs) {
+export function waitForExit(child, timeoutMs) {
   if (!child || child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
   return new Promise((resolve) => {
     const timer = setTimeout(() => resolve(false), timeoutMs);
