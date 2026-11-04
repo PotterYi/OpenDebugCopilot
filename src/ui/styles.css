@@ -295,6 +295,40 @@ button:hover { filter: brightness(1.08); }
 .evidence-list, .advice-list { margin: 0; padding-left: 18px; }
 .evidence-list li, .advice-list li { margin-bottom: 4px; word-break: break-word; }
 .error-text { color: var(--danger); margin: 0; }
+.fix-list { list-style: none; margin: 0; padding: 0; }
+.fix-card {
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+}
+.fix-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.fix-summary { font-weight: 600; word-break: break-word; }
+.badge.risk-low { color: #5bd693; border-color: #2c5a42; }
+.badge.risk-medium { color: #e6c07b; border-color: #5a4a2c; }
+.badge.risk-high { color: var(--danger); border-color: #5a2c2c; }
+.fix-preview-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 8px 0 4px; }
+.fix-preview-head button { padding: 2px 8px; font-size: 11px; }
+.fix-diff {
+  margin: 0;
+  max-height: 260px;
+  overflow: auto;
+  background: #12151c;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.fix-diff span { display: block; }
+.diff-add { color: #5bd693; }
+.diff-del { color: var(--danger); }
+.diff-meta { color: var(--muted); }
+.diff-context { color: #c9d1d9; }
 
 /* Author styles with any display rule beat the UA [hidden] rule.
    Keep the hidden attribute authoritative for the zero-framework UI. */

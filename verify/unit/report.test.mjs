@@ -95,3 +95,34 @@ test('renders fixes and needsMoreInfo with scrubbing', () => {
   assert.match(markdown, /确认库存数据/);
   assert.equal(markdown.includes(winPath), false);
 });
+
+test('renders structured fix metadata without leaking the raw diff', () => {
+  const withFix = {
+    ...result,
+    agent: {
+      ...result.agent,
+      fixes: [{
+        summary: '防御空数量',
+        root: 'backend',
+        file: 'com/demo/OrderService.java',
+        search: 'secret-source-line',
+        replace: 'safe-source-line',
+        risk: 'low',
+        verification: '运行单测',
+        preview: {
+          status: 'ready',
+          line: 5,
+          patch: '--- a/com/demo/OrderService.java\n+++ b/com/demo/OrderService.java\n-secret-source-line\n+safe-source-line',
+        },
+      }],
+    },
+  };
+  const markdown = renderMarkdown(buildReport(withFix));
+  assert.match(markdown, /防御空数量/);
+  assert.match(markdown, /com\/demo\/OrderService\.java/);
+  assert.match(markdown, /风险：low/);
+  assert.match(markdown, /验证：运行单测/);
+  assert.equal(markdown.includes('secret-source-line'), false);
+  assert.equal(markdown.includes('safe-source-line'), false);
+  assert.equal(markdown.includes('-secret-source-line'), false);
+});

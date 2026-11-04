@@ -115,3 +115,69 @@ test('preflight rejects missing log files', async (t) => {
     (err) => err.code === 'PREFLIGHT_FAILED' && err.exitCode === 3,
   );
 });
+
+test('attaches read-only diff previews to structured fixes', async (t) => {
+  await rm(TMP, { recursive: true, force: true });
+  await mkdir(TMP, { recursive: true });
+  await writeFile(LOG_FILE, '', 'utf8');
+  t.after(async () => { await rm(TMP, { recursive: true, force: true }); });
+
+  const { server, baseUrl } = await startServer();
+  try {
+    const scenario = parseScenario({
+      name: 'order-create-preview',
+      baseUrl,
+      method: 'POST',
+      path: '/api/order',
+      body: { qty: 2 },
+      marker: { mode: 'body', bodyField: 'traceNo' },
+      logfiles: [LOG_FILE],
+      parser: { preset: 'logback' },
+      source: { root: path.join(FIXTURES, 'source') },
+      window: { beforeMs: 5000, afterMs: 5000 },
+    }, { filePath: path.join(TMP, 'scenario-preview.json') });
+
+    const agent = {
+      id: 'mock',
+      async diagnose() {
+        return {
+          conclusion: '库存校验缺少空值保护',
+          evidenceRefs: [{ type: 'request', ref: 'request' }],
+          confidence: 0.8,
+          needsMoreInfo: [],
+          toolCalls: [],
+          fixes: [{
+            summary: '防御空数量',
+            root: 'backend',
+            file: 'com/demo/OrderService.java',
+            search: '        if (order.getQty() <= 0) {',
+            replace: '        if (order.getQty() == null || order.getQty() <= 0) {',
+            risk: 'low',
+            verification: '运行订单单测',
+          }],
+        };
+      },
+    };
+
+    const { result, runDir } = await runDiagnosis(scenario, {
+      runsDir: RUNS,
+      question: '下单失败',
+      recheck: 1,
+      markerTimeoutMs: 1500,
+      pollIntervalMs: 100,
+      driverContext: { timeoutMs: 5000 },
+      agent,
+    });
+
+    const fix = result.agent.fixes[0];
+    assert.equal(fix.kind, 'edit');
+    assert.equal(fix.preview.status, 'ready');
+    assert.equal(fix.preview.line, 5);
+    assert.match(fix.preview.patch, /^\+        if \(order\.getQty\(\) == null/m);
+
+    const persisted = JSON.parse(await readFile(path.join(runDir, 'result.json'), 'utf8'));
+    assert.equal(persisted.agent.fixes[0].preview.status, 'ready');
+  } finally {
+    server.close();
+  }
+});

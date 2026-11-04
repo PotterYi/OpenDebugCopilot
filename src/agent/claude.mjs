@@ -1,4 +1,5 @@
 import { AppError } from '../core/errors.mjs';
+import { normalizeFixList } from '../core/fixes.mjs';
 
 const DEFAULT_MAX_TURNS = 24;
 const DEFAULT_TIMEOUT_MS = 180_000;
@@ -12,7 +13,10 @@ const SYSTEM_PROMPT = `你是 DebugCopilot 的后端问题定位助手。你的�
 3. 证据不足时写入 needsMoreInfo，不要编造日志、堆栈或源码。
 4. 工具调用轮次有限（最多 24 轮），没有新增证据就停止并给出阶段性结论。
 5. 使用中文回答，结论要具体（涉及类名、日志关键行、HTTP 状态码）。
-6. 不要输出密码、Token、Cookie 等敏感信息。`;
+6. 不要输出密码、Token、Cookie 等敏感信息。
+7. 修复建议放在 fixes 中，只能修改已通过 read_source 读取过的文件；file 使用工具返回的相对路径，root 标明 backend 或 frontend。
+8. 代码修改必须提供可唯一定位的 search（文件中的精确原文，出现次数必须为 1）和 replace；无法给出精确修改时，只写 summary，不要编造 search/replace。
+9. 不要直接修改文件；本阶段只生成修复建议和 diff 预览，由用户确认。`;
 
 const RESULT_SCHEMA = {
   type: 'object',
@@ -36,7 +40,24 @@ const RESULT_SCHEMA = {
     },
     confidence: { type: 'number', minimum: 0, maximum: 1 },
     needsMoreInfo: { type: 'array', items: { type: 'string' } },
-    fixes: { type: 'array', items: { type: 'string' } },
+    fixes: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['summary', 'risk'],
+        properties: {
+          summary: { type: 'string' },
+          root: { enum: ['backend', 'frontend'] },
+          file: { type: 'string' },
+          search: { type: 'string' },
+          replace: { type: 'string' },
+          risk: { enum: ['low', 'medium', 'high'] },
+          verification: { type: 'string' },
+          note: { type: 'string' },
+        },
+      },
+    },
   },
 };
 
@@ -111,7 +132,7 @@ function normalizeAgentResult(parsed) {
     evidenceRefs: Array.isArray(parsed.evidenceRefs) ? parsed.evidenceRefs : [],
     confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 0,
     needsMoreInfo: Array.isArray(parsed.needsMoreInfo) ? parsed.needsMoreInfo : [],
-    fixes: Array.isArray(parsed.fixes) ? parsed.fixes : [],
+    fixes: normalizeFixList(parsed.fixes),
   };
 }
 

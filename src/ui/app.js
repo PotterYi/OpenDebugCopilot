@@ -424,6 +424,54 @@ function buildBodySection(request) {
   return block;
 }
 
+function renderFixCard(fix) {
+  if (typeof fix === 'string') return el('li', 'fix-card', fix);
+  const card = el('li', 'fix-card');
+  const head = el('div', 'fix-head');
+  head.append(el('span', 'fix-summary', fix.summary ?? '(无摘要)'));
+  if (fix.risk) head.append(el('span', `badge risk-${fix.risk}`, `风险 ${fix.risk}`));
+  card.append(head);
+
+  const target = [fix.root ?? null, fix.file ?? null].filter(Boolean).join(' / ');
+  if (target) card.append(el('div', 'muted small', target));
+  if (fix.verification) card.append(el('div', 'muted small', `验证：${fix.verification}`));
+  if (fix.note) card.append(el('div', 'muted small', `说明：${fix.note}`));
+
+  const preview = fix.preview;
+  if (preview?.status === 'ready' && preview.patch) {
+    const bar = el('div', 'fix-preview-head');
+    bar.append(el('span', 'muted small', `diff · 第 ${preview.line} 行`));
+    const copy = el('button', 'secondary', '复制 diff');
+    copy.type = 'button';
+    copy.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(preview.patch);
+        copy.textContent = '已复制';
+      } catch {
+        copy.textContent = '复制失败';
+      }
+    });
+    bar.append(copy);
+    card.append(bar);
+
+    const diff = el('pre', 'fix-diff');
+    for (const line of preview.patch.split('\n')) {
+      let className = 'diff-context';
+      if (line.startsWith('+++') || line.startsWith('---') || line.startsWith('@@')) className = 'diff-meta';
+      else if (line.startsWith('+')) className = 'diff-add';
+      else if (line.startsWith('-')) className = 'diff-del';
+      const span = el('span', className, `${line}\n`);
+      diff.append(span);
+    }
+    card.append(diff);
+  } else if (preview?.status === 'error') {
+    card.append(el('p', 'error-text small', `无法生成预览：${preview.message}`));
+  } else if (preview?.status === 'no-change' || preview?.status === 'skipped') {
+    card.append(el('p', 'muted small', preview.message));
+  }
+  return card;
+}
+
 function renderDiagnosis(response) {
   const result = response.result ?? {};
   const correlation = result.logs?.correlation;
@@ -458,14 +506,17 @@ function renderDiagnosis(response) {
     diagnoseResult.append(section('证据链', list));
   }
 
-  for (const [title, items] of [
-    ['修复建议', result.agent?.fixes ?? []],
-    ['待补充信息', result.agent?.needsMoreInfo ?? []],
-  ]) {
-    if (!Array.isArray(items) || items.length === 0) continue;
+  const fixes = result.agent?.fixes;
+  if (Array.isArray(fixes) && fixes.length > 0) {
+    const list = el('ul', 'fix-list');
+    for (const fix of fixes) list.append(renderFixCard(fix));
+    diagnoseResult.append(section('修复建议', list));
+  }
+  const needsMoreInfo = result.agent?.needsMoreInfo;
+  if (Array.isArray(needsMoreInfo) && needsMoreInfo.length > 0) {
     const list = el('ul', 'advice-list');
-    for (const item of items) list.append(el('li', null, item));
-    diagnoseResult.append(section(title, list));
+    for (const item of needsMoreInfo) list.append(el('li', null, item));
+    diagnoseResult.append(section('待补充信息', list));
   }
 
   const reportButton = el('button', 'secondary', '查看完整报告');

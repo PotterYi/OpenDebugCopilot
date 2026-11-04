@@ -4,6 +4,7 @@ import { AppError } from '../core/errors.mjs';
 import { newRunId } from '../core/ids.mjs';
 import { resolveScenarioPaths } from '../core/scenario.mjs';
 import { resolveFrontendSources } from '../evidence/frontend.mjs';
+import { buildFixPreviews } from '../core/fixes.mjs';
 import { fireScenario } from '../driver/index.mjs';
 import { readLogs, listThreads } from '../evidence/logs.mjs';
 import { correlateLogs, extractBusinessIds, extractTraceId } from '../evidence/correlate.mjs';
@@ -309,6 +310,19 @@ async function diagnoseWithFired({
   const agentRuns = [agentResult];
   for (let i = 1; i < recheck; i += 1) {
     agentRuns.push(await callAgent());
+  }
+
+  // 2a: attach read-only diff previews; never write the working tree here.
+  try {
+    const frontendFixRoot = scenario.frontendSourceRoot
+      ? path.resolve(scenario.dir ?? process.cwd(), scenario.frontendSourceRoot)
+      : null;
+    agentResult.fixes = await buildFixPreviews(agentResult.fixes, {
+      sourceRoot: paths.sourceRoot,
+      frontendSourceRoot: frontendFixRoot,
+    });
+  } catch (error) {
+    await runLog.error(`fix preview failed: ${error?.message ?? error}`);
   }
 
   const gates = evaluateGates(fired, agentResult);

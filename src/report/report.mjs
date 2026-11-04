@@ -1,3 +1,5 @@
+import { normalizeFixList } from '../core/fixes.mjs';
+
 /**
  * Whitelist projection + Markdown rendering for the redacted report.
  * The report deliberately excludes: absolute paths, header values, log/source raw text.
@@ -13,6 +15,14 @@ const REDACTIONS = [
 function scrubText(value) {
   if (typeof value !== 'string') return value;
   return REDACTIONS.reduce((text, [pattern, replacement]) => text.replace(pattern, replacement), value);
+}
+
+function formatFix(fix) {
+  const parts = [fix.summary];
+  if (fix.file) parts.push(`文件：${fix.file}`);
+  if (fix.risk) parts.push(`风险：${fix.risk}`);
+  if (fix.verification) parts.push(`验证：${fix.verification}`);
+  return parts.join('；');
 }
 
 function requestPath(url) {
@@ -39,7 +49,7 @@ export function buildReport(result) {
     symptom: scrubText(result.meta?.question?.trim() ? result.meta.question : '(未提供描述)'),
     durationMs: result.meta?.durationMs ?? 0,
     conclusion: scrubText(agent.conclusion ?? ''),
-    fixes: (agent.fixes ?? []).map((fix) => scrubText(fix)),
+    fixes: normalizeFixList(agent.fixes).map((fix) => scrubText(formatFix(fix))),
     needsMoreInfo: (agent.needsMoreInfo ?? []).map((item) => scrubText(item)),
     request: {
       method: result.request?.method ?? null,
