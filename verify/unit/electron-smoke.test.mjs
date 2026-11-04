@@ -164,6 +164,7 @@ test('electron shell boots, captures, routes and diagnoses', {
   assert.match(stdout, /"pipeParserOption":true/);
   assert.match(stdout, /"consolePanel":true/);
   assert.match(stdout, /"requestFilterPresent":true/);
+  assert.match(stdout, /"devServerControlsPresent":true/);
   assert.match(stdout, /"singleDiagnoseButton":true/);
   assert.match(stdout, /"questionIsTextarea":true/);
   assert.match(stdout, /"targetSelect":true/);
@@ -240,4 +241,107 @@ test('falls back to an ephemeral UI port when the requested port is busy', {
   assert.equal(code, 0, `electron exited ${code}\nstdout:\n${stdout}\nstderr:\n${stderr}`);
   assert.match(stdout, /SMOKE_OK/);
   assert.match(stderr, /UI port \d+ is already in use; using an ephemeral port/);
+});
+
+async function freePort() {
+  const server = http.createServer((_req, res) => res.end(''));
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const port = server.address().port;
+  await new Promise((resolve) => server.close(resolve));
+  return port;
+}
+
+async function waitUntil(predicate, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await predicate()) return true;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return false;
+}
+
+test('starts a configured frontend dev server from the UI', {
+  skip: available ? false : 'Electron binary is not installed',
+  timeout: 90_000,
+}, async (t) => {
+  const DIR = tempDir('electron-devserver');
+  await rm(DIR, { recursive: true, force: true });
+  const project = path.join(DIR, 'frontend');
+  await mkdir(path.join(DIR, 'configs'), { recursive: true });
+  await mkdir(path.join(DIR, 'runs'), { recursive: true });
+  await mkdir(project, { recursive: true });
+  t.after(async () => { await rm(DIR, { recursive: true, force: true }); });
+
+  const frontendPort = await freePort();
+  const frontendUrl = `http://127.0.0.1:${frontendPort}`;
+  await writeFile(path.join(project, 'package.json'), JSON.stringify({ scripts: { dev: 'node server.mjs' } }), 'utf8');
+  await writeFile(path.join(project, 'server.mjs'), `
+import http from 'node:http';
+http.createServer((req, res) => { res.end('frontend-ok'); }).listen(${frontendPort}, '127.0.0.1', () => {
+  console.log('frontend-ready');
+});
+`, 'utf8');
+  await writeFile(path.join(DIR, 'configs', 'workspace.json'), JSON.stringify({
+    frontendUrl,
+    backendUrl: 'http://127.0.0.1:8080',
+    frontendProjectRoot: project,
+    frontendStartCommand: 'node server.mjs',
+    logfiles: [],
+    sourceRoot: '',
+    frontendSourceRoot: '',
+    window: { beforeMs: 3000, afterMs: 2000 },
+  }), 'utf8');
+
+  const uiScript = `(async () => {
+    const button = document.getElementById('devserver-start');
+    if (!button) return { started: false, reason: 'button missing' };
+    button.click();
+    const deadline = Date.now() + 12000;
+    while (Date.now() < deadline) {
+      const state = await window.dc.invoke('dc:devserver', { action: 'status' });
+      if (state.status === 'running') return { started: true, status: state.status, message: state.message };
+      if (state.status === 'error') return { started: false, status: state.status, message: state.message };
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    return { started: false, status: 'timeout' };
+  })()`;
+
+  const child = spawn(electronPath, [
+    MAIN,
+    '--smoke',
+    '--port', '0',
+    '--config-dir', path.join(DIR, 'configs'),
+    '--runs-dir', path.join(DIR, 'runs'),
+    '--smoke-ui-eval', Buffer.from(uiScript).toString('base64'),
+  ], { env: { ...process.env } });
+
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (chunk) => { stdout += chunk; });
+  child.stderr.on('data', (chunk) => { stderr += chunk; });
+
+  const code = await new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      child.kill();
+      resolve(-1);
+    }, 80_000);
+    child.on('close', (exitCode) => {
+      clearTimeout(timer);
+      resolve(exitCode);
+    });
+  });
+
+  assert.equal(code, 0, `electron exited ${code}\nstdout:\n${stdout}\nstderr:\n${stderr}`);
+  assert.match(stdout, /SMOKE_OK/);
+  assert.match(stdout, /"uiEvalResult":\{"started":true/);
+  assert.match(stdout, /"devserver"|frontend-ready|正在|已启动|已就绪/);
+  assert.ok(await waitUntil(async () => {
+    try {
+      await fetch(frontendUrl, { signal: AbortSignal.timeout(300) });
+      return false;
+    } catch {
+      return true;
+    }
+  }, 5_000), 'dev server should be stopped when the app exits');
 });

@@ -11,6 +11,12 @@ const runsEl = $('runs');
 const reportEl = $('report');
 const requestsEl = $('requests');
 const requestFilterBar = $('request-filter');
+const devServerStatusEl = $('devserver-status');
+const devServerDetailEl = $('devserver-detail');
+const devServerLogEl = $('devserver-log');
+const devServerStartBtn = $('devserver-start');
+const devServerRestartBtn = $('devserver-restart');
+const devServerStopBtn = $('devserver-stop');
 const detailEl = $('request-detail');
 const hintEl = $('capture-hint');
 const browserUrlInput = $('browser-url');
@@ -54,6 +60,17 @@ const consoleState = new Map();
 let currentRequestId = null;
 const captureState = new Map();
 let requestFilter = 'all';
+let devServerState = null;
+let devServerLogLines = [];
+const MAX_DEV_LOG_LINES = 300;
+const DEV_STATUS_LABELS = {
+  stopped: '未启动',
+  starting: '启动中',
+  running: '运行中',
+  stopping: '停止中',
+  external: '外部运行',
+  error: '异常',
+};
 let renderQueued = false;
 
 function setStatus(text, kind = '') {
@@ -72,6 +89,8 @@ function fillForm(config) {
   form.elements.logfiles.value = (workspace.logfiles ?? []).join('\n');
   form.elements.sourceRoot.value = workspace.sourceRoot ?? '';
   form.elements.frontendSourceRoot.value = workspace.frontendSourceRoot ?? '';
+  form.elements.frontendProjectRoot.value = workspace.frontendProjectRoot ?? '';
+  form.elements.frontendStartCommand.value = workspace.frontendStartCommand ?? '';
   form.elements.beforeMs.value = workspace.window?.beforeMs ?? 3000;
   form.elements.afterMs.value = workspace.window?.afterMs ?? 2000;
   if (!browserUrlInput.value && workspace.frontendUrl) browserUrlInput.value = workspace.frontendUrl;
@@ -85,6 +104,8 @@ function readForm() {
       logfiles: form.elements.logfiles.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean),
       sourceRoot: form.elements.sourceRoot.value.trim(),
       frontendSourceRoot: form.elements.frontendSourceRoot.value.trim(),
+      frontendProjectRoot: form.elements.frontendProjectRoot.value.trim(),
+      frontendStartCommand: form.elements.frontendStartCommand.value.trim(),
       window: {
         beforeMs: Number(form.elements.beforeMs.value) || 0,
         afterMs: Number(form.elements.afterMs.value) || 0,
@@ -102,6 +123,7 @@ async function loadConfig() {
     fillForm(config);
     renderRouting();
     refreshTargetCandidates().catch(() => {});
+    refreshDevServer().catch(() => {});
     renderLogSource(config.workspace?.logfiles ?? []);
     if (config.meta?.logFile) logPath.textContent = `日志文件：${config.meta.logFile}`;
     if (config.meta?.configDir) {
@@ -233,6 +255,87 @@ function renderRequests() {
     ? `${items.length} 条（${scope} ${filtered.length}）${consoleErrorCount ? ` · 页面错误 ${consoleErrorCount}` : ''}`
     : '内嵌浏览器仅在桌面版可用';
   renderLogAnchors();
+}
+
+function renderDevServerLog() {
+  if (devServerLogLines.length === 0) {
+    devServerLogEl.textContent = '暂无输出';
+    return;
+  }
+  devServerLogEl.textContent = devServerLogLines
+    .map((entry) => `${entry.stream === 'err' ? '! ' : '  '}${entry.line}`)
+    .join('\n');
+  devServerLogEl.scrollTop = devServerLogEl.scrollHeight;
+}
+
+function renderDevServer() {
+  const state = devServerState;
+  if (!api.isDesktop) {
+    devServerStatusEl.textContent = '仅桌面版';
+    devServerStatusEl.className = 'badge';
+    devServerDetailEl.textContent = '前端服务控制仅在桌面版可用';
+    devServerStartBtn.disabled = true;
+    devServerRestartBtn.disabled = true;
+    devServerStopBtn.disabled = true;
+    return;
+  }
+  if (!state) {
+    devServerStatusEl.textContent = '未连接';
+    devServerStatusEl.className = 'badge';
+    devServerDetailEl.textContent = '正在读取前端服务状态…';
+    return;
+  }
+  const status = state.status ?? 'stopped';
+  devServerStatusEl.textContent = DEV_STATUS_LABELS[status] ?? status;
+  devServerStatusEl.className = `badge${status === 'running' ? ' ok' : status === 'error' ? ' error' : ''}`;
+  const bits = [
+    state.message,
+    state.command ? `命令：${state.command}` : null,
+    state.cwd ? `目录：${state.cwd}` : null,
+    state.pid ? `PID：${state.pid}` : null,
+  ].filter(Boolean);
+  devServerDetailEl.textContent = bits.join(' · ');
+  const busy = status === 'starting' || status === 'stopping';
+  const external = status === 'external';
+  devServerStartBtn.disabled = busy || external || status === 'running';
+  devServerStopBtn.disabled = busy || !state.pid;
+  devServerRestartBtn.disabled = busy || external;
+}
+
+async function refreshDevServer() {
+  if (!api.isDesktop) {
+    renderDevServer();
+    renderDevServerLog();
+    return;
+  }
+  try {
+    devServerState = await api.devServer('status');
+    const { logs } = await api.devServer('logs', { limit: MAX_DEV_LOG_LINES });
+    devServerLogLines = Array.isArray(logs) ? logs : [];
+  } catch (error) {
+    devServerState = { status: 'error', message: `读取前端服务状态失败：${error.message}` };
+  }
+  renderDevServer();
+  renderDevServerLog();
+}
+
+async function devServerAction(action) {
+  if (!api.isDesktop) return;
+  if (action === 'start' || action === 'restart') {
+    devServerLogLines = [];
+    renderDevServerLog();
+  }
+  devServerDetailEl.textContent = '处理中…';
+  try {
+    devServerState = await api.devServer(action);
+    renderDevServer();
+    const { logs } = await api.devServer('logs', { limit: MAX_DEV_LOG_LINES });
+    devServerLogLines = Array.isArray(logs) ? logs : [];
+    renderDevServerLog();
+  } catch (error) {
+    devServerState = { ...(devServerState ?? {}), status: 'error', message: `操作失败：${error.message}` };
+    renderDevServer();
+  }
 }
 
 async function refreshRequests() {
@@ -1040,6 +1143,7 @@ form.addEventListener('submit', async (event) => {
     renderLogSource(saved.workspace?.logfiles ?? []);
     if (saved.meta?.configDir) configPath.textContent = `配置目录：${saved.meta.configDir}`;
     setMessage(saved.meta?.configDir ? `已保存到 ${saved.meta.configDir}` : '已保存', 'ok');
+    refreshDevServer().catch(() => {});
   } catch (err) {
     setMessage(`保存失败：${err.message}`, 'error');
   }
@@ -1068,6 +1172,9 @@ $('clear-requests').addEventListener('click', async () => {
   }
 });
 $('only-errors').addEventListener('change', renderRequests);
+devServerStartBtn.addEventListener('click', () => devServerAction('start'));
+devServerRestartBtn.addEventListener('click', () => devServerAction('restart'));
+devServerStopBtn.addEventListener('click', () => devServerAction('stop'));
 requestFilterBar.addEventListener('click', (event) => {
   const button = event.target.closest('button[data-filter]');
   if (!button) return;
@@ -1107,6 +1214,24 @@ $('save-routing').addEventListener('click', saveRouting);
 for (const tab of document.querySelectorAll('.tab')) {
   tab.addEventListener('click', () => setTab(tab.dataset.tab));
 }
+
+api.onDevServer((event) => {
+  if (event.type === 'state') {
+    const previous = devServerState;
+    devServerState = event.state;
+    if (event.state?.status === 'starting' && previous?.status !== 'starting') {
+      devServerLogLines = [];
+      renderDevServerLog();
+    }
+    renderDevServer();
+  } else if (event.type === 'log') {
+    devServerLogLines.push({ stream: event.stream, line: event.line });
+    if (devServerLogLines.length > MAX_DEV_LOG_LINES) {
+      devServerLogLines.splice(0, devServerLogLines.length - MAX_DEV_LOG_LINES);
+    }
+    renderDevServerLog();
+  }
+});
 
 api.onCapture((event) => {
   if (event.type === 'request' || event.type === 'update') {

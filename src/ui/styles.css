@@ -151,6 +151,23 @@ button:hover { filter: brightness(1.08); }
 .segmented button + button { border-left: 1px solid var(--border); }
 .segmented button.active { background: var(--accent); color: #fff; }
 .inline { display: flex; align-items: center; gap: 4px; color: var(--muted); font-size: 12px; }
+.devserver-section { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border); }
+.devserver-actions { display: flex; gap: 8px; margin: 8px 0; }
+.devserver-actions button { padding: 5px 10px; font-size: 12px; }
+.devserver-log {
+  margin: 0;
+  max-height: 180px;
+  overflow: auto;
+  background: #12151c;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
 .request-list {
   list-style: none;
   margin: 0;

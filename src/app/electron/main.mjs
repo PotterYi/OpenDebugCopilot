@@ -8,6 +8,7 @@ import { startServer } from '../server.mjs';
 import { BrowserHost } from './browser-host.mjs';
 import { isLocalHostname, Router } from './routing.mjs';
 import { startLocalProxy } from './local-proxy.mjs';
+import { createDevServerManager } from './dev-server.mjs';
 import { readLogs } from '../../evidence/logs.mjs';
 import { runCaptureDiagnosis } from '../../diagnose/run.mjs';
 import { createMockAgent } from '../../agent/mock.mjs';
@@ -50,7 +51,7 @@ const useSingleInstanceLock = !smoke
 const hasSingleInstanceLock = useSingleInstanceLock ? app.requestSingleInstanceLock() : true;
 let mainWindow = null;
 
-function registerIpc(service, getHost, getRouter, setRules) {
+function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
   const handle = (channel, fn) => ipcMain.handle(channel, async (event, payload) => {
     try {
       return await fn(event, payload);
@@ -82,6 +83,19 @@ function registerIpc(service, getHost, getRouter, setRules) {
     if (payload.action === 'list') return { runs: await service.listRuns() };
     if (payload.action === 'get') return service.getRun(payload.runId);
     throw new Error(`dc:runs: unknown action ${payload.action}`);
+  });
+
+  handle('dc:devserver', async (_event, payload = {}) => {
+    const devServer = getDevServer();
+    if (!devServer) throw new Error('dev server manager is not ready');
+    switch (payload.action) {
+      case 'status': return devServer.status();
+      case 'logs': return { logs: devServer.logsFor(payload.limit) };
+      case 'start': return devServer.start();
+      case 'stop': return devServer.stop();
+      case 'restart': return devServer.restart();
+      default: throw new Error(`dc:devserver: unknown action ${payload.action}`);
+    }
   });
 
   handle('dc:browser', async (_event, payload = {}) => {
@@ -329,6 +343,9 @@ async function runSmoke(window, host) {
           pipeParserOption: [...document.querySelectorAll('#log-parser option')].some((option) => option.value === 'pipe'),
           consolePanel: Boolean(document.getElementById('console-list')),
           requestFilterPresent: document.querySelectorAll('#request-filter button[data-filter]').length === 3,
+          devServerControlsPresent: Boolean(document.getElementById('devserver-start'))
+            && Boolean(document.getElementById('devserver-restart'))
+            && Boolean(document.getElementById('devserver-stop')),
           singleDiagnoseButton: Boolean(document.getElementById('diagnose-request')) && !document.getElementById('diagnose-mock'),
           questionIsTextarea: document.getElementById('diagnose-question')?.tagName === 'TEXTAREA',
           targetSelect: document.querySelector('[data-field="baseUrl"]')?.tagName === 'SELECT',
@@ -602,11 +619,21 @@ async function bootstrap() {
       log.error('[proxy] failed to start; falling back to direct redirects', error);
     }
   }
+  const devServer = createDevServerManager({
+    getWorkspace: async () => (await service.getConfig()).workspace,
+    rootDir: ROOT,
+    onEvent: (event) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('dc:devserver:event', event);
+      }
+    },
+  });
   registerIpc(
     service,
     () => host,
     () => router,
     (rules) => { currentRules = rules; },
+    () => devServer,
   );
 
   const { server, conflictPort } = await startUiServer({
@@ -676,6 +703,7 @@ async function bootstrap() {
     mainWindow = null;
     router?.dispose();
     host?.destroy();
+    devServer.dispose().catch(() => {});
     proxy?.close().catch(() => {});
   });
 
@@ -689,6 +717,7 @@ async function bootstrap() {
 
   if (smoke) {
     const ok = await runSmoke(window, host);
+    await devServer.dispose().catch(() => {});
     await server.close();
     await proxy?.close().catch(() => {});
     app.exit(ok ? 0 : 1);

@@ -7,11 +7,13 @@ const CHANNELS = new Set([
   'dc:logs',
   'dc:diagnose',
   'dc:runs',
+  'dc:devserver',
 ]);
 
 const EVENTS = new Set([
   'dc:capture:event',
   'dc:diagnose:progress',
+  'dc:devserver:event',
 ]);
 
 contextBridge.exposeInMainWorld('dc', {

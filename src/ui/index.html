@@ -30,7 +30,13 @@
           <input name="sourceRoot" placeholder="../backend-project" />
         </label>
         <label>前端源码目录
-          <input name="frontendSourceRoot" placeholder="../frontend-project" />
+          <input name="frontendSourceRoot" placeholder="../frontend-project/src" />
+        </label>
+        <label>前端项目目录（含 package.json）
+          <input name="frontendProjectRoot" placeholder="留空则从前端源码目录向上推断" />
+        </label>
+        <label>前端启动命令
+          <input name="frontendStartCommand" placeholder="留空自动识别（如 npm run dev）" />
         </label>
         <div class="row">
           <label>时间窗前 (ms)
@@ -45,6 +51,19 @@
         <p id="config-path" class="muted small"></p>
         <p id="log-path" class="muted small"></p>
       </form>
+      <section class="devserver-section">
+        <div class="panel-head">
+          <h2>前端服务</h2>
+          <span id="devserver-status" class="badge">未启动</span>
+        </div>
+        <div class="devserver-actions">
+          <button id="devserver-start" type="button">启动</button>
+          <button id="devserver-restart" type="button" class="secondary">重启</button>
+          <button id="devserver-stop" type="button" class="secondary">停止</button>
+        </div>
+        <p id="devserver-detail" class="muted small"></p>
+        <pre id="devserver-log" class="devserver-log">暂无输出</pre>
+      </section>
     </section>
 
     <div id="splitter" class="splitter" title="拖动调整宽度"></div>
