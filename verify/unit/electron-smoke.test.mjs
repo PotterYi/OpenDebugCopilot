@@ -193,3 +193,51 @@ test('electron shell boots, captures, routes and diagnoses', {
   assert.equal(envHits, 0, `request should have been redirected to local, env hits: ${envHits}`);
   assert.ok(backendOrigin, 'backend should receive an Origin header');
 });
+
+test('falls back to an ephemeral UI port when the requested port is busy', {
+  skip: available ? false : 'Electron binary is not installed',
+  timeout: 60_000,
+}, async (t) => {
+  const DIR = tempDir('electron-port-conflict');
+  await rm(DIR, { recursive: true, force: true });
+  await mkdir(path.join(DIR, 'configs'), { recursive: true });
+  await mkdir(path.join(DIR, 'runs'), { recursive: true });
+  t.after(async () => { await rm(DIR, { recursive: true, force: true }); });
+
+  const blocker = http.createServer((_req, res) => {
+    res.statusCode = 204;
+    res.end();
+  });
+  blocker.listen(0, '127.0.0.1');
+  await once(blocker, 'listening');
+  t.after(() => new Promise((resolve) => blocker.close(resolve)));
+  const busyPort = blocker.address().port;
+
+  const child = spawn(electronPath, [
+    MAIN,
+    '--smoke',
+    '--port', String(busyPort),
+    '--config-dir', path.join(DIR, 'configs'),
+    '--runs-dir', path.join(DIR, 'runs'),
+  ], { env: { ...process.env } });
+
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (chunk) => { stdout += chunk; });
+  child.stderr.on('data', (chunk) => { stderr += chunk; });
+
+  const code = await new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      child.kill();
+      resolve(-1);
+    }, 50_000);
+    child.on('close', (exitCode) => {
+      clearTimeout(timer);
+      resolve(exitCode);
+    });
+  });
+
+  assert.equal(code, 0, `electron exited ${code}\nstdout:\n${stdout}\nstderr:\n${stderr}`);
+  assert.match(stdout, /SMOKE_OK/);
+  assert.match(stderr, /UI port \d+ is already in use; using an ephemeral port/);
+});

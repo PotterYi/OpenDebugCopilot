@@ -41,6 +41,15 @@ const port = Number(argValue('--port') ?? 7080);
 const runsDir = argValue('--runs-dir');
 const configDir = argValue('--config-dir');
 
+// Smoke/harness runs with custom config or runs dirs must not steal the lock from a real
+// desktop instance. `--allow-multiple-instances` is an explicit escape hatch.
+const useSingleInstanceLock = !smoke
+  && !configDir
+  && !runsDir
+  && !process.argv.includes('--allow-multiple-instances');
+const hasSingleInstanceLock = useSingleInstanceLock ? app.requestSingleInstanceLock() : true;
+let mainWindow = null;
+
 function registerIpc(service, getHost, getRouter, setRules) {
   const handle = (channel, fn) => ipcMain.handle(channel, async (event, payload) => {
     try {
@@ -518,6 +527,21 @@ function installApplicationMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
+/**
+ * Start the UI server on the preferred port. A busy port must not prevent the app
+ * from starting: fall back to an ephemeral port and tell the user once the window is up.
+ */
+async function startUiServer({ service, uiDir, preferredPort }) {
+  try {
+    return { server: await startServer({ service, uiDir, host: HOST, port: preferredPort }) };
+  } catch (error) {
+    if (error?.code !== 'EADDRINUSE') throw error;
+    log.warn(`[server] UI port ${preferredPort} is already in use; using an ephemeral port`);
+    const server = await startServer({ service, uiDir, host: HOST, port: 0 });
+    return { server, conflictPort: preferredPort };
+  }
+}
+
 async function bootstrap() {
   try {
     let logFile = process.env.DC_LOG_FILE || path.join(ROOT, 'logs', 'debugcopilot.log');
@@ -585,15 +609,26 @@ async function bootstrap() {
     (rules) => { currentRules = rules; },
   );
 
-  const server = await startServer({
+  const { server, conflictPort } = await startUiServer({
     service,
     uiDir: path.join(ROOT, 'src/ui'),
-    host: HOST,
-    port: Number.isFinite(port) ? port : 0,
+    preferredPort: Number.isFinite(port) ? port : 0,
   });
   log.info(`DebugCopilot Electron: ${server.url}`);
 
   const window = createWindow(server.url);
+  mainWindow = window;
+  if (conflictPort && !smoke) {
+    window.webContents.once('did-finish-load', () => {
+      dialog.showMessageBox(window, {
+        type: 'warning',
+        title: 'UI 端口被占用',
+        message: `端口 ${conflictPort} 已被其他程序占用，DebugCopilot 已改用 ${server.port}。`,
+        detail: '功能不受影响；如需固定端口，请先释放该端口或使用 --port 指定其他端口。',
+        buttons: ['知道了'],
+      }).catch(() => {});
+    });
+  }
   host = new BrowserHost({
     window,
     getRoutingRules: () => currentRules,
@@ -638,6 +673,7 @@ async function bootstrap() {
     },
   });
   window.on('closed', () => {
+    mainWindow = null;
     router?.dispose();
     host?.destroy();
     proxy?.close().catch(() => {});
@@ -665,11 +701,27 @@ async function bootstrap() {
   });
 }
 
-app.whenReady().then(bootstrap).catch((error) => {
-  if (error?.code === 'EADDRINUSE') {
-    log.error(`FATAL UI port ${port} is already in use; free it or pass --port`);
-  } else {
-    log.error('FATAL', error);
+if (!hasSingleInstanceLock) {
+  // Do not start a second server on the fixed UI port; the existing window is focused
+  // by the first instance's 'second-instance' handler (registered below).
+  app.quit();
+} else {
+  if (useSingleInstanceLock) {
+    app.on('second-instance', () => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.show();
+        mainWindow.focus();
+      }
+    });
   }
-  app.exit(1);
-});
+
+  app.whenReady().then(bootstrap).catch((error) => {
+    if (error?.code === 'EADDRINUSE') {
+      log.error(`FATAL UI server could not bind (preferred port ${port})`);
+    } else {
+      log.error('FATAL', error);
+    }
+    app.exit(1);
+  });
+}
