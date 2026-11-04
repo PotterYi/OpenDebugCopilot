@@ -8,6 +8,7 @@ const CHANNELS = new Set([
   'dc:diagnose',
   'dc:runs',
   'dc:devserver',
+  'dc:fixes',
 ]);
 
 const EVENTS = new Set([

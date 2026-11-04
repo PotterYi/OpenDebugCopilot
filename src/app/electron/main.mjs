@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron';
 import path from 'node:path';
-import { access, appendFile, mkdir, writeFile } from 'node:fs/promises';
+import { access, appendFile, mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createService } from '../service.mjs';
@@ -9,6 +9,7 @@ import { BrowserHost } from './browser-host.mjs';
 import { isLocalHostname, Router } from './routing.mjs';
 import { startLocalProxy } from './local-proxy.mjs';
 import { createDevServerManager } from './dev-server.mjs';
+import { applyFix, revertFix } from '../../core/fix-apply.mjs';
 import { readLogs } from '../../evidence/logs.mjs';
 import { runCaptureDiagnosis } from '../../diagnose/run.mjs';
 import { createMockAgent } from '../../agent/mock.mjs';
@@ -51,6 +52,49 @@ const useSingleInstanceLock = !smoke
 const hasSingleInstanceLock = useSingleInstanceLock ? app.requestSingleInstanceLock() : true;
 let mainWindow = null;
 
+async function writeJsonAtomic(file, value) {
+  const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
+  try {
+    await writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+    await rename(tmp, file);
+  } catch (error) {
+    await rm(tmp, { force: true }).catch(() => {});
+    throw error;
+  }
+}
+
+async function loadRunFix(service, runId, fixIndex) {
+  const { result } = await service.getRun(runId);
+  const fixes = result?.agent?.fixes;
+  if (!Array.isArray(fixes) || !fixes[fixIndex]) throw new Error('修复建议不存在');
+  const roots = result?.meta?.fixRoots;
+  if (!roots) throw new Error('该诊断缺少源码目录信息，无法应用修改');
+  return {
+    result,
+    fix: fixes[fixIndex],
+    roots,
+    runDir: path.join(service.runsRoot, runId),
+  };
+}
+
+function confirmFixDialog(parent, { title, message, detail }) {
+  const options = {
+    type: 'warning',
+    title,
+    message,
+    detail,
+    buttons: ['确认', '取消'],
+    defaultId: 1,
+    cancelId: 1,
+    noLink: true,
+  };
+  const win = parent ?? mainWindow;
+  const pending = win && !win.isDestroyed()
+    ? dialog.showMessageBox(win, options)
+    : dialog.showMessageBox(options);
+  return pending.then((choice) => choice.response === 0);
+}
+
 function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
   const handle = (channel, fn) => ipcMain.handle(channel, async (event, payload) => {
     try {
@@ -83,6 +127,73 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
     if (payload.action === 'list') return { runs: await service.listRuns() };
     if (payload.action === 'get') return service.getRun(payload.runId);
     throw new Error(`dc:runs: unknown action ${payload.action}`);
+  });
+
+  handle('dc:fixes', async (event, payload = {}) => {
+    const fixIndex = Number(payload.fixIndex);
+    if (!Number.isInteger(fixIndex) || fixIndex < 0) throw new Error('fixIndex 无效');
+    const { result, fix, roots, runDir } = await loadRunFix(service, payload.runId, fixIndex);
+    const parent = BrowserWindow.fromWebContents(event.sender) ?? mainWindow;
+
+    if (payload.action === 'apply') {
+      if (fix.preview?.status !== 'ready') throw new Error('该建议没有可应用的 diff 预览');
+      if (fix.applied && !fix.applied.revertedAt) throw new Error('该修改已应用，请先撤销');
+      if (!smoke) {
+        const ok = await confirmFixDialog(parent, {
+          title: '应用代码修改',
+          message: `即将修改 ${fix.file}`,
+          detail: `${fix.summary}\n风险：${fix.risk ?? 'medium'}\n\n应用前会备份原文件，可在诊断面板撤销。`,
+        });
+        if (!ok) return { cancelled: true, fix };
+      }
+
+      const backupName = `fix-${fixIndex}-${Date.now()}.orig`;
+      const backupAbs = path.join(runDir, 'backups', backupName);
+      const applied = await applyFix({ fix, roots, backupPath: backupAbs });
+      fix.applied = {
+        at: Date.now(),
+        backup: path.relative(runDir, backupAbs).split(path.sep).join('/'),
+        root: applied.root,
+        file: applied.file,
+        line: applied.line,
+      };
+      await writeJsonAtomic(path.join(runDir, 'result.json'), result);
+      await appendFile(
+        path.join(runDir, 'fixes.log'),
+        `${new Date().toISOString()} apply ${applied.root}/${applied.file} backup=${fix.applied.backup}\n`,
+        'utf8',
+      ).catch(() => {});
+      log.info('[fix] applied', applied.root, applied.file, 'backup', fix.applied.backup);
+      return { ok: true, fix };
+    }
+
+    if (payload.action === 'undo') {
+      if (!fix.applied || fix.applied.revertedAt) throw new Error('该修改当前没有可撤销的应用记录');
+      const runRoot = path.resolve(runDir);
+      const backupAbs = path.resolve(runDir, fix.applied.backup ?? '');
+      if (!backupAbs.startsWith(`${runRoot}${path.sep}`)) throw new Error('备份路径无效');
+      if (!smoke) {
+        const ok = await confirmFixDialog(parent, {
+          title: '撤销代码修改',
+          message: `即将还原 ${fix.file}`,
+          detail: `${fix.summary}\n\n将用诊断时备份的原文件覆盖当前文件。`,
+        });
+        if (!ok) return { cancelled: true, fix };
+      }
+
+      await revertFix({ fix, roots, backupPath: backupAbs });
+      fix.applied = { ...fix.applied, revertedAt: Date.now() };
+      await writeJsonAtomic(path.join(runDir, 'result.json'), result);
+      await appendFile(
+        path.join(runDir, 'fixes.log'),
+        `${new Date().toISOString()} undo ${fix.file}\n`,
+        'utf8',
+      ).catch(() => {});
+      log.info('[fix] reverted', fix.file);
+      return { ok: true, fix };
+    }
+
+    throw new Error(`dc:fixes: unknown action ${payload.action}`);
   });
 
   handle('dc:devserver', async (_event, payload = {}) => {

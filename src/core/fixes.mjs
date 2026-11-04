@@ -1,4 +1,4 @@
-import { readFile, stat } from 'node:fs/promises';
+import { readFile, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 
 export const FIX_RISKS = ['low', 'medium', 'high'];
@@ -73,7 +73,16 @@ function isInside(root, target) {
   return resolvedTarget === resolvedRoot || resolvedTarget.startsWith(`${resolvedRoot}${path.sep}`);
 }
 
-async function resolveTarget(fix, { sourceRoot, frontendSourceRoot }) {
+/**
+ * Resolve a fix's relative file inside the configured roots.
+ * Exported so the apply/undo path uses exactly the same validation as the preview.
+ *
+ * @param {any} item
+ * @param {{ sourceRoot?: string | null, frontendSourceRoot?: string | null }} roots
+ */
+export async function resolveFixTarget(item, { sourceRoot = null, frontendSourceRoot = null } = {}) {
+  const fix = normalizeFix(item);
+  if (!fix) return { error: '无效的修复建议' };
   if (!fix.file) return { error: '修复建议没有指定文件' };
   if (path.isAbsolute(fix.file)) return { error: '文件路径必须是相对路径' };
 
@@ -105,7 +114,15 @@ async function resolveTarget(fix, { sourceRoot, frontendSourceRoot }) {
 
   const existing = [];
   for (const candidate of candidates) {
-    if (await pathKind(candidate.resolved) === 'file') existing.push(candidate);
+    if (await pathKind(candidate.resolved) !== 'file') continue;
+    const [realRoot, realFile] = await Promise.all([
+      realpath(candidate.root).catch(() => null),
+      realpath(candidate.resolved).catch(() => null),
+    ]);
+    if (realRoot && realFile && !isInside(realRoot, realFile)) {
+      return { error: `文件通过符号链接越出源码目录：${fix.file}` };
+    }
+    existing.push(candidate);
   }
   if (existing.length === 0) {
     return { error: `未找到文件：${fix.file}${fix.root ? `（${fix.root}）` : ''}` };
@@ -113,7 +130,7 @@ async function resolveTarget(fix, { sourceRoot, frontendSourceRoot }) {
   if (existing.length > 1) {
     return { error: `同一相对路径同时存在于后端和前端源码目录，请在修复建议中指定 root：${fix.file}` };
   }
-  return existing[0];
+  return { ...existing[0], relative: relative };
 }
 
 async function readText(file) {
@@ -237,7 +254,7 @@ export async function buildFixPreview(item, { sourceRoot = null, frontendSourceR
     return { ...fix, preview: { status: 'error', message: 'search 片段不能为空' } };
   }
 
-  const target = await resolveTarget(fix, { sourceRoot, frontendSourceRoot });
+  const target = await resolveFixTarget(fix, { sourceRoot, frontendSourceRoot });
   if (target.error) return { ...fix, preview: { status: 'error', message: target.error } };
 
   let text;

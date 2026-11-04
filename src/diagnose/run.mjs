@@ -235,8 +235,11 @@ async function diagnoseWithFired({
     line: error.line,
     stack: (error.stack ?? []).slice(0, 10),
   }));
+  const frontendFixRoot = scenario.frontendSourceRoot
+    ? path.resolve(scenario.dir ?? process.cwd(), scenario.frontendSourceRoot)
+    : null;
   const frontendSources = await resolveFrontendSources({
-    frontendSourceRoot: scenario.frontendSourceRoot ?? null,
+    frontendSourceRoot: frontendFixRoot,
     errors: frontendErrors,
   });
   const toolsBundle = createTools({
@@ -314,9 +317,6 @@ async function diagnoseWithFired({
 
   // 2a: attach read-only diff previews; never write the working tree here.
   try {
-    const frontendFixRoot = scenario.frontendSourceRoot
-      ? path.resolve(scenario.dir ?? process.cwd(), scenario.frontendSourceRoot)
-      : null;
     agentResult.fixes = await buildFixPreviews(agentResult.fixes, {
       sourceRoot: paths.sourceRoot,
       frontendSourceRoot: frontendFixRoot,
@@ -376,6 +376,11 @@ async function diagnoseWithFired({
       durationMs: endedAt - startedAt,
       question,
       runLog: 'run.log',
+      // Needed by 2b apply/undo to re-resolve fix files safely.
+      fixRoots: {
+        sourceRoot: paths.sourceRoot ?? null,
+        frontendSourceRoot: frontendFixRoot,
+      },
     },
     target,
     request: evidence.request,

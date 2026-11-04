@@ -57,6 +57,10 @@ export const api = {
     if (!dc?.invoke) return { pending: true };
     return dc.invoke('dc:devserver', { action, ...payload });
   },
+  async fixes(action, payload = {}) {
+    if (!dc?.invoke) return { pending: true };
+    return dc.invoke('dc:fixes', { action, ...payload });
+  },
   async pickLogs() {
     if (dc?.invoke) return dc.invoke('dc:logs', { action: 'pick' });
     return { paths: [] };

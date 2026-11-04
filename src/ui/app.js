@@ -62,6 +62,7 @@ const captureState = new Map();
 let requestFilter = 'all';
 let devServerState = null;
 let devServerLogLines = [];
+let currentDiagnosis = null;
 const MAX_DEV_LOG_LINES = 300;
 const DEV_STATUS_LABELS = {
   stopped: '未启动',
@@ -424,12 +425,43 @@ function buildBodySection(request) {
   return block;
 }
 
-function renderFixCard(fix) {
+async function runFixAction(action, fixIndex) {
+  const response = currentDiagnosis;
+  const runId = response?.runId ?? response?.result?.meta?.runId;
+  if (!runId) return;
+  diagnoseMessage.textContent = action === 'apply' ? '正在应用修改…' : '正在撤销修改…';
+  diagnoseMessage.className = 'muted';
+  try {
+    const result = await api.fixes(action, { runId, fixIndex });
+    if (result?.cancelled) {
+      diagnoseMessage.textContent = '已取消';
+      diagnoseMessage.className = 'muted';
+      return;
+    }
+    if (result?.fix && Array.isArray(response.result?.agent?.fixes)) {
+      response.result.agent.fixes[fixIndex] = result.fix;
+    }
+    renderDiagnosis(response);
+    diagnoseMessage.textContent = action === 'apply'
+      ? '修改已应用（已备份，可撤销）'
+      : '修改已撤销';
+    diagnoseMessage.className = 'message ok';
+  } catch (error) {
+    diagnoseMessage.textContent = `${action === 'apply' ? '应用' : '撤销'}失败：${error.message}`;
+    diagnoseMessage.className = 'message error';
+  }
+}
+
+function renderFixCard(fix, runId, fixIndex) {
   if (typeof fix === 'string') return el('li', 'fix-card', fix);
   const card = el('li', 'fix-card');
+  const applied = Boolean(fix.applied) && !fix.applied.revertedAt;
+  const reverted = Boolean(fix.applied?.revertedAt);
   const head = el('div', 'fix-head');
   head.append(el('span', 'fix-summary', fix.summary ?? '(无摘要)'));
   if (fix.risk) head.append(el('span', `badge risk-${fix.risk}`, `风险 ${fix.risk}`));
+  if (applied) head.append(el('span', 'badge ok', '已应用'));
+  else if (reverted) head.append(el('span', 'badge', '已撤销'));
   card.append(head);
 
   const target = [fix.root ?? null, fix.file ?? null].filter(Boolean).join(' / ');
@@ -452,6 +484,21 @@ function renderFixCard(fix) {
       }
     });
     bar.append(copy);
+    if (api.isDesktop && fix.kind === 'edit') {
+      if (applied) {
+        const undo = el('button', 'secondary', '撤销');
+        undo.type = 'button';
+        undo.disabled = !runId;
+        undo.addEventListener('click', () => runFixAction('undo', fixIndex));
+        bar.append(undo);
+      } else {
+        const apply = el('button', null, '应用修改');
+        apply.type = 'button';
+        apply.disabled = !runId;
+        apply.addEventListener('click', () => runFixAction('apply', fixIndex));
+        bar.append(apply);
+      }
+    }
     card.append(bar);
 
     const diff = el('pre', 'fix-diff');
@@ -473,6 +520,7 @@ function renderFixCard(fix) {
 }
 
 function renderDiagnosis(response) {
+  currentDiagnosis = response;
   const result = response.result ?? {};
   const correlation = result.logs?.correlation;
   diagnoseResult.hidden = false;
@@ -509,7 +557,8 @@ function renderDiagnosis(response) {
   const fixes = result.agent?.fixes;
   if (Array.isArray(fixes) && fixes.length > 0) {
     const list = el('ul', 'fix-list');
-    for (const fix of fixes) list.append(renderFixCard(fix));
+    const runId = response.runId ?? result.meta?.runId;
+    fixes.forEach((fix, index) => list.append(renderFixCard(fix, runId, index)));
     diagnoseResult.append(section('修复建议', list));
   }
   const needsMoreInfo = result.agent?.needsMoreInfo;

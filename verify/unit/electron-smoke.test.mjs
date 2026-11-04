@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { existsSync } from 'node:fs';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import http from 'node:http';
 import { once } from 'node:events';
@@ -344,4 +344,109 @@ http.createServer((req, res) => { res.end('frontend-ok'); }).listen(${frontendPo
       return true;
     }
   }, 5_000), 'dev server should be stopped when the app exits');
+});
+
+test('applies and reverts a structured fix through IPC', {
+  skip: available ? false : 'Electron binary is not installed',
+  timeout: 60_000,
+}, async (t) => {
+  const DIR = tempDir('electron-fix-apply');
+  const runId = 'run-apply';
+  const runDir = path.join(DIR, 'runs', runId);
+  const backend = path.join(DIR, 'backend');
+  const sourceFile = path.join(backend, 'com/demo/OrderService.java');
+  const original = [
+    'package com.demo;',
+    '',
+    'public class OrderService {',
+    '    public void create(Order order) {',
+    '        if (order.getQty() <= 0) {',
+    '        }',
+    '    }',
+    '}',
+  ].join('\n');
+
+  await rm(DIR, { recursive: true, force: true });
+  await mkdir(path.join(DIR, 'configs'), { recursive: true });
+  await mkdir(path.join(runDir, 'backups'), { recursive: true });
+  await mkdir(path.dirname(sourceFile), { recursive: true });
+  await writeFile(sourceFile, original, 'utf8');
+  t.after(async () => { await rm(DIR, { recursive: true, force: true }); });
+
+  const fix = {
+    summary: '防御空数量',
+    kind: 'edit',
+    root: 'backend',
+    file: 'com/demo/OrderService.java',
+    search: '        if (order.getQty() <= 0) {',
+    replace: '        if (order.getQty() == null || order.getQty() <= 0) {',
+    risk: 'low',
+    preview: {
+      status: 'ready',
+      line: 5,
+      patch: '--- a/com/demo/OrderService.java\n+++ b/com/demo/OrderService.java',
+    },
+  };
+  await writeFile(path.join(runDir, 'result.json'), JSON.stringify({
+    meta: {
+      runId,
+      fixRoots: { sourceRoot: backend, frontendSourceRoot: null },
+    },
+    agent: { conclusion: 'test', evidenceRefs: [], fixes: [fix] },
+  }, null, 2), 'utf8');
+
+  const uiScript = `(async () => {
+    const applied = await window.dc.invoke('dc:fixes', { action: 'apply', runId: '${runId}', fixIndex: 0 });
+    const undone = await window.dc.invoke('dc:fixes', { action: 'undo', runId: '${runId}', fixIndex: 0 });
+    return {
+      applied: applied.ok === true,
+      appliedFile: applied.fix?.applied?.file ?? null,
+      undone: undone.ok === true,
+      reverted: Boolean(undone.fix?.applied?.revertedAt),
+    };
+  })()`;
+
+  const child = spawn(electronPath, [
+    MAIN,
+    '--smoke',
+    '--port', '0',
+    '--config-dir', path.join(DIR, 'configs'),
+    '--runs-dir', path.join(DIR, 'runs'),
+    '--smoke-ui-eval', Buffer.from(uiScript).toString('base64'),
+  ], { env: { ...process.env } });
+
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (chunk) => { stdout += chunk; });
+  child.stderr.on('data', (chunk) => { stderr += chunk; });
+
+  const code = await new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      child.kill();
+      resolve(-1);
+    }, 50_000);
+    child.on('close', (exitCode) => {
+      clearTimeout(timer);
+      resolve(exitCode);
+    });
+  });
+
+  assert.equal(code, 0, `electron exited ${code}\nstdout:\n${stdout}\nstderr:\n${stderr}`);
+  assert.match(stdout, /SMOKE_OK/);
+  const match = stdout.match(/SMOKE_RESULT (\{.*\})/);
+  assert.ok(match, `missing SMOKE_RESULT\n${stdout}`);
+  const smoke = JSON.parse(match[1]);
+  assert.deepEqual(smoke.uiEvalResult, {
+    applied: true,
+    appliedFile: 'com/demo/OrderService.java',
+    undone: true,
+    reverted: true,
+  });
+
+  assert.equal(await readFile(sourceFile, 'utf8'), original);
+  const persisted = JSON.parse(await readFile(path.join(runDir, 'result.json'), 'utf8'));
+  assert.ok(persisted.agent.fixes[0].applied.revertedAt);
+  const backups = await readdir(path.join(runDir, 'backups'));
+  assert.equal(backups.length, 1);
+  assert.match(await readFile(path.join(runDir, 'fixes.log'), 'utf8'), /apply .*undo /s);
 });
