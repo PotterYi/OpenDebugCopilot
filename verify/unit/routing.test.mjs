@@ -391,5 +391,14 @@ test('SIT rules are passthrough and never redirect', () => {
   assert.deepEqual(result, {});
   assert.equal(events[0].passthrough, true);
   assert.equal(events[0].target, null);
+
+  const warnings = events.filter((event) => event.type === 'routing-warning');
+  assert.equal(warnings.length, 1);
+  assert.equal(warnings[0].code, 'SIT_LOCAL_REQUEST');
+  assert.match(warnings[0].message, /不会改道/);
+
+  // Warn once per rule, not once per request.
+  handlers.before({ id: 2, url: 'http://localhost:8081/user/detail', method: 'GET', resourceType: 'xhr' }, () => {});
+  assert.equal(events.filter((event) => event.type === 'routing-warning').length, 1);
   router.dispose();
 });

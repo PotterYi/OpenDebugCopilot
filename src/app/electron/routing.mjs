@@ -182,6 +182,8 @@ export class Router {
     this.getOriginalHeaders = getOriginalHeaders;
     this.originByUrl = new Map();
     this.pending = new Map();
+    // Warn once per rule: a passthrough rule matching loopback traffic has no CORS fallback.
+    this.warnedSitLocal = new Set();
     this.filter = { urls: ['<all_urls>'] };
 
     this.beforeRequest = this.beforeRequest.bind(this);
@@ -230,6 +232,24 @@ export class Router {
         target: null,
         passthrough: true,
       });
+      if (!this.warnedSitLocal.has(rule.id)) {
+        try {
+          const hostname = new URL(details.url).hostname;
+          if (isLocalHostname(hostname)) {
+            this.warnedSitLocal.add(rule.id);
+            this.onHit({
+              type: 'routing-warning',
+              code: 'SIT_LOCAL_REQUEST',
+              rule: rule.id,
+              method: details.method,
+              url: details.url,
+              message: `规则 ${rule.id} 是原样透传，但命中了本机请求 ${hostname}：不会改道，也不会补 CORS`,
+            });
+          }
+        } catch {
+          // malformed URL: skip the warning, the request itself already fell through
+        }
+      }
       callback({});
       return;
     }
@@ -343,6 +363,8 @@ export class Router {
 
   /** Rules are read dynamically; clear cached preflights so old results cannot mask changes. */
   apply() {
+    // Rules changed: allow the loopback-SIT warning to fire again for the new config.
+    this.warnedSitLocal.clear();
     this.session.clearCache().catch(() => {});
   }
 
@@ -355,5 +377,6 @@ export class Router {
     this.session.webRequest.onErrorOccurred(null);
     this.pending.clear();
     this.originByUrl.clear();
+    this.warnedSitLocal.clear();
   }
 }

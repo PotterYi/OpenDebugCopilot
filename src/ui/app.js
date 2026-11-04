@@ -29,6 +29,7 @@ const splitter = $('splitter');
 const routingWarning = $('routing-warning');
 const routingStatus = $('routing-status');
 const targetStatus = $('target-status');
+const routingWarningsEl = $('routing-warnings');
 const makeRuleButton = $('make-rule');
 const routingList = $('routing-list');
 const routingMessage = $('routing-message');
@@ -41,6 +42,7 @@ const diagnoseResult = $('diagnose-result');
 let currentTab = 'browser';
 let configCache = null;
 let routingRules = [];
+let routingWarnings = [];
 let routingHits = 0;
 let targetCandidates = { local: [], sit: [] };
 let discoveredLocalPorts = [];
@@ -93,6 +95,7 @@ async function loadConfig() {
     const config = await api.getConfig();
     configCache = config;
     routingRules = config.routing?.rules ?? [];
+    routingWarnings = config.routing?.warnings ?? [];
     fillForm(config);
     renderRouting();
     refreshTargetCandidates().catch(() => {});
@@ -461,7 +464,7 @@ async function refreshTargetCandidates() {
     if (await probeTarget(url)) probed.push(url);
   }
   targetCandidates = { local: probed, sit: [] };
-  targetStatus.textContent = `本地可达 ${probed.length} 个（SIT 类型原样透传，不填目标地址）`;
+  targetStatus.textContent = `改道目标可达 ${probed.length} 个（「原样透传」不需要目标地址）`;
   renderRouting();
 }
 
@@ -470,7 +473,7 @@ function fillTargetOptions(select, kind, current) {
   if (kind === 'sit') {
     const option = document.createElement('option');
     option.value = '';
-    option.textContent = '原样透传（不改道）';
+    option.textContent = '原样透传（不改道、不兜底）';
     select.append(option);
     select.value = '';
     select.disabled = true;
@@ -495,8 +498,49 @@ function fillTargetOptions(select, kind, current) {
   select.value = current && values.includes(current) ? current : values[0];
 }
 
+function applyRoutingWarningFix(warning) {
+  const rule = routingRules.find((item) => item.id === warning.ruleId);
+  if (!rule) return;
+  rule.target = { kind: 'local', baseUrl: warning.baseUrl };
+  routingWarnings = routingWarnings.filter((item) => item.ruleId !== warning.ruleId);
+  renderRouting();
+  routingMessage.textContent = `规则 ${warning.ruleId} 已改为「改道」，点击保存生效`;
+  routingMessage.className = 'message';
+}
+
+/** Drop a stale server-side warning once the user edits that rule locally. */
+function clearRuleWarning(ruleId) {
+  const next = routingWarnings.filter((warning) => warning.ruleId !== ruleId);
+  if (next.length === routingWarnings.length) return;
+  routingWarnings = next;
+  renderRoutingWarnings();
+  const row = [...routingList.querySelectorAll('.rule-row')].find((item) => item.dataset.id === ruleId);
+  row?.classList.remove('has-warning');
+  row?.querySelector('.rule-warning')?.remove();
+}
+
+function renderRoutingWarnings() {
+  routingWarningsEl.textContent = '';
+  if (routingWarnings.length === 0) {
+    routingWarningsEl.hidden = true;
+    return;
+  }
+  routingWarningsEl.hidden = false;
+  for (const warning of routingWarnings) {
+    const line = el('p', null, `⚠ ${warning.message}`);
+    if (warning.code === 'SIT_TARGET_IGNORED' && warning.baseUrl) {
+      const fix = el('button', 'secondary', '改为改道');
+      fix.type = 'button';
+      fix.addEventListener('click', () => applyRoutingWarningFix(warning));
+      line.append(' ', fix);
+    }
+    routingWarningsEl.append(line);
+  }
+}
+
 function renderRouting() {
   routingStatus.textContent = `已加载 ${routingRules.length} 条规则${routingHits ? `，命中 ${routingHits} 次` : ''}`;
+  renderRoutingWarnings();
   routingList.textContent = '';
   if (!routingRules.length) {
     const empty = document.createElement('p');
@@ -509,6 +553,8 @@ function renderRouting() {
     const row = document.createElement('div');
     row.className = 'rule-row';
     row.dataset.id = rule.id;
+    const ruleWarning = routingWarnings.find((warning) => warning.ruleId === rule.id);
+    if (ruleWarning) row.classList.add('has-warning');
 
     const enabled = document.createElement('input');
     enabled.type = 'checkbox';
@@ -529,19 +575,34 @@ function renderRouting() {
 
     const kind = document.createElement('select');
     kind.dataset.field = 'kind';
-    for (const [value, label] of [['local', '本地'], ['sit', 'SIT']]) {
+    for (const [value, label] of [
+      ['local', '改道到目标地址（自动补 CORS）'],
+      ['sit', '原样透传（不改道、不兜底）'],
+    ]) {
       const option = document.createElement('option');
       option.value = value;
       option.textContent = label;
       kind.append(option);
     }
     kind.value = rule.target?.kind ?? 'local';
+    if (ruleWarning) kind.title = ruleWarning.message;
+    const kindCell = el('div', 'rule-kind');
+    kindCell.append(kind);
+    if (ruleWarning) {
+      const hint = el('span', 'rule-warning',
+        ruleWarning.code === 'SIT_TARGET_IGNORED' ? '⚠ 地址被忽略' : '⚠ 类型无法识别');
+      hint.title = ruleWarning.message;
+      kindCell.append(hint);
+    }
 
     const baseUrl = document.createElement('select');
     baseUrl.dataset.field = 'baseUrl';
-    baseUrl.title = '从探测可达的候选地址中选择；切换类型会刷新选项';
+    baseUrl.title = '从探测可达的候选地址中选择；切换路由方式会刷新选项';
     fillTargetOptions(baseUrl, kind.value, rule.target?.baseUrl);
-    kind.addEventListener('change', () => fillTargetOptions(baseUrl, kind.value, ''));
+    kind.addEventListener('change', () => {
+      fillTargetOptions(baseUrl, kind.value, '');
+      clearRuleWarning(rule.id);
+    });
 
     const probe = document.createElement('button');
     probe.type = 'button';
@@ -579,10 +640,11 @@ function renderRouting() {
     remove.title = '删除规则';
     remove.addEventListener('click', () => {
       routingRules = routingRules.filter((item) => item.id !== rule.id);
+      routingWarnings = routingWarnings.filter((warning) => warning.ruleId !== rule.id);
       renderRouting();
     });
 
-    row.append(enabled, host, prefix, kind, baseUrl, probe, probeStatus, remove);
+    row.append(enabled, host, prefix, kindCell, baseUrl, probe, probeStatus, remove);
     routingList.append(row);
   }
 }
@@ -623,6 +685,7 @@ async function saveRouting() {
   try {
     const saved = await api.saveConfig({ routing: { rules: routingRules } });
     routingRules = saved.routing?.rules ?? routingRules;
+    routingWarnings = saved.routing?.warnings ?? [];
     renderRouting();
     routingMessage.textContent = `路由已保存（${routingRules.length} 条）`;
     routingMessage.className = 'message ok';
@@ -752,13 +815,11 @@ async function addCandidateRules(requests) {
     }
     routingRules.push(...result.rules);
     renderRouting();
-    const suspicious = result.rules.filter((rule) => rule.assistant?.suspicious).length;
     routingMessage.textContent = [
       `已生成 ${result.rules.length} 条（观测前缀 + 已声明目标 + 探活通过）`,
       result.unreachable.length > 0 ? `${result.unreachable.length} 组不可达已剔除` : null,
-      suspicious > 0 ? `${suspicious} 条 SIT 目标指向本机，请确认` : null,
     ].filter(Boolean).join('；');
-    routingMessage.className = suspicious > 0 ? 'message error' : 'message ok';
+    routingMessage.className = 'message ok';
   } catch (err) {
     routingMessage.textContent = `生成失败：${err.message}`;
     routingMessage.className = 'message error';
@@ -1047,6 +1108,9 @@ api.onCapture((event) => {
     scheduleRender();
   } else if (event.type === 'routing-miss') {
     routingStatus.textContent = `最近未命中：${event.method} ${event.url}`;
+  } else if (event.type === 'routing-warning') {
+    routingMessage.textContent = `⚠ ${event.message}`;
+    routingMessage.className = 'message error';
   } else if (event.type === 'cors-warning') {
     if (event.repaired) {
       setStatus(`预检已兜底：${event.url} 原状态 ${event.status} → 200`, 'ok');
@@ -1059,8 +1123,10 @@ api.onCapture((event) => {
     }
   } else if (event.type === 'routing') {
     routingHits += 1;
-    routingMessage.textContent = `改道：${event.method} ${event.url} → ${event.target ?? 'OPTIONS（仅补 CORS）'}`;
-    routingMessage.className = 'message ok';
+    routingMessage.textContent = event.passthrough
+      ? `透传（未改道）：${event.method} ${event.url}`
+      : `改道：${event.method} ${event.url} → ${event.target ?? 'OPTIONS（仅补 CORS）'}`;
+    routingMessage.className = event.passthrough ? 'message' : 'message ok';
     routingStatus.textContent = `已加载 ${routingRules.length} 条规则，命中 ${routingHits} 次`;
   } else if (event.type === 'error') {
     setStatus(event.message, 'error');

@@ -98,15 +98,23 @@ test('electron shell boots, captures, routes and diagnoses', {
 
   await mkdir(path.join(TMP, 'configs'), { recursive: true });
   await writeFile(path.join(TMP, 'configs', 'routing.json'), JSON.stringify({
-    rules: [{
-      id: 'local-api',
-      enabled: true,
-      match: { host: 'localhost', prefix: '/api' },
-      target: {
-        kind: 'local',
-        baseUrl: `http://127.0.0.1:${backendServer.address().port}`,
+    rules: [
+      {
+        id: 'local-api',
+        enabled: true,
+        match: { host: 'localhost', prefix: '/api' },
+        target: {
+          kind: 'local',
+          baseUrl: `http://127.0.0.1:${backendServer.address().port}`,
+        },
       },
-    }],
+      {
+        id: 'sit-ignored-target',
+        enabled: true,
+        match: { host: 'localhost', prefix: '/never' },
+        target: { kind: 'sit', baseUrl: 'http://localhost:9999' },
+      },
+    ],
   }), 'utf8');
 
   const child = spawn(electronPath, [
@@ -151,6 +159,7 @@ test('electron shell boots, captures, routes and diagnoses', {
   assert.match(stdout, /"questionIsTextarea":true/);
   assert.match(stdout, /"targetSelect":true/);
   assert.match(stdout, /"sitPassthrough":true/);
+  assert.match(stdout, /"routingWarningShown":true/);
   assert.match(stdout, /"logSourcePresent":true/);
   assert.match(stdout, /"openLogButtonRemoved":true/);
   assert.match(stdout, /"menuHasLog":true/);

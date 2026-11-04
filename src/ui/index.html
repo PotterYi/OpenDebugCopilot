@@ -115,12 +115,13 @@
           <span id="routing-message" class="message"></span>
           <span id="routing-status" class="muted small"></span>
         </div>
+        <div id="routing-warnings" class="routing-warnings" hidden></div>
         <div class="rule-header">
           <span>启用</span>
           <span>Host（留空=任意）</span>
           <span>URL 前缀</span>
-          <span>类型</span>
-          <span>目标地址（仅本地需要）</span>
+          <span>路由方式</span>
+          <span>目标地址（仅「改道」需要）</span>
           <span>探测</span>
           <span>状态</span>
           <span>操作</span>
@@ -131,8 +132,9 @@
           若前端通过 dev server 代理，请填前端域名（如 localhost:5173）。
           HTTPS 页面不能改道到 http 本地地址。
           <br />
-          类型「本地」= 改道到本机服务（自动补 CORS/预检）；类型「SIT」= 转发到测试环境（网关的 CORS/状态原样透传）。
-          目标地址填完整 baseUrl（含端口），例如 http://localhost:8080 或 https://sit.example.com。
+          路由方式「改道到目标地址」= 把请求转发到目标地址，并自动补 CORS/预检（目标可以在本机，也可以在远端）。
+          路由方式「原样透传」= 不拦截、不改道、不补 CORS，请求直接发给它原本要访问的地址；不需要目标地址。
+          目标地址只对「改道」生效，填完整 baseUrl（含端口），例如 http://localhost:8080。
         </p>
       </div>
 

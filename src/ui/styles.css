@@ -341,3 +341,20 @@ button:hover { filter: brightness(1.08); }
 }
 .log-toolbar select:focus { outline: 1px solid var(--accent); }
 #log-anchor { min-width: 280px; }
+
+.routing-warnings {
+  margin: 8px 0;
+  padding: 8px 10px;
+  border: 1px solid #5a2c2c;
+  background: #2a1717;
+  color: #ffb4b4;
+  border-radius: 6px;
+  font-size: 12px;
+}
+.routing-warnings p { margin: 0 0 4px; }
+.routing-warnings p:last-child { margin-bottom: 0; }
+.routing-warnings button { margin-left: 6px; padding: 1px 6px; font-size: 11px; }
+.rule-row.has-warning { outline: 1px solid #5a2c2c; border-radius: 6px; }
+.rule-kind { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.rule-kind select { width: 100%; }
+.rule-warning { color: #ffb4b4; font-size: 10px; line-height: 1.2; }

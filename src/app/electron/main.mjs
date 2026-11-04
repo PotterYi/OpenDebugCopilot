@@ -60,6 +60,9 @@ function registerIpc(service, getHost, getRouter, setRules) {
         getRouter()?.apply();
       }
       log.info('[config] saved to', service.configDir, 'rules:', saved.routing?.rules?.length ?? 0);
+      for (const warning of saved.routing?.warnings ?? []) {
+        log.warn('[config] routing warning:', warning.message);
+      }
       return saved;
     }
     throw new Error(`dc:config: unknown action ${payload.action}`);
@@ -318,6 +321,7 @@ async function runSmoke(window, host) {
           singleDiagnoseButton: Boolean(document.getElementById('diagnose-request')) && !document.getElementById('diagnose-mock'),
           questionIsTextarea: document.getElementById('diagnose-question')?.tagName === 'TEXTAREA',
           targetSelect: document.querySelector('[data-field="baseUrl"]')?.tagName === 'SELECT',
+          routingWarningShown: document.getElementById('routing-warnings')?.hidden === false,
           sitPassthrough: (() => {
             const kind = document.querySelector('[data-field="kind"]');
             const target = document.querySelector('[data-field="baseUrl"]');
@@ -546,6 +550,9 @@ async function bootstrap() {
   let currentRules = initial.routing.rules;
   let pageOrigin = null;
   log.info('[config] loaded rules:', currentRules.length, 'from', service.configDir);
+  for (const warning of initial.routing?.warnings ?? []) {
+    log.warn('[config] routing warning:', warning.message);
+  }
 
   const portOf = (url) => url.port || (url.protocol === 'https:' ? '443' : '80');
   const isAllowedTarget = (target) => currentRules.some((rule) => {
@@ -603,7 +610,12 @@ async function bootstrap() {
     getRules: () => currentRules,
     getPageOrigin: () => pageOrigin,
     onHit: (event) => {
-      log.info('[routing]', event.rule, event.method, event.url, '->', event.target ?? 'OPTIONS (no redirect)');
+      if (event.type === 'routing-warning') {
+        log.warn('[routing warning]', event.message, event.url);
+      } else {
+        const outcome = event.passthrough ? 'passthrough (SIT)' : (event.target ?? 'OPTIONS (no redirect)');
+        log.info('[routing]', event.rule, event.method, event.url, '->', outcome);
+      }
       if (!window.isDestroyed()) window.webContents.send('dc:capture:event', event);
     },
     onMiss: (event) => {

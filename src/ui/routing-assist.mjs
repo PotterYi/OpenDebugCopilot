@@ -6,20 +6,6 @@
  * A rule is emitted only when all three are satisfied.
  */
 
-const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
-
-function parseHost(url) {
-  try {
-    return new URL(url).hostname.toLowerCase();
-  } catch {
-    return '';
-  }
-}
-
-function isLocalBase(baseUrl) {
-  return LOCAL_HOSTS.has(parseHost(baseUrl));
-}
-
 function groupKey(host, prefix) {
   return `${host.toLowerCase()}|${prefix}`;
 }
@@ -140,7 +126,6 @@ export async function deriveCandidateRules(requests, {
         sources: ['observed', 'declared', 'probed'],
         targetSource: chosen.source,
         probed: true,
-        suspicious: chosen.kind === 'sit' && isLocalBase(chosen.baseUrl),
       },
     });
   }

@@ -17,7 +17,7 @@ test('returns defaults when config files are absent', async (t) => {
   assert.equal(workspace.frontendUrl, DEFAULT_WORKSPACE.frontendUrl);
   assert.deepEqual(workspace.window, DEFAULT_WORKSPACE.window);
   const routing = await store.getRouting();
-  assert.deepEqual(routing, { rules: [] });
+  assert.deepEqual(routing, { rules: [], warnings: [] });
 });
 
 test('saves workspace atomically and reads it back', async (t) => {
@@ -83,4 +83,42 @@ test('SIT rules do not require a target URL', async (t) => {
     store.saveRouting({ rules: [{ id: 'bad-local', match: { prefix: '/x' }, target: { kind: 'local' } }] }),
     (err) => err.code === 'CONFIG_INVALID',
   );
+});
+
+test('warns when a passthrough rule declares a target address', async (t) => {
+  await rm(TMP, { recursive: true, force: true });
+  t.after(async () => { await rm(TMP, { recursive: true, force: true }); });
+  const store = createStore({ configDir: TMP });
+  const routing = await store.saveRouting({
+    rules: [{
+      id: 'sit-with-target',
+      match: { prefix: '/api' },
+      target: { kind: 'sit', baseUrl: 'http://localhost:8096' },
+    }],
+  });
+  assert.equal(routing.rules[0].target.kind, 'sit');
+  assert.equal(routing.rules[0].target.baseUrl, '');
+  assert.equal(routing.warnings.length, 1);
+  assert.equal(routing.warnings[0].code, 'SIT_TARGET_IGNORED');
+  assert.equal(routing.warnings[0].baseUrl, 'http://localhost:8096');
+
+  // Warnings are derived, not persisted: the normalized file reloads clean.
+  const reloaded = await store.getRouting();
+  assert.equal(reloaded.rules[0].target.baseUrl, '');
+  assert.deepEqual(reloaded.warnings, []);
+});
+
+test('warns and falls back to local for an unknown target kind', async (t) => {
+  await rm(TMP, { recursive: true, force: true });
+  t.after(async () => { await rm(TMP, { recursive: true, force: true }); });
+  const store = createStore({ configDir: TMP });
+  const routing = await store.saveRouting({
+    rules: [{
+      id: 'typo-kind',
+      match: { prefix: '/api' },
+      target: { kind: 'SIT', baseUrl: 'http://localhost:8080' },
+    }],
+  });
+  assert.equal(routing.rules[0].target.kind, 'local');
+  assert.equal(routing.warnings[0].code, 'UNKNOWN_TARGET_KIND');
 });

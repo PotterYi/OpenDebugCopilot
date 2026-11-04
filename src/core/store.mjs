@@ -42,6 +42,7 @@ export function validateWorkspace(value) {
 export function validateRouting(value) {
   if (!isObject(value) || !Array.isArray(value.rules)) invalid('routing must contain a rules array');
   const ids = new Set();
+  const warnings = [];
   const rules = value.rules.map((rule, index) => {
     if (!isObject(rule)) invalid(`routing.rules[${index}] must be an object`);
     const id = String(rule.id ?? '').trim();
@@ -50,7 +51,15 @@ export function validateRouting(value) {
     ids.add(id);
     const prefix = String(rule.match?.prefix ?? '').trim();
     if (!prefix.startsWith('/')) invalid(`routing rule ${id}: match.prefix must start with "/"`);
-    const kind = rule.target?.kind === 'sit' ? 'sit' : 'local';
+    const rawKind = rule.target?.kind;
+    if (rawKind !== undefined && rawKind !== 'local' && rawKind !== 'sit') {
+      warnings.push({
+        ruleId: id,
+        code: 'UNKNOWN_TARGET_KIND',
+        message: `规则 ${id} 的路由方式「${rawKind}」无法识别，已按「改道」处理`,
+      });
+    }
+    const kind = rawKind === 'sit' ? 'sit' : 'local';
     let baseUrl = String(rule.target?.baseUrl ?? '').trim();
     if (kind === 'local') {
       try {
@@ -60,6 +69,15 @@ export function validateRouting(value) {
       }
     } else {
       // SIT means "do not intercept": the original request already goes to the gateway.
+      // A non-empty baseUrl is contradictory; ignore it and tell the user.
+      if (baseUrl) {
+        warnings.push({
+          ruleId: id,
+          code: 'SIT_TARGET_IGNORED',
+          baseUrl,
+          message: `规则 ${id} 的路由方式是「原样透传」，目标地址 ${baseUrl} 会被忽略；若希望请求兜底到该地址，请把路由方式改为「改道」`,
+        });
+      }
       baseUrl = '';
     }
     return {
@@ -72,7 +90,7 @@ export function validateRouting(value) {
       target: { kind, baseUrl },
     };
   });
-  return { rules };
+  return { rules, warnings };
 }
 
 /**
@@ -122,7 +140,8 @@ export function createStore({ configDir = path.resolve('configs') } = {}) {
     },
     async saveRouting(value) {
       const routing = validateRouting(value);
-      await writeJsonAtomic(routingPath, routing);
+      // Warnings are derived on every load; do not persist them.
+      await writeJsonAtomic(routingPath, { rules: routing.rules });
       return routing;
     },
   };
