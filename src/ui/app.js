@@ -64,7 +64,6 @@ function setMessage(text, kind = '') {
 function fillForm(config) {
   const workspace = config.workspace ?? {};
   form.elements.backendUrl.value = workspace.backendUrl ?? '';
-  form.elements.sitUrl.value = workspace.sitUrl ?? '';
   form.elements.logfiles.value = (workspace.logfiles ?? []).join('\n');
   form.elements.sourceRoot.value = workspace.sourceRoot ?? '';
   form.elements.frontendSourceRoot.value = workspace.frontendSourceRoot ?? '';
@@ -78,7 +77,6 @@ function readForm() {
     workspace: {
       frontendUrl: configCache?.workspace?.frontendUrl ?? browserUrlInput.value.trim(),
       backendUrl: form.elements.backendUrl.value.trim(),
-      sitUrl: form.elements.sitUrl.value.trim(),
       logfiles: form.elements.logfiles.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean),
       sourceRoot: form.elements.sourceRoot.value.trim(),
       frontendSourceRoot: form.elements.frontendSourceRoot.value.trim(),
@@ -438,81 +436,49 @@ function normalizeOrigin(value) {
   }
 }
 
-function isLoopbackOrigin(value) {
-  try {
-    const host = new URL(value).hostname.toLowerCase();
-    return host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]';
-  } catch {
-    return true;
-  }
-}
-
-function observedOrigins() {
-  const frontendOrigin = normalizeOrigin(configCache?.workspace?.frontendUrl ?? '');
-  const origins = new Set();
-  for (const item of captureState.values()) {
-    let parsed;
-    try {
-      parsed = new URL(item.url);
-    } catch {
-      continue;
-    }
-    // Ignore proxy URLs left over from proxy mode.
-    if (parsed.pathname === '/__dcproxy') continue;
-    const origin = normalizeOrigin(parsed.origin);
-    if (!origin || origin === frontendOrigin) continue;
-    // Loopback addresses are local services; they must be declared (backendUrl / scan),
-    // not inferred from captures. This keeps 127.0.0.1:8080 out of SIT candidates.
-    if (isLoopbackOrigin(origin)) continue;
-    origins.add(origin);
-  }
-  return [...origins];
-}
-
 function candidateSets() {
   const local = new Set();
-  const sit = new Set();
   const workspace = configCache?.workspace ?? {};
   const normalize = (url) => {
     const origin = normalizeOrigin(String(url ?? ''));
     return origin ? origin.replace(/\/+$/, '') : '';
   };
   if (workspace.backendUrl) local.add(normalize(workspace.backendUrl));
-  if (workspace.sitUrl) sit.add(normalize(workspace.sitUrl));
   for (const rule of routingRules) {
-    if (!rule.target?.baseUrl) continue;
+    if (rule.target?.kind !== 'local' || !rule.target?.baseUrl) continue;
     const url = normalize(rule.target.baseUrl);
-    if (!url) continue;
-    if (rule.target.kind === 'sit') sit.add(url);
-    else local.add(url);
+    if (url) local.add(url);
   }
   for (const port of discoveredLocalPorts) local.add(`http://localhost:${port}`);
-  for (const origin of observedOrigins()) {
-    if (!local.has(origin)) sit.add(origin);
-  }
-  return { local: [...local].filter(Boolean), sit: [...sit].filter(Boolean) };
+  return { local: [...local].filter(Boolean) };
 }
 
 async function refreshTargetCandidates() {
   const sets = candidateSets();
-  targetStatus.textContent = '探测候选地址…';
-  const probeList = async (list) => {
-    const reachable = [];
-    for (const url of list) {
-      if (await probeTarget(url)) reachable.push(url);
-    }
-    return reachable;
-  };
-  const [local, sit] = await Promise.all([probeList(sets.local), probeList(sets.sit)]);
-  targetCandidates = { local, sit };
-  targetStatus.textContent = `本地可达 ${local.length} 个 / SIT 可达 ${sit.length} 个`;
+  targetStatus.textContent = '探测本地候选地址…';
+  const probed = [];
+  for (const url of sets.local) {
+    if (await probeTarget(url)) probed.push(url);
+  }
+  targetCandidates = { local: probed, sit: [] };
+  targetStatus.textContent = `本地可达 ${probed.length} 个（SIT 类型原样透传，不填目标地址）`;
   renderRouting();
 }
 
 function fillTargetOptions(select, kind, current) {
-  const probed = targetCandidates[kind] ?? [];
-  const values = [...new Set([...(current ? [current] : []), ...probed])];
   select.textContent = '';
+  if (kind === 'sit') {
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = '原样透传（不改道）';
+    select.append(option);
+    select.value = '';
+    select.disabled = true;
+    return;
+  }
+  select.disabled = false;
+  const probed = targetCandidates.local ?? [];
+  const values = [...new Set([...(current ? [current] : []), ...probed])];
   if (values.length === 0) {
     const option = document.createElement('option');
     option.value = '';
@@ -588,6 +554,16 @@ function renderRouting() {
       probeStatus.textContent = '可达（自动）';
       probeStatus.className = 'probe-status ok';
     }
+    const syncProbeState = () => {
+      const isSit = kind.value === 'sit';
+      probe.disabled = isSit;
+      if (isSit) {
+        probeStatus.textContent = '不需要';
+        probeStatus.className = 'probe-status';
+      }
+    };
+    kind.addEventListener('change', syncProbeState);
+    syncProbeState();
     probe.addEventListener('click', async () => {
       probeStatus.textContent = '探测中…';
       probeStatus.className = 'probe-status';
@@ -749,18 +725,10 @@ async function addCandidateRules(requests) {
       source: 'workspace.backendUrl',
     });
   }
-  const sitUrl = configCache?.workspace?.sitUrl;
-  if (sitUrl) {
-    declared.push({
-      kind: 'sit',
-      baseUrl: sitUrl.replace('127.0.0.1', 'localhost'),
-      source: 'workspace.sitUrl',
-    });
-  }
   for (const rule of routingRules) {
-    if (rule.target?.baseUrl) {
+    if (rule.target?.kind === 'local' && rule.target.baseUrl) {
       declared.push({
-        kind: rule.target.kind === 'sit' ? 'sit' : 'local',
+        kind: 'local',
         baseUrl: rule.target.baseUrl,
         source: `rule:${rule.id}`,
       });
@@ -1081,12 +1049,12 @@ api.onCapture((event) => {
     routingStatus.textContent = `最近未命中：${event.method} ${event.url}`;
   } else if (event.type === 'cors-warning') {
     if (event.repaired) {
-      setStatus(`预检已兜底为 200（原 ${event.status}）`, 'ok');
-      routingMessage.textContent = `预检已兜底：OPTIONS 原状态 ${event.status} → 200 OK`;
+      setStatus(`预检已兜底：${event.url} 原状态 ${event.status} → 200`, 'ok');
+      routingMessage.textContent = `预检已兜底：${event.url} 原状态 ${event.status} → 200 OK`;
       routingMessage.className = 'message ok';
     } else {
-      setStatus(`预检失败：OPTIONS ${event.status}`, 'error');
-      routingMessage.textContent = `预检失败（HTTP ${event.status}）：${event.url}。后端需对 OPTIONS 返回 2xx`;
+      setStatus(`预检失败：${event.url} 返回 HTTP ${event.status}`, 'error');
+      routingMessage.textContent = `预检失败：${event.url} 由该地址返回 HTTP ${event.status}；该请求未改道（SIT），不会兜底`;
       routingMessage.className = 'message error';
     }
   } else if (event.type === 'routing') {

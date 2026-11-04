@@ -68,3 +68,19 @@ test('validates routing rules', async (t) => {
     (err) => err.code === 'CONFIG_INVALID',
   );
 });
+
+test('SIT rules do not require a target URL', async (t) => {
+  await rm(TMP, { recursive: true, force: true });
+  t.after(async () => { await rm(TMP, { recursive: true, force: true }); });
+  const store = createStore({ configDir: TMP });
+  const routing = await store.saveRouting({
+    rules: [{ id: 'sit-passthrough', match: { prefix: '/user' }, target: { kind: 'sit' } }],
+  });
+  assert.equal(routing.rules[0].target.kind, 'sit');
+  assert.equal(routing.rules[0].target.baseUrl, '');
+
+  await assert.rejects(
+    store.saveRouting({ rules: [{ id: 'bad-local', match: { prefix: '/x' }, target: { kind: 'local' } }] }),
+    (err) => err.code === 'CONFIG_INVALID',
+  );
+});

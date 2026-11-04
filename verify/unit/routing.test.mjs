@@ -41,7 +41,7 @@ test('builds redirect URLs with path, query and localhost normalization', () => 
   const url = buildRedirectUrl(rules[0], 'https://api.example.com/api/order/1?x=1');
   assert.equal(url, 'http://localhost:8080/api/order/1?x=1');
   const sit = buildRedirectUrl(rules[1], 'https://api.example.com/api/user/2');
-  assert.equal(sit, 'https://sit.example.com/api/user/2');
+  assert.equal(sit, 'https://api.example.com/api/user/2');
 });
 
 test('adds CORS headers for local responses', () => {
@@ -174,11 +174,8 @@ test('routes local targets through the proxy when proxyBaseUrl is set', () => {
   assert.equal(parsed.searchParams.get('url'), '/api/order/1?x=1');
   assert.equal(parsed.searchParams.get('kind'), 'local');
 
-  const sit = new URL(buildRedirectUrl(rules[1], 'https://api.example.com/api/user/2', 'http://localhost:9999'));
-  assert.equal(sit.pathname, '/__dcproxy');
-  assert.equal(sit.searchParams.get('target'), 'https://sit.example.com');
-  assert.equal(sit.searchParams.get('url'), '/api/user/2');
-  assert.equal(sit.searchParams.get('kind'), 'sit');
+  const sit = buildRedirectUrl(rules[1], 'https://api.example.com/api/user/2', 'http://localhost:9999');
+  assert.equal(sit, 'https://api.example.com/api/user/2');
 });
 
 test('router uses the proxy for local rules', () => {
@@ -363,5 +360,36 @@ test('restores Authorization stripped by browser redirects', () => {
     (value) => { sent = value; },
   );
   assert.equal(sent.requestHeaders.Authorization, 'Bearer abc');
+  router.dispose();
+});
+
+test('SIT rules are passthrough and never redirect', () => {
+  const handlers = {};
+  const session = {
+    webRequest: {
+      onBeforeRequest: (_filter, listener) => { handlers.before = listener ?? null; },
+      onBeforeSendHeaders: (_filter, listener) => { handlers.send = listener ?? null; },
+      onHeadersReceived: (_filter, listener) => { handlers.headers = listener ?? null; },
+      onCompleted: (_filter, listener) => { handlers.completed = listener ?? null; },
+      onErrorOccurred: (_filter, listener) => { handlers.error = listener ?? null; },
+    },
+  };
+  const events = [];
+  const router = new Router({
+    session,
+    getRules: () => [{
+      id: 'sit-user',
+      enabled: true,
+      match: { host: 'localhost', prefix: '/user' },
+      target: { kind: 'sit', baseUrl: '' },
+    }],
+    proxyBaseUrl: 'http://localhost:9999',
+    onHit: (event) => events.push(event),
+  });
+  let result = null;
+  handlers.before({ id: 1, url: 'http://localhost:8081/user/list', method: 'GET', resourceType: 'xhr' }, (value) => { result = value; });
+  assert.deepEqual(result, {});
+  assert.equal(events[0].passthrough, true);
+  assert.equal(events[0].target, null);
   router.dispose();
 });

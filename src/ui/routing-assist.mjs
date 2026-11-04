@@ -71,7 +71,9 @@ export async function deriveCandidateRules(requests, {
   const seenTargets = new Set();
   const addTarget = (target, source) => {
     if (!target?.baseUrl) return;
-    const kind = target.kind === 'sit' ? 'sit' : 'local';
+    // SIT means passthrough; it is never an API redirection target.
+    if (target.kind === 'sit') return;
+    const kind = 'local';
     const baseUrl = String(target.baseUrl).replace(/\/+$/, '');
     const key = `${kind}|${baseUrl}`;
     if (seenTargets.has(key)) return;

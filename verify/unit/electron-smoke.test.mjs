@@ -150,7 +150,7 @@ test('electron shell boots, captures, routes and diagnoses', {
   assert.match(stdout, /"singleDiagnoseButton":true/);
   assert.match(stdout, /"questionIsTextarea":true/);
   assert.match(stdout, /"targetSelect":true/);
-  assert.match(stdout, /"sitUrlField":true/);
+  assert.match(stdout, /"sitPassthrough":true/);
   assert.match(stdout, /"logSourcePresent":true/);
   assert.match(stdout, /"openLogButtonRemoved":true/);
   assert.match(stdout, /"menuHasLog":true/);

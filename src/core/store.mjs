@@ -5,7 +5,6 @@ import { AppError } from './errors.mjs';
 export const DEFAULT_WORKSPACE = Object.freeze({
   frontendUrl: 'http://localhost:5173',
   backendUrl: 'http://127.0.0.1:8080',
-  sitUrl: '',
   logfiles: [],
   sourceRoot: '',
   frontendSourceRoot: '',
@@ -25,7 +24,6 @@ export function validateWorkspace(value) {
   const workspace = {
     frontendUrl: String(value.frontendUrl ?? ''),
     backendUrl: String(value.backendUrl ?? ''),
-    sitUrl: String(value.sitUrl ?? ''),
     logfiles: Array.isArray(value.logfiles) ? value.logfiles.map(String) : [],
     sourceRoot: String(value.sourceRoot ?? ''),
     frontendSourceRoot: String(value.frontendSourceRoot ?? ''),
@@ -52,13 +50,18 @@ export function validateRouting(value) {
     ids.add(id);
     const prefix = String(rule.match?.prefix ?? '').trim();
     if (!prefix.startsWith('/')) invalid(`routing rule ${id}: match.prefix must start with "/"`);
-    const baseUrl = String(rule.target?.baseUrl ?? '').trim();
-    try {
-      new URL(baseUrl);
-    } catch {
-      invalid(`routing rule ${id}: target.baseUrl must be a valid URL`);
-    }
     const kind = rule.target?.kind === 'sit' ? 'sit' : 'local';
+    let baseUrl = String(rule.target?.baseUrl ?? '').trim();
+    if (kind === 'local') {
+      try {
+        new URL(baseUrl);
+      } catch {
+        invalid(`routing rule ${id}: local target.baseUrl must be a valid URL`);
+      }
+    } else {
+      // SIT means "do not intercept": the original request already goes to the gateway.
+      baseUrl = '';
+    }
     return {
       id,
       enabled: rule.enabled !== false,

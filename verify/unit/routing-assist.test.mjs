@@ -28,7 +28,7 @@ test('requires observed prefix + declared target + successful probe', async () =
   assert.equal(user.assistant.count, 1);
 });
 
-test('falls back to a declared SIT target only when it probes successfully', async () => {
+test('ignores declared SIT targets (SIT is passthrough)', async () => {
   const result = await deriveCandidateRules(requests, {
     declaredTargets: [
       { kind: 'local', baseUrl: 'http://localhost:8080', source: 'workspace.backendUrl' },
@@ -36,9 +36,8 @@ test('falls back to a declared SIT target only when it probes successfully', asy
     ],
     probe: async (url) => url === 'https://sit.example.com',
   });
-  assert.ok(result.rules.length > 0);
-  assert.ok(result.rules.every((rule) => rule.target.kind === 'sit'));
-  assert.ok(result.rules.every((rule) => rule.target.baseUrl === 'https://sit.example.com'));
+  assert.equal(result.rules.length, 0);
+  assert.equal(result.unreachable.length, 2);
 });
 
 test('emits nothing when no declared target is reachable', async () => {
@@ -73,14 +72,7 @@ test('skips prefixes already covered by existing rules', async () => {
   assert.equal(result.rules[0].match.prefix, '/api/user');
 });
 
-test('flags SIT targets that point at localhost', async () => {
-  const result = await deriveCandidateRules(requests, {
-    declaredTargets: [{ kind: 'sit', baseUrl: 'http://localhost:8081' }],
-    probe: probeAll,
-  });
-  assert.ok(result.rules.length > 0);
-  assert.ok(result.rules.every((rule) => rule.assistant.suspicious === true));
-});
+
 
 test('a catch-all rule does not block specific candidates', async () => {
   const result = await deriveCandidateRules(requests, {

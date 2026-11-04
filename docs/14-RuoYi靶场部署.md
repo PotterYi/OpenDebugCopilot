@@ -77,7 +77,7 @@ npm run dev        # http://127.0.0.1:5173
 ```
 
 - `vite.config.js`：`port: 5173`、`host: 127.0.0.1`、`open: false`
-- `.env.development.local`：`VITE_APP_BASE_API = 'http://localhost:8080'`（**跨源绝对地址**，用于验证 CORS/预检，不用同源 `/dev-api`）
+- `.env.development.local`：`VITE_APP_BASE_API = 'http://localhost:8081'`（**跨源绝对地址**，页面默认走 SIT）
 
 ## 14.5 DebugCopilot 配置
 
@@ -87,7 +87,6 @@ npm run dev        # http://127.0.0.1:5173
 {
   "frontendUrl": "http://localhost:5173",
   "backendUrl": "http://localhost:8080",
-  "sitUrl": "http://localhost:8081",
   "logfiles": [
     "G:/develop/project/test-targets/ruoyi/logs/sys-info.log",
     "G:/develop/project/test-targets/ruoyi/logs/sys-error.log",
@@ -102,21 +101,26 @@ npm run dev        # http://127.0.0.1:5173
 
 路由（`configs/routing.json`）：
 
-| 规则 | 前缀 | 目标 |
-| --- | --- | --- |
-| system-to-sit | `/system` | SIT `http://localhost:8081` |
-| local-debug | `/debug/` | 本地 `http://localhost:8080` |
-| api-local | `/` | 本地 `http://localhost:8080` |
+| 规则 | 前缀 | 类型 | 目标 |
+| --- | --- | --- | --- |
+| local-login | `/login` | local | `http://localhost:8080` |
+| local-user | `/system/user` | local | `http://localhost:8080` |
+| local-dept | `/system/dept` | local | `http://localhost:8080` |
+| （无规则） | 其他 | — | 直接走 SIT 8081 |
+
+> SIT 规则表示**不改道**：`target.kind = "sit"`，`baseUrl` 为空。不要填网关地址——用户本来就在请求网关。
 
 ## 14.6 已验证结果（2026-11-03）
 
 | 场景 | 结果 |
 | --- | --- |
 | RuoYi 登录（直连） | 200，跳转 `/index` |
-| 内嵌浏览器登录 POST | 经本地代理 → 8080，返回 200 + token |
-| 用户列表 `/system/user/list` | 经代理 → 8081（SIT），**透传网关 CORS**，200，返回 2 行 |
-| Authorization | 浏览器跨源重定向会剥离；已由 CDP 原始请求头恢复后转发 |
-| 预检 | 由内置代理 204 应答，后端无需处理 OPTIONS |
+| 内嵌浏览器登录 POST | **直连改道** → 8080，返回 200 + token |
+| 用户列表 `/system/user/list` | 直连改道 → 8080，`200/500` 业务错误（fault 注入） |
+| `getInfo` / `roleList` | 无规则 → SIT 8081，200 |
+| 通知公告 `/system/notice/list` | 无规则 → SIT 8081，`200/500` 业务错误（fault 注入） |
+| Authorization | 浏览器跨源重定向会剥离；已由 CDP 原始请求头恢复 |
+| 预检 | local 由代理 204 或状态行改写兜底；SIT 不改道、不改头 |
 | 日志解析 | 新增 `spring-boot` 预设，RuoYi 日志可解析 |
 | 诊断 | 捕获请求 + RuoYi 日志 → Mock 诊断 gates ok |
 | 日志页签 | 选 `sys-info.log` + `spring-boot` 解析器，按捕获请求对齐查询，返回真实日志记录 |
@@ -146,7 +150,7 @@ npm run dev        # http://127.0.0.1:5173
 当前实现是**静态按前缀路由**，不自动回退：
 
 - 本地 8080 停掉后，`/login`、`/system/user` 会失败（连接失败），SIT 请求仍正常。
-- 需要用户手动停用本地规则或把目标切换为 SIT。
+- 需要用户手动停用本地规则，或把规则类型切为「SIT」（原样透传，不需要目标地址）。
 - 若希望“本地不可达自动回退 SIT”，需要新增 health-aware 规则（定期探活 + 不可达时跳过规则），属于候选功能，尚未实现。
 
 ## 14.6.2 业务故障场景（在现有代码里注入）
@@ -187,6 +191,8 @@ java -Ddebug.faults=noticeListException -jar ruoyi-admin.jar --server.port=8081 
 | `/system/role` | 无规则 → SIT 8081（正常） |
 | `/system/notice` | 无规则 → SIT 8081（报异常） |
 
+> 若要显式声明 SIT，只填类型、不填目标地址；请求会原样发往它原本要访问的网关。
+
 正常后台页面即可触发：登录 → 用户管理（本地 SQL 错误）→ 部门管理（本地异常）→ 角色管理（SIT 正常）→ 通知公告（SIT 异常）。
 
 > RuoYi 全局异常处理器返回 **HTTP 200 + body `code:500`**。DebugCopilot 会识别该业务错误码，在请求列表显示 `200/500` 并纳入“只显示错误”筛选。
@@ -207,7 +213,7 @@ docker compose down
 ## 14.8 注意事项
 
 1. 两个后端共用同一 MySQL/Redis，token 互通；因此 SIT 请求可复用本地登录 token。
-2. SIT 日志单独在 `logs-sit/`；当前工作区只配置了本地日志，SIT 请求的诊断证据会偏少，可按需追加。
+2. SIT 日志单独在 `logs-sit/`；当前工作区已同时配置本地与 SIT 日志。
 3. 前端使用绝对 API 地址是为了制造真实跨源；若只想测同源，改回 `/dev-api` 并保持 Vite 代理。
 4. Docker Hub 不可直连时使用镜像前缀；MySQL/Redis 版本与 RuoYi 兼容。
 5. **中文乱码**：`docker exec -i mysql` 不指定 `--default-character-set=utf8mb4` 时，UTF-8 SQL 会按 latin1 入库，前端显示 `ç³»ç»Ÿ...`。修复：DROP/CREATE 库后按上面命令重导；Java 启动带 `-Dfile.encoding=UTF-8` 可让日志中文正常。

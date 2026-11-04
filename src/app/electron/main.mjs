@@ -318,7 +318,18 @@ async function runSmoke(window, host) {
           singleDiagnoseButton: Boolean(document.getElementById('diagnose-request')) && !document.getElementById('diagnose-mock'),
           questionIsTextarea: document.getElementById('diagnose-question')?.tagName === 'TEXTAREA',
           targetSelect: document.querySelector('[data-field="baseUrl"]')?.tagName === 'SELECT',
-          sitUrlField: Boolean(document.querySelector('input[name="sitUrl"]')),
+          sitPassthrough: (() => {
+            const kind = document.querySelector('[data-field="kind"]');
+            const target = document.querySelector('[data-field="baseUrl"]');
+            if (!kind || !target) return false;
+            const previous = kind.value;
+            kind.value = 'sit';
+            kind.dispatchEvent(new Event('change', { bubbles: true }));
+            const ok = target.disabled && (target.options[0]?.textContent ?? '').includes('原样透传');
+            kind.value = previous;
+            kind.dispatchEvent(new Event('change', { bubbles: true }));
+            return ok;
+          })(),
           logSourcePresent: Boolean(document.getElementById('log-source')),
           openLogButtonRemoved: !document.getElementById('open-log'),
           hiddenAttrWorks: (() => {

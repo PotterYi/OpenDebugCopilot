@@ -68,8 +68,9 @@ export function matchRule(rules, url, resourceType = null) {
  * @returns {string}
  */
 export function buildRedirectUrl(rule, requestUrl, proxyBaseUrl = null) {
+  if (rule.target?.kind === 'sit') return requestUrl;
   const source = new URL(requestUrl);
-  if (proxyBaseUrl && (rule.target?.kind === 'local' || rule.target?.kind === 'sit')) {
+  if (proxyBaseUrl && rule.target?.kind === 'local') {
     const proxy = new URL('/__dcproxy', proxyBaseUrl);
     proxy.searchParams.set('target', rule.target.baseUrl);
     proxy.searchParams.set('url', `${source.pathname}${source.search}`);
@@ -218,6 +219,21 @@ export class Router {
       return;
     }
 
+    if (rule.target?.kind === 'sit') {
+      // SIT is a passthrough: the original request already targets the gateway.
+      this.pending.set(details.id, { rule, originalUrl: details.url, targetUrl: null, sit: true });
+      this.onHit({
+        type: 'routing',
+        rule: rule.id,
+        method: details.method,
+        url: details.url,
+        target: null,
+        passthrough: true,
+      });
+      callback({});
+      return;
+    }
+
     // CORS preflight redirects are rejected by Chromium; let OPTIONS go to the
     // original host and fix its response headers instead.
     if (details.method === 'OPTIONS') {
@@ -276,6 +292,19 @@ export class Router {
     const targetRule = hit?.rule ?? findTargetRule(this.getRules(), details.url);
     // Only local targets get CORS/status-line fixes. SIT is a real gateway:
     // never mask its 4xx or rewrite its CORS headers.
+    if (targetRule?.target?.kind === 'sit') {
+      if (details.method === 'OPTIONS' && ((details.statusCode ?? 200) < 200 || (details.statusCode ?? 200) >= 300)) {
+        this.onHit({
+          type: 'cors-warning',
+          passthrough: true,
+          message: 'SIT preflight returned a non-2xx status',
+          url: details.url,
+          status: details.statusCode ?? null,
+        });
+      }
+      callback({ responseHeaders: details.responseHeaders });
+      return;
+    }
     if (!targetRule || targetRule.target?.kind !== 'local') {
       callback({ responseHeaders: details.responseHeaders });
       return;
