@@ -319,6 +319,7 @@ async function runSmoke(window, host) {
           logTabPresent: Boolean(document.querySelector('[data-tab="logs"]')),
           pipeParserOption: [...document.querySelectorAll('#log-parser option')].some((option) => option.value === 'pipe'),
           consolePanel: Boolean(document.getElementById('console-list')),
+          requestFilterPresent: document.querySelectorAll('#request-filter button[data-filter]').length === 3,
           singleDiagnoseButton: Boolean(document.getElementById('diagnose-request')) && !document.getElementById('diagnose-mock'),
           questionIsTextarea: document.getElementById('diagnose-question')?.tagName === 'TEXTAREA',
           targetSelect: document.querySelector('[data-field="baseUrl"]')?.tagName === 'SELECT',

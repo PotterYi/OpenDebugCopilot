@@ -1,6 +1,7 @@
 import { api } from './api.js';
 import { deriveCandidateRules } from './routing-assist.mjs';
 import { formatBodyText } from './format-body.mjs';
+import { REQUEST_FILTERS, matchesRequestFilter } from './request-filter.mjs';
 
 const $ = (id) => document.getElementById(id);
 const statusEl = $('status');
@@ -9,6 +10,7 @@ const messageEl = $('config-message');
 const runsEl = $('runs');
 const reportEl = $('report');
 const requestsEl = $('requests');
+const requestFilterBar = $('request-filter');
 const detailEl = $('request-detail');
 const hintEl = $('capture-hint');
 const browserUrlInput = $('browser-url');
@@ -51,6 +53,7 @@ let consoleErrorCount = 0;
 const consoleState = new Map();
 let currentRequestId = null;
 const captureState = new Map();
+let requestFilter = 'all';
 let renderQueued = false;
 
 function setStatus(text, kind = '') {
@@ -180,7 +183,9 @@ function scheduleRender() {
 function renderRequests() {
   const errorsOnly = $('only-errors').checked;
   const items = [...captureState.values()].sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0));
-  const filtered = items.filter((item) => !errorsOnly || item.error || (item.status ?? 0) >= 400);
+  const filtered = items.filter((item) =>
+    matchesRequestFilter(item, requestFilter)
+    && (!errorsOnly || item.error || (item.status ?? 0) >= 400));
   requestsEl.textContent = '';
   for (const item of filtered) {
     const li = document.createElement('li');
@@ -209,8 +214,23 @@ function renderRequests() {
     li.addEventListener('click', () => showRequest(item.id));
     requestsEl.append(li);
   }
+  const counts = {
+    all: items.length,
+    backend: items.filter((item) => matchesRequestFilter(item, 'backend')).length,
+    script: items.filter((item) => matchesRequestFilter(item, 'script')).length,
+  };
+  for (const button of requestFilterBar.querySelectorAll('button[data-filter]')) {
+    const filter = REQUEST_FILTERS.find((item) => item.id === button.dataset.filter);
+    button.textContent = `${filter?.label ?? button.dataset.filter} ${counts[button.dataset.filter] ?? 0}`;
+    const active = button.dataset.filter === requestFilter;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', String(active));
+  }
+  const scope = requestFilter === 'all'
+    ? '显示'
+    : REQUEST_FILTERS.find((item) => item.id === requestFilter)?.label ?? requestFilter;
   hintEl.textContent = api.isDesktop
-    ? `${items.length} 条（显示 ${filtered.length}）${consoleErrorCount ? ` · 页面错误 ${consoleErrorCount}` : ''}`
+    ? `${items.length} 条（${scope} ${filtered.length}）${consoleErrorCount ? ` · 页面错误 ${consoleErrorCount}` : ''}`
     : '内嵌浏览器仅在桌面版可用';
   renderLogAnchors();
 }
@@ -1048,6 +1068,12 @@ $('clear-requests').addEventListener('click', async () => {
   }
 });
 $('only-errors').addEventListener('change', renderRequests);
+requestFilterBar.addEventListener('click', (event) => {
+  const button = event.target.closest('button[data-filter]');
+  if (!button) return;
+  requestFilter = button.dataset.filter;
+  renderRequests();
+});
 $('refresh-runs').addEventListener('click', loadRuns);
 
 

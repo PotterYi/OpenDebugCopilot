@@ -70,7 +70,12 @@
       <div id="tab-requests" class="tab-pane">
         <div class="split">
           <aside class="split-left">
-            <div class="toolbar">
+            <div class="toolbar request-toolbar">
+              <div id="request-filter" class="segmented" role="group" aria-label="请求类型筛选">
+                <button type="button" data-filter="all" class="active" aria-pressed="true">全部</button>
+                <button type="button" data-filter="backend" aria-pressed="false">后端请求</button>
+                <button type="button" data-filter="script" aria-pressed="false">前端 Script</button>
+              </div>
               <label class="inline"><input type="checkbox" id="only-errors" /> 只显示错误</label>
               <button id="clear-requests" type="button" class="secondary">清空</button>
               <span id="capture-hint" class="muted"></span>
