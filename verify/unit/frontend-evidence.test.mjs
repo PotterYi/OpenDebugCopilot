@@ -40,6 +40,21 @@ test('maps frontend stack hints to source files', async () => {
   assert.match(result.files[0].content, /throw new Error/);
 });
 
+test('resolves Vite paths whether the base is the project root or src', async () => {
+  const fromProjectRoot = await resolveFrontendSources({
+    frontendSourceRoot: FRONTEND_ROOT,
+    errors: [{ stack: ['at submit (http://localhost:5173/src/App.vue:7:9)'] }],
+  });
+  assert.equal(fromProjectRoot.files[0].path, 'src/App.vue');
+
+  const fromSrc = await resolveFrontendSources({
+    frontendSourceRoot: path.join(FRONTEND_ROOT, 'src'),
+    errors: [{ stack: ['at submit (http://localhost:5173/src/App.vue:7:9)'] }],
+  });
+  assert.equal(fromSrc.files[0].path, 'App.vue');
+  assert.match(fromSrc.files[0].content, /throw new Error/);
+});
+
 test('falls back to basename and reports unavailable root', async () => {
   const viaBasename = await resolveFrontendSources({
     frontendSourceRoot: FRONTEND_ROOT,

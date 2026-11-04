@@ -38,8 +38,30 @@ function targetFromUrl(url) {
   }
 }
 
+/** Try the URL path as-is, without a leading src/, with a src/ prefix, and by basename. */
+function candidateTargets(target) {
+  const clean = String(target).replace(/^\/+/, '');
+  const candidates = [];
+  const add = (value) => {
+    if (value && !candidates.includes(value)) candidates.push(value);
+  };
+  add(clean);
+  if (clean.startsWith('src/')) add(clean.slice(4));
+  const srcIndex = clean.lastIndexOf('/src/');
+  if (srcIndex >= 0) {
+    add(clean.slice(srcIndex + 1));
+    add(clean.slice(srcIndex + 5));
+  } else {
+    add(`src/${clean}`);
+  }
+  add(path.basename(clean));
+  return candidates;
+}
+
 /**
  * Map frontend stack hints onto files under frontendSourceRoot.
+ * When the configured source root is the project root, both /src/... and
+ * src-less stack paths are resolved without extra configuration.
  *
  * @param {{
  *   frontendSourceRoot: string | null,
@@ -57,21 +79,21 @@ export async function resolveFrontendSources({ frontendSourceRoot, errors = [], 
     if (files.length >= maxFiles) break;
     const target = targetFromUrl(hint.url);
     if (!target) continue;
-    let result = await readSource({
-      sourceRoot: frontendSourceRoot,
-      target,
-      startLine: Math.max(1, hint.line - 3),
-      endLine: hint.line + 10,
-      maxLines: 20,
-    }).catch(() => null);
-    if (!result?.found) {
-      result = await readSource({
+    let candidateResult = null;
+    let result = null;
+    for (const candidate of candidateTargets(target)) {
+      const attempt = await readSource({
         sourceRoot: frontendSourceRoot,
-        target: path.basename(target),
+        target: candidate,
         startLine: Math.max(1, hint.line - 3),
         endLine: hint.line + 10,
         maxLines: 20,
       }).catch(() => null);
+      if (attempt?.candidates?.length && !candidateResult) candidateResult = attempt;
+      if (attempt?.found) {
+        result = attempt;
+        break;
+      }
     }
     if (result?.found) {
       files.push({
@@ -80,8 +102,8 @@ export async function resolveFrontendSources({ frontendSourceRoot, errors = [], 
         path: result.relativePath,
         content: result.content,
       });
-    } else if (result?.candidates?.length) {
-      files.push({ url: hint.url, line: hint.line, found: false, candidates: result.candidates.slice(0, 5) });
+    } else if (candidateResult?.candidates?.length) {
+      files.push({ url: hint.url, line: hint.line, found: false, candidates: candidateResult.candidates.slice(0, 5) });
     }
   }
   return { available: true, files, hints };

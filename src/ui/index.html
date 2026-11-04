@@ -29,13 +29,13 @@
         <label>后端源码目录
           <input name="sourceRoot" placeholder="../backend-project" />
         </label>
-        <label>前端源码目录
-          <input name="frontendSourceRoot" placeholder="../frontend-project/src" />
-        </label>
         <label>前端项目目录（含 package.json）
-          <input name="frontendProjectRoot" placeholder="留空则从前端源码目录向上推断" />
+          <input name="frontendProjectRoot" placeholder="如 ../frontend-project；留空则从前端源码目录向上推断" />
         </label>
-        <label>前端启动命令
+        <label>前端源码目录（可选）
+          <input name="frontendSourceRoot" placeholder="留空默认使用前端项目目录；仅 monorepo 等非标准布局需要填写" />
+        </label>
+        <label>前端启动命令（可选）
           <input name="frontendStartCommand" placeholder="留空自动识别（如 npm run dev）" />
         </label>
         <label>验证命令（可选）

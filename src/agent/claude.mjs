@@ -14,7 +14,7 @@ const SYSTEM_PROMPT = `你是 DebugCopilot 的后端问题定位助手。你的�
 4. 工具调用轮次有限（最多 24 轮），没有新增证据就停止并给出阶段性结论。
 5. 使用中文回答，结论要具体（涉及类名、日志关键行、HTTP 状态码）。
 6. 不要输出密码、Token、Cookie 等敏感信息。
-7. 修复建议放在 fixes 中，只能修改已通过 read_source 读取过的文件；file 使用工具返回的相对路径，root 标明 backend 或 frontend。
+7. 修复建议放在 fixes 中，只能修改已通过 read_source 读取过的文件；file 使用工具返回的相对路径，root 标明 backend 或 frontend。读取前端源码时给 read_source/search_source 传 root=frontend。
 8. 代码修改必须提供可唯一定位的 search（文件中的精确原文，出现次数必须为 1）和 replace；无法给出精确修改时，只写 summary，不要编造 search/replace。
 9. 不要直接修改文件；本阶段只生成修复建议和 diff 预览，由用户确认。`;
 
@@ -189,11 +189,13 @@ export function createClaudeAgent({ model, maxTurns = DEFAULT_MAX_TURNS, timeout
         },
         read_source: {
           target: z.string(),
+          root: z.enum(['backend', 'frontend']).optional(),
           startLine: z.number().int().min(1).optional(),
           endLine: z.number().int().min(1).optional(),
         },
         search_source: {
           keyword: z.string(),
+          root: z.enum(['backend', 'frontend']).optional(),
           limit: z.number().int().min(1).max(200).optional(),
         },
         read: {

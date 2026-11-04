@@ -94,7 +94,6 @@ npm run dev        # http://127.0.0.1:5173
     "G:/develop/project/test-targets/ruoyi/logs-sit/sys-error.log"
   ],
   "sourceRoot": "G:/develop/project/test-targets/ruoyi/backend",
-  "frontendSourceRoot": "G:/develop/project/test-targets/ruoyi/frontend/src",
   "frontendProjectRoot": "G:/develop/project/test-targets/ruoyi/frontend",
   "frontendStartCommand": "npm run dev",
   "verifyCommand": "npm run build:prod",
@@ -102,8 +101,8 @@ npm run dev        # http://127.0.0.1:5173
 }
 ```
 
-> 前端项目目录可留空，工具会从 `frontendSourceRoot` 向上查找 `package.json`；启动命令也可留空，
-> 按 `pnpm/yarn/npm` 与 `dev → serve → start` 自动选择。左侧「前端服务」可一键启动/重启/停止。
+> 通常只需要 `frontendProjectRoot`；`frontendSourceRoot` 是可选项，留空时默认等于项目目录，仅 monorepo / 非标准布局需要填写。
+> 启动命令也可留空，按 `pnpm/yarn/npm` 与 `dev → serve → start` 自动选择。左侧「前端服务」可一键启动/重启/停止。
 
 路由（`configs/routing.json`）：
 

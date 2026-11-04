@@ -59,7 +59,7 @@ test('diagnoses a captured request without replay and correlates by business id'
     workspace: {
       logfiles: [logFile],
       sourceRoot: path.join(ROOT, 'verify/fixtures/source'),
-      frontendSourceRoot: path.join(ROOT, 'verify/fixtures/frontend'),
+      frontendProjectRoot: path.join(ROOT, 'verify/fixtures/frontend'),
       window: { beforeMs: 5000, afterMs: 5000 },
     },
     root: ROOT,
@@ -80,6 +80,10 @@ test('diagnoses a captured request without replay and correlates by business id'
   assert.equal(result.frontend.files.length, 1);
   assert.equal(result.frontend.files[0].path, 'src/App.vue');
   assert.match(result.frontend.files[0].content, /inventory ui boom/);
+  assert.equal(
+    result.meta.fixRoots.frontendSourceRoot,
+    path.join(ROOT, 'verify/fixtures/frontend'),
+  );
 
   const persisted = JSON.parse(await readFile(path.join(runDir, 'result.json'), 'utf8'));
   assert.equal(persisted.meta.driver, 'capture');

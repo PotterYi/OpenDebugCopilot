@@ -57,6 +57,17 @@ test('resolves the launch from frontendSourceRoot', async (t) => {
   assert.equal(launch.source, 'auto');
 });
 
+test('works from frontendProjectRoot alone, without a source root', async (t) => {
+  const project = await fixture(t);
+  const launch = await resolveFrontendLaunch({
+    frontendProjectRoot: 'frontend',
+  }, { rootDir: TMP });
+  assert.equal(launch.ok, true);
+  assert.equal(launch.cwd, project);
+  assert.equal(launch.command, 'npm run dev');
+  assert.equal(launch.source, 'auto');
+});
+
 test('an explicit project root and command win over auto detection', async (t) => {
   const project = await fixture(t);
   const launch = await resolveFrontendLaunch({

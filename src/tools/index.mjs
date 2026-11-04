@@ -47,11 +47,12 @@ export function toolSpecs() {
     },
     {
       name: 'read_source',
-      description: 'Read source by file path or fully-qualified class name. Ambiguous names return candidates instead of guessing.',
+      description: 'Read source by file path or fully-qualified class name. Use root=frontend for frontend source. Ambiguous names return candidates instead of guessing.',
       input_schema: {
         type: 'object',
         properties: {
           target: { type: 'string' },
+          root: { enum: ['backend', 'frontend'] },
           startLine: { type: 'integer', minimum: 1 },
           endLine: { type: 'integer', minimum: 1 },
         },
@@ -61,11 +62,12 @@ export function toolSpecs() {
     },
     {
       name: 'search_source',
-      description: 'Search source files by keyword (case-insensitive).',
+      description: 'Search source files by keyword (case-insensitive). Use root=frontend for frontend source.',
       input_schema: {
         type: 'object',
         properties: {
           keyword: { type: 'string' },
+          root: { enum: ['backend', 'frontend'] },
           limit: { type: 'integer', minimum: 1, maximum: 200 },
         },
         required: ['keyword'],
@@ -98,6 +100,7 @@ export function toolSpecs() {
  *   runDir: string,
  *   logfiles?: string[],
  *   sourceRoot?: string | null,
+ *   frontendSourceRoot?: string | null,
  *   window?: { beforeMs: number, afterMs: number },
  *   limitBytes?: number
  * }} options
@@ -108,12 +111,25 @@ export function createTools({
   runDir,
   logfiles,
   sourceRoot,
+  frontendSourceRoot,
   window,
   limitBytes = DEFAULT_MAX_RESULT_BYTES,
 }) {
   const paths = resolveScenarioPaths(scenario);
   const files = logfiles ?? paths.logfiles;
   const root = sourceRoot ?? paths.sourceRoot;
+  const frontendRoot = frontendSourceRoot ?? scenario.frontendSourceRoot ?? null;
+  const pickRoot = (kind) => {
+    if (kind === 'frontend') {
+      if (!frontendRoot) throw new AppError('FRONTEND_SOURCE_ROOT_REQUIRED', 'frontend source root is not configured', { exitCode: 3 });
+      return frontendRoot;
+    }
+    if (kind === 'backend') {
+      if (!root) throw new AppError('SOURCE_ROOT_REQUIRED', 'source.root is required for read_source', { exitCode: 3 });
+      return root;
+    }
+    return root ?? frontendRoot;
+  };
   const timeWindow = window ?? scenario.window;
   const spillDir = path.join(runDir, 'evidence');
   let seq = 0;
@@ -201,7 +217,7 @@ export function createTools({
 
     read_source: (args = {}) => safe('read_source', async () => {
       const result = await readSource({
-        sourceRoot: root,
+        sourceRoot: pickRoot(args.root),
         target: args.target,
         startLine: args.startLine,
         endLine: args.endLine,
@@ -212,7 +228,7 @@ export function createTools({
 
     search_source: (args = {}) => safe('search_source', async () => {
       const result = await searchSource({
-        sourceRoot: root,
+        sourceRoot: pickRoot(args.root),
         keyword: args.keyword,
         limit: args.limit ?? 50,
       });

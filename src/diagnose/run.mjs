@@ -5,6 +5,7 @@ import { newRunId } from '../core/ids.mjs';
 import { resolveScenarioPaths } from '../core/scenario.mjs';
 import { resolveFrontendSources } from '../evidence/frontend.mjs';
 import { buildFixPreviews } from '../core/fixes.mjs';
+import { resolveFrontendProjectRoot } from '../core/frontend-service.mjs';
 import { fireScenario } from '../driver/index.mjs';
 import { readLogs, listThreads } from '../evidence/logs.mjs';
 import { correlateLogs, extractBusinessIds, extractTraceId } from '../evidence/correlate.mjs';
@@ -248,6 +249,7 @@ async function diagnoseWithFired({
     runDir,
     logfiles: paths.logfiles,
     sourceRoot: paths.sourceRoot,
+    frontendSourceRoot: frontendFixRoot,
     window: timeWindow,
   });
 
@@ -496,7 +498,18 @@ export async function runCaptureDiagnosis(observation, options = {}) {
   const startedAt = Date.now();
   const logfiles = (workspace.logfiles ?? []).map((file) => path.resolve(root, file));
   const sourceRoot = workspace.sourceRoot ? path.resolve(root, workspace.sourceRoot) : null;
-  const frontendSourceRoot = workspace.frontendSourceRoot ? path.resolve(root, workspace.frontendSourceRoot) : null;
+  const configuredFrontendSourceRoot = workspace.frontendSourceRoot
+    ? path.resolve(root, workspace.frontendSourceRoot)
+    : null;
+  let frontendProjectRoot = null;
+  try {
+    const project = await resolveFrontendProjectRoot(workspace, { rootDir: root });
+    if (project.ok) frontendProjectRoot = project.cwd;
+  } catch {
+    // source mapping can still work with an explicit frontendSourceRoot
+  }
+  // Project root is the default source base: it resolves Vite's /src/... paths directly.
+  const frontendSourceRoot = configuredFrontendSourceRoot ?? frontendProjectRoot;
   const scenario = {
     name: `capture-${observation.request?.method ?? 'GET'} ${requestPathOf(observation.request?.url) ?? ''}`.trim(),
     driverKind: 'capture',
@@ -507,6 +520,7 @@ export async function runCaptureDiagnosis(observation, options = {}) {
     logfiles,
     source: sourceRoot ? { root: sourceRoot } : undefined,
     frontendSourceRoot,
+    frontendProjectRoot,
     parser: { preset: 'auto' },
     logEncoding: 'auto',
     marker: { mode: 'none', header: 'X-DC-Probe' },
