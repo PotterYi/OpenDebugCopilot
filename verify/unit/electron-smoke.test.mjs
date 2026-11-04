@@ -310,6 +310,7 @@ http.createServer((req, res) => { res.end('frontend-ok'); }).listen(${frontendPo
   const child = spawn(electronPath, [
     MAIN,
     '--smoke',
+    '--smoke-quit',
     '--port', '0',
     '--config-dir', path.join(DIR, 'configs'),
     '--runs-dir', path.join(DIR, 'runs'),

@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { resolveFrontendLaunch } from '../../core/frontend-service.mjs';
 import { log } from '../../core/logger.mjs';
 
@@ -36,6 +36,28 @@ export function killProcessTree(pid) {
     }
   }
   return Promise.resolve();
+}
+
+/** Synchronous last-resort kill for process exit handlers (no async work allowed there). */
+export function killProcessTreeSync(pid) {
+  if (!pid) return;
+  if (process.platform === 'win32') {
+    try {
+      spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true });
+    } catch {
+      // ignore
+    }
+    return;
+  }
+  try {
+    process.kill(-pid, 'SIGKILL');
+  } catch {
+    try {
+      process.kill(pid, 'SIGKILL');
+    } catch {
+      // process already gone
+    }
+  }
 }
 
 export function waitForExit(child, timeoutMs) {

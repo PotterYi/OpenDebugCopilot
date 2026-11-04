@@ -8,7 +8,7 @@ import { startServer } from '../server.mjs';
 import { BrowserHost } from './browser-host.mjs';
 import { isLocalHostname, Router } from './routing.mjs';
 import { startLocalProxy } from './local-proxy.mjs';
-import { createDevServerManager } from './dev-server.mjs';
+import { createDevServerManager, killProcessTreeSync } from './dev-server.mjs';
 import { applyFix, revertFix } from '../../core/fix-apply.mjs';
 import { resolveFrontendProjectRoot } from '../../core/frontend-service.mjs';
 import { runVerifyCommand } from './verify-command.mjs';
@@ -35,6 +35,7 @@ function argValue(flag) {
 }
 
 const smoke = process.argv.includes('--smoke');
+const smokeQuit = process.argv.includes('--smoke-quit');
 const smokeUrl = argValue('--smoke-url');
 const smokeClick = argValue('--smoke-click');
 const smokeEval = argValue('--smoke-eval');
@@ -53,6 +54,49 @@ const useSingleInstanceLock = !smoke
   && !process.argv.includes('--allow-multiple-instances');
 const hasSingleInstanceLock = useSingleInstanceLock ? app.requestSingleInstanceLock() : true;
 let mainWindow = null;
+let shutdownResources = null;
+let shutdownRunning = false;
+let shutdownDone = false;
+
+/**
+ * Stop everything this process owns before Electron exits. The frontend dev server
+ * is a child process and would otherwise survive the app window.
+ */
+async function shutdownAndQuit() {
+  if (shutdownDone || shutdownRunning) return;
+  shutdownRunning = true;
+  const resources = shutdownResources;
+  try {
+    resources?.router?.dispose();
+    resources?.host?.destroy();
+    const cleanup = Promise.allSettled([
+      resources?.devServer ? resources.devServer.dispose() : Promise.resolve(),
+      resources?.proxy ? resources.proxy.close() : Promise.resolve(),
+      resources?.server ? resources.server.close() : Promise.resolve(),
+    ]);
+    // Never let a stuck socket or child process block quitting forever.
+    await Promise.race([
+      cleanup,
+      new Promise((resolve) => setTimeout(resolve, 7_000)),
+    ]);
+    log.info('[shutdown] dev server, proxy and UI server stopped');
+  } finally {
+    shutdownRunning = false;
+    shutdownDone = true;
+    app.quit();
+  }
+}
+
+process.on('exit', () => {
+  const pid = shutdownResources?.devServer?.child?.pid;
+  if (pid) killProcessTreeSync(pid);
+});
+
+for (const signal of ['SIGINT', 'SIGTERM']) {
+  process.on(signal, () => {
+    shutdownAndQuit().catch(() => app.exit(1));
+  });
+}
 
 async function writeJsonAtomic(file, value) {
   const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
@@ -892,12 +936,11 @@ async function bootstrap() {
       }
     },
   });
+  shutdownResources = { devServer, server, proxy, router, host };
   window.on('closed', () => {
     mainWindow = null;
     router?.dispose();
     host?.destroy();
-    devServer.dispose().catch(() => {});
-    proxy?.close().catch(() => {});
   });
 
   if (!smoke && initial.workspace.frontendUrl) {
@@ -910,6 +953,11 @@ async function bootstrap() {
 
   if (smoke) {
     const ok = await runSmoke(window, host);
+    if (smokeQuit) {
+      // Exercise the normal before-quit cleanup path (used by closing the window).
+      app.quit();
+      return;
+    }
     await devServer.dispose().catch(() => {});
     await server.close();
     await proxy?.close().catch(() => {});
@@ -917,8 +965,7 @@ async function bootstrap() {
     return;
   }
 
-  app.on('window-all-closed', async () => {
-    await server.close();
+  app.on('window-all-closed', () => {
     app.quit();
   });
 }
@@ -937,6 +984,15 @@ if (!hasSingleInstanceLock) {
       }
     });
   }
+
+  app.on('before-quit', (event) => {
+    if (shutdownDone) return;
+    event.preventDefault();
+    shutdownAndQuit().catch(() => {
+      shutdownDone = true;
+      app.exit(1);
+    });
+  });
 
   app.whenReady().then(bootstrap).catch((error) => {
     if (error?.code === 'EADDRINUSE') {
