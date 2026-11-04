@@ -69,10 +69,18 @@ test('an explicit project root and command win over auto detection', async (t) =
   assert.equal(launch.source, 'config');
 });
 
-test('fails clearly when no project root can be inferred', async (t) => {
+test('fails clearly when the configured source directory does not exist', async (t) => {
   await rm(TMP, { recursive: true, force: true });
   t.after(async () => { await rm(TMP, { recursive: true, force: true }); });
   const launch = await resolveFrontendLaunch({ frontendSourceRoot: 'missing/src' }, { rootDir: TMP });
   assert.equal(launch.ok, false);
-  assert.match(launch.reason, /package\.json/);
+  assert.match(launch.reason, /前端源码目录不存在/);
+});
+
+test('fails clearly when no project root is configured', async (t) => {
+  await rm(TMP, { recursive: true, force: true });
+  t.after(async () => { await rm(TMP, { recursive: true, force: true }); });
+  const launch = await resolveFrontendLaunch({}, { rootDir: TMP });
+  assert.equal(launch.ok, false);
+  assert.match(launch.reason, /未配置前端项目目录/);
 });

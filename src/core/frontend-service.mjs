@@ -83,6 +83,14 @@ export async function detectStartCommand(projectRoot) {
 export async function resolveFrontendLaunch(workspace = {}, { rootDir = process.cwd() } = {}) {
   const explicitRoot = String(workspace.frontendProjectRoot ?? '').trim();
   const sourceRoot = String(workspace.frontendSourceRoot ?? '').trim();
+
+  if (!explicitRoot && sourceRoot) {
+    const sourcePath = resolveFrom(rootDir, sourceRoot);
+    if (await pathKind(sourcePath) === null) {
+      return { ok: false, reason: `前端源码目录不存在：${sourcePath}` };
+    }
+  }
+
   const projectRoot = explicitRoot
     ? resolveFrom(rootDir, explicitRoot)
     : await findProjectRoot(sourceRoot, { rootDir });

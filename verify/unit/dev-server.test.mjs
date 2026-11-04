@@ -121,6 +121,6 @@ test('surfaces a clear error when the launch cannot be resolved', async (t) => {
   });
   const state = await manager.start();
   assert.equal(state.status, 'error');
-  assert.match(state.message, /package\.json/);
+  assert.match(state.message, /前端源码目录不存在|未配置前端项目目录/);
   await manager.dispose();
 });
