@@ -133,11 +133,20 @@ function deleteHeaderCaseInsensitive(headers, name) {
  * @param {{ origin?: string | null, requestHeaders?: Record<string, string[]> }} [options]
  * @returns {Record<string, string[]>}
  */
+function readHeader(headers, name) {
+  const key = Object.keys(headers ?? {}).find((item) => item.toLowerCase() === name);
+  if (!key) return undefined;
+  const value = headers[key];
+  return Array.isArray(value) ? value[0] : value;
+}
+
 export function applyCorsHeaders(responseHeaders = {}, { origin = null, requestHeaders = {} } = {}) {
   const headers = { ...responseHeaders };
   const allowOrigin = origin || '*';
-  const requestedMethod = requestHeaders['access-control-request-method']?.[0];
-  const requestedHeaders = requestHeaders['access-control-request-headers']?.[0];
+  // Electron preserves the header casing sent by Chromium ("Access-Control-Request-*"),
+  // so a plain lowercase lookup silently falls back to the hard-coded list and drops custom headers.
+  const requestedMethod = readHeader(requestHeaders, 'access-control-request-method');
+  const requestedHeaders = readHeader(requestHeaders, 'access-control-request-headers');
 
   const values = {
     'Access-Control-Allow-Origin': allowOrigin,
@@ -211,6 +220,22 @@ export class Router {
       ? matchRule(this.getRules(), details.url, null)
       : matchRule(this.getRules(), details.url, details.resourceType ?? null);
     if (!rule) {
+      // After a redirect the browser may send its CORS preflight (and the redirected
+      // request itself) straight to the local target URL. That URL does not match any
+      // match.host/prefix rule, so remember the owning target rule here: otherwise
+      // beforeSendHeaders has no hit to snapshot Access-Control-Request-Headers from,
+      // and headersReceived can only fall back to a hard-coded allow-list.
+      const targetRule = findTargetRule(this.getRules(), details.url);
+      if (targetRule) {
+        this.pending.set(details.id, {
+          rule: targetRule,
+          originalUrl: details.url,
+          targetUrl: null,
+          direct: true,
+        });
+        callback({});
+        return;
+      }
       if (details.resourceType === 'xhr' || details.resourceType === 'fetch') {
         log.info('[routing miss]', details.method, details.url);
         this.onMiss({ url: details.url, method: details.method, resourceType: details.resourceType });

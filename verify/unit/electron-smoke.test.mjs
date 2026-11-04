@@ -35,9 +35,9 @@ test('electron shell boots, captures, routes and diagnoses', {
   let backendHits = 0;
   let pageApiHits = 0;
   let backendOrigin = null;
+  let backendHeaders = null;
   let pageOptionsHits = 0;
 
-  let backendOptions = 0;
   let envHits = 0;
   const envServer = http.createServer((req, res) => {
     if (req.method === 'OPTIONS') {
@@ -59,6 +59,7 @@ test('electron shell boots, captures, routes and diagnoses', {
     if (req.url === '/api/order' && req.method === 'POST') {
       backendHits += 1;
       backendOrigin = req.headers.origin ?? null;
+      backendHeaders = req.headers;
       res.setHeader('Content-Type', 'application/json');
       res.end('{"from":"backend"}');
       return;
@@ -73,7 +74,7 @@ test('electron shell boots, captures, routes and diagnoses', {
   const pageServer = http.createServer((req, res) => {
     if (req.url === '/page') {
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
-      res.end(pageHtml(envUrl));
+      res.end(pageHtml(envUrl, { token: 'smoke-token', 'X-Demo-Userid': 'smoke-user' }));
 
       return;
     }
@@ -174,7 +175,9 @@ test('electron shell boots, captures, routes and diagnoses', {
   assert.match(stdout, /"consoleDiagnose":\{"ok":true/);
   assert.match(stdout, /"gates":true/);
   assert.ok(backendHits >= 1, `expected redirect to backend, got ${backendHits}`);
-  assert.equal(backendOptions, 0, 'preflight should be answered by the local proxy');
+  // Custom preflight headers must survive the redirect to the local target.
+  assert.equal(backendHeaders?.['x-demo-userid'], 'smoke-user');
+  assert.equal(backendHeaders?.token, 'smoke-token');
   assert.equal(pageOptionsHits, 0, 'preflight should not reach the page server');
   assert.equal(pageApiHits, 0, `request should have been redirected, page hits: ${pageApiHits}`);
   assert.equal(envHits, 0, `request should have been redirected to local, env hits: ${envHits}`);

@@ -65,6 +65,17 @@ test('adds CORS headers for local responses', () => {
   assert.deepEqual(nullOrigin['Access-Control-Allow-Origin'], ['null']);
   assert.deepEqual(nullOrigin['Access-Control-Allow-Credentials'], ['true']);
   assert.deepEqual(headers['content-type'], ['application/json']);
+
+  // Electron sends the Access-Control-Request-* headers with their original casing.
+  const cased = applyCorsHeaders({}, {
+    origin: 'http://localhost:5173',
+    requestHeaders: {
+      'Access-Control-Request-Method': ['PATCH'],
+      'Access-Control-Request-Headers': ['token, x-demo-userid'],
+    },
+  });
+  assert.deepEqual(cased['Access-Control-Allow-Methods'], ['PATCH']);
+  assert.deepEqual(cased['Access-Control-Allow-Headers'], ['token, x-demo-userid']);
 });
 
 test('router redirects actual requests, keeps OPTIONS and adds CORS', () => {
@@ -288,6 +299,62 @@ test('rewrites non-2xx preflight status to 200 OK', () => {
     (value) => { postResult = value; },
   );
   assert.equal(postResult.statusLine, undefined);
+
+  router.dispose();
+});
+
+test('keeps custom preflight headers when OPTIONS lands on the redirected local target', () => {
+  const handlers = {};
+  const session = {
+    webRequest: {
+      onBeforeRequest: (_filter, listener) => { handlers.before = listener ?? null; },
+      onBeforeSendHeaders: (_filter, listener) => { handlers.send = listener ?? null; },
+      onHeadersReceived: (_filter, listener) => { handlers.headers = listener ?? null; },
+      onCompleted: (_filter, listener) => { handlers.completed = listener ?? null; },
+      onErrorOccurred: (_filter, listener) => { handlers.error = listener ?? null; },
+    },
+  };
+  const router = new Router({
+    session,
+    getRules: () => rules,
+    getPageOrigin: () => 'http://localhost:5173',
+  });
+
+  // The real request is redirected to 127.0.0.1:8080...
+  let redirect = null;
+  handlers.before(
+    { id: 21, url: 'https://api.example.com/api/order/1', method: 'POST', resourceType: 'xhr' },
+    (value) => { redirect = value; },
+  );
+  assert.match(redirect.redirectURL, /^http:\/\/localhost:8080\/api\/order\/1$/);
+
+  // ...then the browser sends the preflight to the redirected URL, which matches no rule.
+  let preflightResult = null;
+  handlers.before(
+    { id: 22, url: 'http://localhost:8080/api/order/1', method: 'OPTIONS', resourceType: 'other' },
+    (value) => { preflightResult = value; },
+  );
+  assert.deepEqual(preflightResult, {});
+
+  let sent = null;
+  handlers.send({
+    id: 22,
+    requestHeaders: {
+      Origin: 'http://localhost:5173',
+      'Access-Control-Request-Method': 'POST',
+      'Access-Control-Request-Headers': 'token, x-demo-userid',
+    },
+  }, (value) => { sent = value; });
+  assert.ok(sent);
+
+  let received = null;
+  handlers.headers(
+    { id: 22, url: 'http://localhost:8080/api/order/1', method: 'OPTIONS', statusCode: 204, responseHeaders: {} },
+    (value) => { received = value; },
+  );
+  assert.deepEqual(received.responseHeaders['Access-Control-Allow-Origin'], ['http://localhost:5173']);
+  assert.deepEqual(received.responseHeaders['Access-Control-Allow-Methods'], ['POST']);
+  assert.deepEqual(received.responseHeaders['Access-Control-Allow-Headers'], ['token, x-demo-userid']);
 
   router.dispose();
 });

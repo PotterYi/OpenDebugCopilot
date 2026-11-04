@@ -1,4 +1,4 @@
-export function pageHtml(apiBase = '') {
+export function pageHtml(apiBase = '', extraHeaders = {}) {
   return `<!doctype html>
 <html><body>
   <h2>Manual E2E Frontend</h2>
@@ -6,13 +6,14 @@ export function pageHtml(apiBase = '') {
   <pre id="result">等待点击…</pre>
   <script>
     let apiBase = String(${JSON.stringify(apiBase)});
+    const extraHeaders = ${JSON.stringify(extraHeaders)};
     while (apiBase.endsWith('/')) apiBase = apiBase.slice(0, -1);
     document.getElementById('create').addEventListener('click', async () => {
       const result = document.getElementById('result');
       try {
         const response = await fetch(apiBase + '/api/order', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...extraHeaders },
           body: JSON.stringify({ qty: 2, orderId: 'ORD-MANUAL-001' }),
         });
         const text = await response.text();
