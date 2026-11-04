@@ -58,6 +58,7 @@ function registerIpc(service, getHost, getRouter, setRules) {
       if (payload.routing !== undefined) {
         setRules(saved.routing.rules);
         getRouter()?.apply();
+        getHost()?.syncPreflightInterception?.();
       }
       log.info('[config] saved to', service.configDir, 'rules:', saved.routing?.rules?.length ?? 0);
       for (const warning of saved.routing?.warnings ?? []) {
@@ -594,6 +595,7 @@ async function bootstrap() {
   const window = createWindow(server.url);
   host = new BrowserHost({
     window,
+    getRoutingRules: () => currentRules,
     onEvent: (event) => {
       if (event.type === 'navigation') {
         try {

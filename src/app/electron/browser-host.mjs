@@ -1,5 +1,5 @@
 import { WebContentsView } from 'electron';
-import { normalizeLocalhost } from './routing.mjs';
+import { buildPreflightResponse, isLocalHostname, normalizeLocalhost } from './routing.mjs';
 import { log } from '../../core/logger.mjs';
 import { detectBusinessError } from '../../evidence/business.mjs';
 
@@ -22,22 +22,55 @@ function decodeBody(payload) {
 }
 
 /**
+ * CDP Fetch patterns for local routing targets. Loopback hosts are duplicated so a
+ * target declared as localhost also catches requests made to 127.0.0.1 (and vice versa).
+ */
+function localTargetPatterns(rules) {
+  const patterns = new Set();
+  for (const rule of rules ?? []) {
+    if (rule.enabled === false) continue;
+    if (rule.target?.kind !== 'local' || !rule.target?.baseUrl) continue;
+    let target;
+    try {
+      target = new URL(rule.target.baseUrl);
+    } catch {
+      continue;
+    }
+    const port = target.port ? `:${target.port}` : '';
+    patterns.add(`${target.origin}/*`);
+    if (isLocalHostname(target.hostname)) {
+      patterns.add(`${target.protocol}//localhost${port}/*`);
+      patterns.add(`${target.protocol}//127.0.0.1${port}/*`);
+    }
+  }
+  return [...patterns];
+}
+
+/**
  * Embedded browser host: WebContentsView + CDP capture.
- * Routing (S4) is intentionally not part of this module.
+ * Routing redirects live in routing.mjs; this module only answers local CORS preflights
+ * via CDP Fetch so they never reach the real backend.
  */
 export class BrowserHost {
   /**
-   * @param {{ window: import('electron').BrowserWindow, onEvent?: (event: any) => void }} options
+   * @param {{
+   *   window: import('electron').BrowserWindow,
+   *   onEvent?: (event: any) => void,
+   *   getRoutingRules?: () => Array<any>
+   * }} options
    */
-  constructor({ window, onEvent = () => {} }) {
+  constructor({ window, onEvent = () => {}, getRoutingRules = () => [] }) {
     this.window = window;
     this.onEvent = onEvent;
+    this.getRoutingRules = getRoutingRules;
     this.records = new Map();
     this.byRequestId = new Map();
     this.order = [];
     this.seq = 0;
     this.attached = false;
     this.networkEnabled = false;
+    this.preflightEnabled = false;
+    this.preflightPatternsKey = '';
     this.pendingUrl = null;
     this.loading = false;
     this.consoleEvents = [];
@@ -104,6 +137,9 @@ export class BrowserHost {
       this.emit({ type: 'error', message: `CDP attach failed: ${error.message}` });
       return;
     }
+    // Fetch.enable works before the first navigation (unlike Network.enable), so local
+    // preflights can be answered even for the very first page load.
+    this.syncPreflightInterception();
     const enableNetwork = () => {
       if (this.networkEnabled) return;
       this.networkEnabled = true;
@@ -122,7 +158,74 @@ export class BrowserHost {
     contents.debugger.on('detach', () => {
       this.attached = false;
       this.networkEnabled = false;
+      this.preflightEnabled = false;
+      this.preflightPatternsKey = '';
     });
+  }
+
+  /** Re-enable CDP Fetch with patterns derived from the current local routing targets. */
+  syncPreflightInterception() {
+    if (!this.attached) return;
+    const patterns = localTargetPatterns(this.getRoutingRules());
+    const key = patterns.slice().sort().join('\n');
+    if (key === this.preflightPatternsKey) return;
+    const debuggerApi = this.view.webContents.debugger;
+    if (patterns.length === 0) {
+      this.preflightPatternsKey = key;
+      if (this.preflightEnabled) {
+        this.preflightEnabled = false;
+        debuggerApi.sendCommand('Fetch.disable').catch(() => {});
+      }
+      return;
+    }
+    debuggerApi
+      .sendCommand('Fetch.enable', { patterns: patterns.map((urlPattern) => ({ urlPattern })) })
+      .then(() => {
+        this.preflightEnabled = true;
+        this.preflightPatternsKey = key;
+      })
+      .catch((error) => log.warn('[preflight] Fetch.enable failed:', error?.message ?? error));
+  }
+
+  sendCdp(method, params = {}) {
+    const debuggerApi = this.view.webContents.debugger;
+    if (!this.attached || !debuggerApi.isAttached()) {
+      return Promise.reject(new Error('CDP is not attached'));
+    }
+    return debuggerApi.sendCommand(method, params);
+  }
+
+  /**
+   * CDP paused a request to a local target: answer CORS preflights ourselves so the
+   * backend never sees OPTIONS (avoiding e.g. DefaultOptionsMethodException); continue
+   * everything else untouched.
+   */
+  async handlePreflightRequest({ requestId, request }) {
+    try {
+      const response = buildPreflightResponse(
+        request?.url,
+        request?.method,
+        request?.headers ?? {},
+        this.getRoutingRules(),
+      );
+      if (!response) {
+        await this.sendCdp('Fetch.continueRequest', { requestId });
+        return;
+      }
+      await this.sendCdp('Fetch.fulfillRequest', {
+        requestId,
+        responseCode: response.statusCode,
+        responseHeaders: Object.entries(response.headers).map(([name, value]) => ({
+          name,
+          // applyCorsHeaders stores header values as arrays; CDP expects a string.
+          value: Array.isArray(value) ? value[0] : String(value),
+        })),
+      });
+      log.debug('[preflight] answered locally', request?.method, request?.url);
+    } catch (error) {
+      log.warn('[preflight] local answer failed:', error?.message ?? error);
+      this.sendCdp('Fetch.continueRequest', { requestId }).catch(() => {});
+    }
   }
 
   emit(event) {
@@ -183,6 +286,11 @@ export class BrowserHost {
   }
 
   handleCdp(method, params) {
+    if (method === 'Fetch.requestPaused') {
+      this.handlePreflightRequest(params);
+      return;
+    }
+
     if (method === 'Runtime.exceptionThrown') {
       const details = params.exceptionDetails ?? {};
       const frames = (details.stackTrace?.callFrames ?? []).map(

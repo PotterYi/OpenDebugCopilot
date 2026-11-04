@@ -5,6 +5,7 @@ import {
   matchRule,
   buildRedirectUrl,
   applyCorsHeaders,
+  buildPreflightResponse,
   Router,
 } from '../../src/app/electron/routing.mjs';
 
@@ -76,6 +77,30 @@ test('adds CORS headers for local responses', () => {
   });
   assert.deepEqual(cased['Access-Control-Allow-Methods'], ['PATCH']);
   assert.deepEqual(cased['Access-Control-Allow-Headers'], ['token, x-demo-userid']);
+});
+
+test('answers local CORS preflights synthetically, rejects everything else', () => {
+  const requestHeaders = {
+    Origin: 'http://localhost:5173',
+    'Access-Control-Request-Method': 'POST',
+    'Access-Control-Request-Headers': 'content-type, token, x-demo-userid',
+  };
+  const response = buildPreflightResponse('http://localhost:8080/api/order/1', 'OPTIONS', requestHeaders, rules);
+  assert.equal(response.statusCode, 204);
+  assert.deepEqual(response.headers['Access-Control-Allow-Origin'], ['http://localhost:5173']);
+  assert.deepEqual(response.headers['Access-Control-Allow-Methods'], ['POST']);
+  assert.deepEqual(response.headers['Access-Control-Allow-Headers'], ['content-type, token, x-demo-userid']);
+  assert.deepEqual(response.headers['Access-Control-Allow-Credentials'], ['true']);
+
+  // Not a preflight, not a local target, or no Origin: leave it to the real server.
+  assert.equal(buildPreflightResponse('http://localhost:8080/api/order/1', 'POST', requestHeaders, rules), null);
+  assert.equal(buildPreflightResponse('https://api.example.com/api/order/1', 'OPTIONS', requestHeaders, rules), null);
+  assert.equal(buildPreflightResponse('http://localhost:8080/api/order/1', 'OPTIONS', {
+    'Access-Control-Request-Method': 'POST',
+  }, rules), null);
+  assert.equal(buildPreflightResponse('http://localhost:8080/api/order/1', 'OPTIONS', {
+    Origin: 'http://localhost:5173',
+  }, rules), null);
 });
 
 test('router redirects actual requests, keeps OPTIONS and adds CORS', () => {
@@ -354,6 +379,47 @@ test('keeps custom preflight headers when OPTIONS lands on the redirected local 
   );
   assert.deepEqual(received.responseHeaders['Access-Control-Allow-Origin'], ['http://localhost:5173']);
   assert.deepEqual(received.responseHeaders['Access-Control-Allow-Methods'], ['POST']);
+  assert.deepEqual(received.responseHeaders['Access-Control-Allow-Headers'], ['token, x-demo-userid']);
+
+  router.dispose();
+});
+
+test('falls back to per-URL preflight headers when no pending hit exists', () => {
+  const handlers = {};
+  const session = {
+    webRequest: {
+      onBeforeRequest: (_filter, listener) => { handlers.before = listener ?? null; },
+      onBeforeSendHeaders: (_filter, listener) => { handlers.send = listener ?? null; },
+      onHeadersReceived: (_filter, listener) => { handlers.headers = listener ?? null; },
+      onCompleted: (_filter, listener) => { handlers.completed = listener ?? null; },
+      onErrorOccurred: (_filter, listener) => { handlers.error = listener ?? null; },
+    },
+  };
+  const router = new Router({
+    session,
+    getRules: () => rules,
+    getPageOrigin: () => 'http://localhost:5173',
+  });
+  const url = 'http://localhost:8080/api/order/1';
+
+  // Deliberately skip onBeforeRequest: simulate a preflight that had no pending hit.
+  handlers.send({
+    id: 31,
+    url,
+    requestHeaders: {
+      Origin: 'http://localhost:5173',
+      'Access-Control-Request-Method': 'PUT',
+      'Access-Control-Request-Headers': 'token, x-demo-userid',
+    },
+  }, () => {});
+
+  let received = null;
+  handlers.headers(
+    { id: 31, url, method: 'OPTIONS', statusCode: 204, responseHeaders: {} },
+    (value) => { received = value; },
+  );
+  assert.deepEqual(received.responseHeaders['Access-Control-Allow-Origin'], ['http://localhost:5173']);
+  assert.deepEqual(received.responseHeaders['Access-Control-Allow-Methods'], ['PUT']);
   assert.deepEqual(received.responseHeaders['Access-Control-Allow-Headers'], ['token, x-demo-userid']);
 
   router.dispose();

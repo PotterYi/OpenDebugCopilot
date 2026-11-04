@@ -36,6 +36,7 @@ test('electron shell boots, captures, routes and diagnoses', {
   let pageApiHits = 0;
   let backendOrigin = null;
   let backendHeaders = null;
+  let backendOptions = 0;
   let pageOptionsHits = 0;
 
   let envHits = 0;
@@ -56,6 +57,12 @@ test('electron shell boots, captures, routes and diagnoses', {
   const envUrl = `http://localhost:${envServer.address().port}`;
 
   const backendServer = http.createServer((req, res) => {
+    if (req.method === 'OPTIONS') {
+      backendOptions += 1;
+      res.statusCode = 404;
+      res.end('no options');
+      return;
+    }
     if (req.url === '/api/order' && req.method === 'POST') {
       backendHits += 1;
       backendOrigin = req.headers.origin ?? null;
@@ -175,6 +182,8 @@ test('electron shell boots, captures, routes and diagnoses', {
   assert.match(stdout, /"consoleDiagnose":\{"ok":true/);
   assert.match(stdout, /"gates":true/);
   assert.ok(backendHits >= 1, `expected redirect to backend, got ${backendHits}`);
+  // The tool answers local preflights itself; the backend must never see OPTIONS.
+  assert.equal(backendOptions, 0, `backend received ${backendOptions} OPTIONS request(s)`);
   // Custom preflight headers must survive the redirect to the local target.
   assert.equal(backendHeaders?.['x-demo-userid'], 'smoke-user');
   assert.equal(backendHeaders?.token, 'smoke-token');

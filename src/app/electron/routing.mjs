@@ -118,6 +118,32 @@ export function isTargetUrl(rules, url) {
   return findTargetRule(rules, url) !== null;
 }
 
+/**
+ * Build a synthetic CORS preflight response for a local routing target.
+ * Returning null means "not a local preflight": let the request continue.
+ *
+ * @param {string} url
+ * @param {string} method
+ * @param {Record<string, string|string[]>} requestHeaders
+ * @param {Array<any>} rules
+ * @returns {{ statusCode: number, headers: Record<string, string|string[]> } | null}
+ */
+export function buildPreflightResponse(url, method, requestHeaders = {}, rules = []) {
+  if (String(method ?? '').toUpperCase() !== 'OPTIONS') return null;
+  const requestedMethod = readHeader(requestHeaders, 'access-control-request-method');
+  const requestedHeaders = readHeader(requestHeaders, 'access-control-request-headers');
+  // Only answer real CORS preflights; a plain OPTIONS must keep its original server semantics.
+  if (!requestedMethod && !requestedHeaders) return null;
+  const origin = readHeader(requestHeaders, 'origin');
+  if (!origin) return null;
+  const rule = findTargetRule(rules, url);
+  if (!rule || rule.target?.kind !== 'local') return null;
+  return {
+    statusCode: 204,
+    headers: applyCorsHeaders({}, { origin, requestHeaders }),
+  };
+}
+
 function deleteHeaderCaseInsensitive(headers, name) {
   const lower = name.toLowerCase();
   for (const key of Object.keys(headers)) {
@@ -190,6 +216,9 @@ export class Router {
     this.proxyBaseUrl = proxyBaseUrl;
     this.getOriginalHeaders = getOriginalHeaders;
     this.originByUrl = new Map();
+    // CORS preflight headers keyed by request URL, used when no pending hit exists
+    // (e.g. the OPTIONS lands directly on the redirected local target).
+    this.preflightByUrl = new Map();
     this.pending = new Map();
     // Warn once per rule: a passthrough rule matching loopback traffic has no CORS fallback.
     this.warnedSitLocal = new Set();
@@ -329,7 +358,27 @@ export class Router {
       }
     }
     if (hit) hit.requestHeaders = { ...requestHeaders };
+    this.rememberPreflight(details.url, requestHeaders, origin);
     callback({ requestHeaders });
+  }
+
+  /** Remember the CORS preflight headers by URL, mirroring originByUrl. */
+  rememberPreflight(url, requestHeaders, origin) {
+    if (!url) return;
+    const requestedMethod = readHeader(requestHeaders, 'access-control-request-method');
+    const requestedHeaders = readHeader(requestHeaders, 'access-control-request-headers');
+    if (!requestedMethod && !requestedHeaders) return;
+    this.preflightByUrl.set(url, {
+      origin: origin ?? null,
+      requestHeaders: {
+        ...(requestedMethod ? { 'access-control-request-method': requestedMethod } : {}),
+        ...(requestedHeaders ? { 'access-control-request-headers': requestedHeaders } : {}),
+      },
+    });
+    if (this.preflightByUrl.size > 200) {
+      const oldest = this.preflightByUrl.keys().next().value;
+      this.preflightByUrl.delete(oldest);
+    }
   }
 
   headersReceived(details, callback) {
@@ -357,13 +406,15 @@ export class Router {
 
     const isPreflight = Boolean(hit?.options) || details.method === 'OPTIONS';
     const statusCode = details.statusCode ?? 200;
+    const cachedPreflight = details.url ? this.preflightByUrl.get(details.url) : null;
     const origin = hit?.origin
+      ?? cachedPreflight?.origin
       ?? (details.url ? this.originByUrl.get(details.url) : null)
       ?? this.getPageOrigin()
       ?? null;
     const responseHeaders = applyCorsHeaders(details.responseHeaders, {
       origin,
-      requestHeaders: hit?.requestHeaders ?? {},
+      requestHeaders: hit?.requestHeaders ?? cachedPreflight?.requestHeaders ?? {},
     });
 
     // Demo fallback: a local preflight must be 2xx or the browser blocks the request.
@@ -390,6 +441,7 @@ export class Router {
   apply() {
     // Rules changed: allow the loopback-SIT warning to fire again for the new config.
     this.warnedSitLocal.clear();
+    this.preflightByUrl.clear();
     this.session.clearCache().catch(() => {});
   }
 
@@ -402,6 +454,7 @@ export class Router {
     this.session.webRequest.onErrorOccurred(null);
     this.pending.clear();
     this.originByUrl.clear();
+    this.preflightByUrl.clear();
     this.warnedSitLocal.clear();
   }
 }
