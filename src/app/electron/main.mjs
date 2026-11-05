@@ -10,6 +10,8 @@ import { isLocalHostname, Router } from './routing.mjs';
 import { startLocalProxy } from './local-proxy.mjs';
 import { createDevServerManager, killProcessTreeSync } from './dev-server.mjs';
 import { applyFix, revertFix } from '../../core/fix-apply.mjs';
+import { buildFixPreviews } from '../../core/fixes.mjs';
+import { buildReport, renderMarkdown } from '../../report/report.mjs';
 import { resolveFrontendProjectRoot } from '../../core/frontend-service.mjs';
 import { runVerifyCommand } from './verify-command.mjs';
 import { readLogs } from '../../evidence/logs.mjs';
@@ -591,6 +593,67 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
       agent,
       frontendErrors,
     });
+  });
+
+  handle('dc:followup', async (_event, payload = {}) => {
+    const question = String(payload.question ?? '').trim();
+    if (!question) throw new Error('请输入继续诊断的内容');
+    const { runId, result } = await service.getRun(String(payload.runId ?? ''));
+    if (result.agent?.fixes?.some((fix) => fix?.applied && !fix.applied.revertedAt)) {
+      throw new Error('请先撤销已应用的修改，再继续诊断');
+    }
+
+    const workspace = (await service.getConfig()).workspace;
+    const agent = payload.mock === true || smoke
+      ? createMockAgent()
+      : createClaudeAgent({
+          cwd: workspace.sourceRoot ? path.resolve(ROOT, workspace.sourceRoot) : undefined,
+        });
+    if (typeof agent.followUp !== 'function') throw new Error('当前 Agent 不支持继续诊断');
+
+    const follow = await agent.followUp({ question, previous: result, budget: { maxRounds: 4 } });
+    const followAgent = {
+      ...follow,
+      fixes: await buildFixPreviews(follow.fixes, result.meta?.fixRoots ?? {}),
+    };
+    if (!Array.isArray(followAgent.evidenceRefs) || followAgent.evidenceRefs.length === 0) {
+      followAgent.evidenceRefs = result.agent?.evidenceRefs ?? [{ type: 'request', ref: 'request' }];
+    }
+
+    const at = Date.now();
+    const conversation = Array.isArray(result.conversation) && result.conversation.length
+      ? result.conversation
+      : [];
+    if (conversation.length === 0) {
+      if (result.meta?.question) {
+        conversation.push({ role: 'user', text: result.meta.question, at: result.meta.startedAt ?? null });
+      }
+      if (result.agent) {
+        conversation.push({
+          role: 'assistant',
+          text: result.agent.conclusion ?? '',
+          agent: result.agent,
+          at: result.meta?.endedAt ?? null,
+        });
+      }
+    }
+    conversation.push({ role: 'user', text: question, at });
+    conversation.push({ role: 'assistant', text: followAgent.conclusion ?? '', agent: followAgent, at });
+    result.conversation = conversation;
+    result.followUps = Array.isArray(result.followUps) ? result.followUps : [];
+    result.followUps.push({ question, at, agent: followAgent });
+    result.agent = followAgent;
+
+    const runDir = path.join(service.runsRoot, runId);
+    await writeJsonAtomic(path.join(runDir, 'result.json'), result);
+    await writeFile(path.join(runDir, 'report.md'), renderMarkdown(buildReport(result)), 'utf8');
+    await appendFile(
+      path.join(runDir, 'run.log'),
+      `${new Date().toISOString()} followup question=${question.slice(0, 200)}\n`,
+      'utf8',
+    ).catch(() => {});
+    log.info('[followup]', runId, question.slice(0, 80));
+    return { runId, result };
   });
 }
 

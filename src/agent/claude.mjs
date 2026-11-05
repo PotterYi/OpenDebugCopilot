@@ -18,6 +18,15 @@ const SYSTEM_PROMPT = `你是 DebugCopilot 的后端问题定位助手。你的�
 8. 代码修改必须提供可唯一定位的 search（文件中的精确原文，出现次数必须为 1）和 replace；无法给出精确修改时，只写 summary，不要编造 search/replace。
 9. 不要直接修改文件；本阶段只生成修复建议和 diff 预览，由用户确认。`;
 
+const FOLLOWUP_SYSTEM_PROMPT = `你是 DebugCopilot 的诊断助手，正在和用户继续讨论一条已有诊断。
+
+规则：
+1. 基于上一轮结论、证据和修复建议回答，不要编造未提供的日志、堆栈或源码。
+2. 用户可能在评估方案，要求先给修复方案、解释风险，或对当前方案不满意并要求调整。
+3. 输出 JSON Schema：conclusion 是本轮回复；fixes 是本轮建议，会覆盖上一轮展示。
+4. 如果用户只想先看方案，不要给 search/replace 具体代码；要求具体修改时再给可唯一定位的 search/replace。
+5. 不要直接修改文件。使用中文回答。`;
+
 const RESULT_SCHEMA = {
   type: 'object',
   additionalProperties: false,
@@ -117,6 +126,67 @@ function buildPrompt(question, evidence) {
     '',
     '# 任务',
     '定位问题根因。必要时调用工具补充日志、线程或源码证据，然后输出符合 JSON Schema 的结论。',
+  ].join('\n');
+}
+
+function buildFollowUpPrompt(question, previous = {}) {
+  const agent = previous.agent ?? {};
+  const fixes = (agent.fixes ?? []).slice(0, 10).map((fix) => (
+    typeof fix === 'string'
+      ? { summary: fix }
+      : {
+          summary: fix.summary,
+          root: fix.root,
+          file: fix.file,
+          search: fix.search,
+          replace: fix.replace,
+          risk: fix.risk,
+          verification: fix.verification,
+          note: fix.note,
+          applied: fix.applied
+            ? { applied: true, reverted: Boolean(fix.applied.revertedAt) }
+            : undefined,
+        }
+  ));
+  const snapshot = {
+    originalQuestion: previous.meta?.question ?? '',
+    conclusion: agent.conclusion ?? '',
+    fixes,
+    evidenceRefs: agent.evidenceRefs ?? [],
+    needsMoreInfo: agent.needsMoreInfo ?? [],
+    request: {
+      method: previous.request?.method,
+      url: previous.request?.url,
+      headers: redactHeaders(previous.request?.headers),
+      body: typeof previous.request?.body === 'string' ? previous.request.body.slice(0, 4000) : previous.request?.body,
+    },
+    response: {
+      status: previous.response?.status,
+      statusText: previous.response?.statusText,
+      headers: redactHeaders(previous.response?.headers),
+      body: typeof previous.response?.body === 'string' ? previous.response.body.slice(0, 4000) : previous.response?.body,
+      error: previous.response?.error,
+    },
+    logs: {
+      count: previous.logs?.count ?? 0,
+      records: (previous.logs?.records ?? []).slice(0, 20),
+    },
+    threads: previous.threads,
+    source: previous.source,
+    frontend: previous.frontend,
+  };
+  const pack = JSON.stringify(snapshot, null, 2);
+  return [
+    '# 上一轮诊断',
+    '```json',
+    pack.length > 60_000 ? `${pack.slice(0, 60_000)}\n… (truncated)` : pack,
+    '```',
+    '',
+    '# 用户追问',
+    question?.trim() || '(用户未填写内容)',
+    '',
+    '# 任务',
+    '在上一轮诊断基础上继续回答，输出更新后的结论与本轮修复建议。',
   ].join('\n');
 }
 
@@ -274,6 +344,67 @@ export function createClaudeAgent({ model, maxTurns = DEFAULT_MAX_TURNS, timeout
       return {
         ...parsed,
         toolCalls: tools.calls ?? [],
+        usage: {
+          numTurns: resultMessage.num_turns ?? null,
+          costUsd: resultMessage.total_cost_usd ?? null,
+          durationMs: resultMessage.duration_ms ?? null,
+        },
+      };
+    },
+
+    async followUp({ question, previous, budget }) {
+      const { query } = await import('@anthropic-ai/claude-agent-sdk');
+      const session = query({
+        prompt: buildFollowUpPrompt(question, previous),
+        options: {
+          tools: [],
+          mcpServers: {},
+          strictMcpConfig: true,
+          allowedTools: [],
+          permissionMode: 'dontAsk',
+          maxTurns: budget?.maxRounds ?? 4,
+          ...(maxBudgetUsd ? { maxBudgetUsd } : {}),
+          systemPrompt: FOLLOWUP_SYSTEM_PROMPT,
+          outputFormat: { type: 'json_schema', schema: RESULT_SCHEMA },
+          ...(model ? { model } : {}),
+          ...(cwd ? { cwd } : {}),
+        },
+      });
+
+      let resultMessage = null;
+      const timer = setTimeout(() => {
+        try {
+          session.close();
+        } catch {
+          // ignore close errors on timeout
+        }
+      }, timeoutMs);
+
+      try {
+        for await (const message of session) {
+          if (message.type === 'result') resultMessage = message;
+        }
+      } finally {
+        clearTimeout(timer);
+      }
+
+      if (!resultMessage) {
+        throw new AppError('AGENT_NO_RESULT', `Agent produced no result within ${timeoutMs}ms`, {
+          exitCode: 1,
+        });
+      }
+      if (resultMessage.subtype !== 'success' || resultMessage.is_error) {
+        throw new AppError(
+          'AGENT_RUN_FAILED',
+          `Agent failed: ${resultMessage.subtype ?? 'unknown'}`,
+          { exitCode: 1, details: { result: resultMessage.result } },
+        );
+      }
+
+      const parsed = parseStructured(resultMessage.result);
+      return {
+        ...parsed,
+        toolCalls: [],
         usage: {
           numTurns: resultMessage.num_turns ?? null,
           costUsd: resultMessage.total_cost_usd ?? null,

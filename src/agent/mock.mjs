@@ -38,5 +38,21 @@ export function createMockAgent() {
         needsMoreInfo: question && question.trim() ? [] : ['请描述你观察到的现象（如“下单报错”）'],
       };
     },
+
+    async followUp({ question, previous }) {
+      const agent = previous?.agent ?? {};
+      const text = String(question ?? '').trim();
+      const refs = Array.isArray(agent.evidenceRefs) && agent.evidenceRefs.length
+        ? agent.evidenceRefs
+        : [{ type: 'request', ref: 'request' }];
+      return {
+        conclusion: `继续诊断：${text || '(空)'}\n上一轮结论：${agent.conclusion ?? '(无)'}`,
+        evidenceRefs: refs,
+        confidence: agent.confidence ?? 0.5,
+        needsMoreInfo: [],
+        fixes: Array.isArray(agent.fixes) ? agent.fixes : [],
+        toolCalls: [],
+      };
+    },
   };
 }

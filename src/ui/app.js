@@ -667,6 +667,78 @@ function renderDiagnosis(response) {
   renderRunInto(view);
 }
 
+function conversationFor(result) {
+  if (Array.isArray(result?.conversation) && result.conversation.length > 0) {
+    return result.conversation;
+  }
+  const messages = [];
+  if (result?.meta?.question) {
+    messages.push({ role: 'user', text: result.meta.question });
+  }
+  if (result?.agent) {
+    messages.push({ role: 'assistant', text: result.agent.conclusion ?? '', agent: result.agent });
+  }
+  return messages;
+}
+
+async function runFollowUp(view, input, button) {
+  const response = view.response;
+  const runId = response?.runId ?? response?.result?.meta?.runId;
+  const question = input.value.trim();
+  if (!runId || !question) return;
+  input.disabled = true;
+  button.disabled = true;
+  showMessage(view, '继续诊断中…');
+  try {
+    const result = await api.followUp({ runId, question, mock: false });
+    if (result?.result) view.response.result = result.result;
+    renderRunInto(view);
+    showMessage(view, '已根据追问更新诊断', 'message ok');
+    requestAnimationFrame(() => {
+      const messages = view.container.querySelector('.chat-messages');
+      if (messages) messages.scrollTop = messages.scrollHeight;
+    });
+  } catch (error) {
+    showMessage(view, `继续诊断失败：${error.message}`, 'message error');
+    input.disabled = false;
+    button.disabled = false;
+  }
+}
+
+function buildChatSection(view) {
+  const block = el('section', 'card-section chat-panel');
+  block.append(el('div', 'card-title', '继续诊断'));
+  const messages = el('div', 'chat-messages');
+  const conversation = conversationFor(view.response.result ?? {});
+  if (conversation.length === 0) {
+    messages.append(el('p', 'muted small', '还没有对话内容'));
+  }
+  for (const message of conversation) {
+    if (!message || (message.role !== 'user' && message.role !== 'assistant')) continue;
+    const bubble = el('div', `chat-msg ${message.role}`);
+    bubble.textContent = message.text ?? message.agent?.conclusion ?? '';
+    messages.append(bubble);
+  }
+  block.append(messages);
+
+  const row = el('div', 'chat-input-row');
+  const input = document.createElement('input');
+  input.className = 'chat-input';
+  input.placeholder = '继续描述你的问题，或对当前修复方案的调整意见…';
+  const send = el('button', null, '继续诊断');
+  send.type = 'button';
+  send.addEventListener('click', () => runFollowUp(view, input, send));
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      runFollowUp(view, input, send);
+    }
+  });
+  row.append(input, send);
+  block.append(row);
+  return block;
+}
+
 function renderRunInto(view) {
   const response = view.response;
   const result = response.result ?? {};
@@ -778,6 +850,8 @@ function renderRunInto(view) {
       showRun(response.runId ?? result.meta?.runId);
     });
     container.append(reportButton);
+  } else if (api.isDesktop) {
+    container.append(buildChatSection(view));
   }
 }
 

@@ -627,6 +627,24 @@ test('renders full fixes and batch controls in the history tab', {
       applyAllDisabled: buttons[0]?.disabled ?? null,
       reportClass: document.getElementById('report').className,
     };
+
+    const chatInput = document.querySelector('#report .chat-input');
+    const chatButton = document.querySelector('#report .chat-input-row button');
+    if (chatInput && chatButton) {
+      chatInput.value = '先给方案，不写具体代码';
+      chatButton.click();
+      const chatDeadline = Date.now() + 8000;
+      while (Date.now() < chatDeadline) {
+        const conclusion = document.querySelector('#report .conclusion')?.textContent ?? '';
+        if (conclusion.includes('继续诊断') && document.querySelectorAll('#report .chat-msg').length >= 3) break;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      result.chatUpdated = (document.querySelector('#report .conclusion')?.textContent ?? '').includes('继续诊断');
+      result.chatMessages = document.querySelectorAll('#report .chat-msg').length;
+      result.chatHasUserText = [...document.querySelectorAll('#report .chat-msg.user')]
+        .some((node) => node.textContent.includes('先给方案'));
+    }
+
     const remove = document.querySelector('#runs .run-delete');
     if (!remove) return { ...result, deleted: false, reason: 'delete button missing' };
     window.confirm = () => true;
@@ -667,6 +685,9 @@ test('renders full fixes and batch controls in the history tab', {
   assert.equal(smoke.uiEvalResult.applyAllDisabled, false);
   assert.match(smoke.uiEvalResult.reportClass, /diagnose-card/);
   assert.doesNotMatch(smoke.uiEvalResult.reportClass, /muted/);
+  assert.equal(smoke.uiEvalResult.chatUpdated, true);
+  assert.ok(smoke.uiEvalResult.chatMessages >= 3);
+  assert.equal(smoke.uiEvalResult.chatHasUserText, true);
   assert.equal(smoke.uiEvalResult.deleted, true);
   assert.equal(smoke.uiEvalResult.reportCleared, true);
   await assert.rejects(readFile(path.join(runDir, 'result.json'), 'utf8'));
