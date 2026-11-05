@@ -194,3 +194,32 @@ test('manages multiple workspace profiles', async (t) => {
   assert.equal(deletedB.activeId, null);
   assert.deepEqual(deletedB.profiles, []);
 });
+
+test('saving a profile with an existing name overwrites it', async (t) => {
+  await rm(TMP, { recursive: true, force: true });
+  t.after(async () => { await rm(TMP, { recursive: true, force: true }); });
+  const store = createStore({ configDir: TMP });
+  const first = {
+    frontendUrl: 'http://localhost:5173',
+    backendUrl: 'http://127.0.0.1:8080',
+    logfiles: [],
+    window: { beforeMs: 3000, afterMs: 2000 },
+  };
+  const second = { ...first, frontendUrl: 'http://localhost:6000' };
+
+  const created = await store.createProfile('Same name', {
+    workspace: first,
+    routing: { rules: [] },
+  });
+  const originalId = created.activeId;
+  const overwritten = await store.createProfile('Same name', {
+    workspace: second,
+    routing: { rules: [] },
+  });
+
+  assert.equal(overwritten.profiles.length, 1);
+  assert.equal(overwritten.activeId, originalId);
+  assert.equal(overwritten.profiles[0].name, 'Same name');
+  assert.equal(overwritten.profiles[0].frontendUrl, 'http://localhost:6000');
+  assert.equal((await store.getWorkspace()).frontendUrl, 'http://localhost:6000');
+});

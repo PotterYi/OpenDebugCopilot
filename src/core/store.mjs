@@ -243,17 +243,26 @@ export function createStore({ configDir = path.resolve('configs') } = {}) {
       : { rules: (await getRouting()).rules };
     const state = await readProfiles();
     const now = Date.now();
-    const id = `profile-${now.toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-    state.profiles.push({
-      id,
-      name: profileName,
-      workspace,
-      routing: { rules: routing.rules },
-      createdAt: now,
-      updatedAt: now,
-    });
-    state.activeId = id;
-    // Saving as a new profile should not mutate the previously active profile.
+    const existing = state.profiles.find((profile) => profile.name === profileName);
+    if (existing) {
+      // Saving under an existing name overwrites that profile instead of
+      // accumulating duplicates such as "A", "A (2)", "A (3)".
+      existing.workspace = workspace;
+      existing.routing = { rules: routing.rules };
+      existing.updatedAt = now;
+      state.activeId = existing.id;
+    } else {
+      const id = `profile-${now.toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      state.profiles.push({
+        id,
+        name: profileName,
+        workspace,
+        routing: { rules: routing.rules },
+        createdAt: now,
+        updatedAt: now,
+      });
+      state.activeId = id;
+    }
     await writeJsonAtomic(workspacePath, workspace);
     await writeJsonAtomic(routingPath, { rules: routing.rules });
     await writeProfiles(state);
