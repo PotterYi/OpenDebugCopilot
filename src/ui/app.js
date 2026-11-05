@@ -985,9 +985,29 @@ function renderHistoryThread(view, result) {
   if (api.isDesktop) container.append(buildChatSection(view));
 }
 
+function describeCorrelation(result) {
+  const strategy = result.logs?.correlation?.strategy;
+  const id = result.logs?.correlation?.matchedId;
+  const labels = {
+    marker: 'marker',
+    'business-id': 'business-id',
+    'trace-id': 'trace-id',
+    'window-thread': '时间窗 + 线程',
+    'time-window': '时间窗兜底',
+  };
+  if (!strategy || strategy === 'none') return { label: '未匹配到日志', warning: null };
+  const label = `${labels[strategy] ?? strategy}${id ? `（${id}）` : ''}`;
+  return {
+    label,
+    warning: strategy === 'time-window'
+      ? '当前仅按时间窗关联，命中的日志可能混入其他请求。'
+      : null,
+  };
+}
+
 function renderRunBody(container, result, agent, view, { readOnly = false, showHeader = true } = {}) {
   const runId = view.response?.runId ?? result.meta?.runId;
-  const correlation = result.logs?.correlation;
+  const correlationInfo = describeCorrelation(result);
   if (showHeader) {
     const head = el('div', 'card-head');
     head.append(
@@ -1022,7 +1042,7 @@ function renderRunBody(container, result, agent, view, { readOnly = false, showH
   }
 
   container.append(section('上下文', kv([
-    ['关联方式', correlation ? `${correlation.strategy}${correlation.matchedId ? ` (${correlation.matchedId})` : ''}` : 'n/a'],
+    ['日志关联', correlationInfo.label],
     ['日志', `${result.logs?.count ?? 0} 条`],
     ['日志解析', result.logs?.parser
       ? `${result.logs.parser}${result.logs.parserFallback ? '（降级）' : ''}`
@@ -1033,6 +1053,9 @@ function renderRunBody(container, result, agent, view, { readOnly = false, showH
     ['前端源码', String(result.frontend?.files?.length ?? 0)],
     ['耗时', `${result.meta?.durationMs ?? 0} ms`],
   ])));
+  if (correlationInfo.warning) {
+    container.append(el('p', 'error-text small', correlationInfo.warning));
+  }
   if (result.logs?.parserWarning) {
     container.append(el('p', 'error-text small', `日志解析告警：${result.logs.parserWarning}`));
   }

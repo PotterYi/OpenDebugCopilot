@@ -101,3 +101,53 @@ test('falls back to time window and reports none when empty', async () => {
   assert.equal(empty.strategy, 'none');
   assert.equal(empty.result.records.length, 0);
 });
+
+test('extracts business ids from request and response headers', () => {
+  const ids = extractBusinessIds({
+    request: {
+      url: 'http://localhost:8080/api/ping',
+      headers: {
+        'X-Request-Id': 'REQ-778899',
+        'X-Emp-Num': 'E12345',
+        Authorization: 'Bearer should-not-be-used',
+      },
+    },
+    response: {
+      headers: { 'X-Trace-Id': 'TRACE-1234', 'Set-Cookie': 'sid=secret-cookie' },
+    },
+  });
+  assert.ok(ids.includes('REQ-778899'));
+  assert.ok(ids.includes('E12345'));
+  assert.ok(ids.includes('TRACE-1234'));
+  assert.equal(ids.some((id) => id.includes('should-not-be-used')), false);
+  assert.equal(ids.some((id) => id.includes('secret-cookie')), false);
+});
+
+test('extracts business ids from URL path segments', () => {
+  const ids = extractBusinessIds({
+    request: { url: 'http://localhost:8080/api/orders/ORD123456/empNum/E7788/courseCode/CS101' },
+  });
+  assert.ok(ids.includes('ORD123456'));
+  assert.ok(ids.includes('E7788'));
+  assert.ok(ids.includes('CS101'));
+  assert.equal(ids.includes('api'), false);
+  assert.equal(ids.includes('orders'), false);
+});
+
+test('handles empNum/courseCode while ignoring generic code fields', () => {
+  const ids = extractBusinessIds({
+    request: {
+      url: 'http://localhost:8080/api/ping',
+      body: JSON.stringify({
+        empNum: 'E9999',
+        courseCode: 'CS202',
+        statusCode: 500,
+        code: '00000',
+      }),
+    },
+  });
+  assert.ok(ids.includes('E9999'));
+  assert.ok(ids.includes('CS202'));
+  assert.equal(ids.includes('00000'), false);
+  assert.equal(ids.includes('500'), false);
+});

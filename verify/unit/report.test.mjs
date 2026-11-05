@@ -126,3 +126,34 @@ test('renders structured fix metadata without leaking the raw diff', () => {
   assert.equal(markdown.includes('safe-source-line'), false);
   assert.equal(markdown.includes('-secret-source-line'), false);
 });
+
+test('reports the actual correlation method and flags time-window fallback', () => {
+  const timed = {
+    ...result,
+    marker: { injected: false },
+    logs: {
+      ...result.logs,
+      markerMatched: false,
+      correlation: { strategy: 'time-window', matchedId: null },
+    },
+  };
+  const timedMarkdown = renderMarkdown(buildReport(timed));
+  assert.match(timedMarkdown, /日志关联：时间窗兜底（可能混入其他请求）/);
+  assert.doesNotMatch(timedMarkdown, /marker 未匹配/);
+  assert.doesNotMatch(timedMarkdown, /marker：/);
+
+  const business = {
+    ...timed,
+    logs: { ...timed.logs, correlation: { strategy: 'business-id', matchedId: 'ORD123' } },
+  };
+  const businessMarkdown = renderMarkdown(buildReport(business));
+  assert.match(businessMarkdown, /日志关联：business-id（ORD123）/);
+  assert.doesNotMatch(businessMarkdown, /marker：/);
+
+  const injected = {
+    ...timed,
+    marker: { injected: true },
+  };
+  const injectedMarkdown = renderMarkdown(buildReport(injected));
+  assert.match(injectedMarkdown, /marker：已注入但未匹配/);
+});

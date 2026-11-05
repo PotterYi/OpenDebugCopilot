@@ -61,6 +61,7 @@ export function buildReport(result) {
     summary: {
       logs: logs.count ?? 0,
       markerMatched: Boolean(logs.markerMatched),
+      markerInjected: Boolean(result.marker?.injected),
       threads: result.threads?.total ?? 0,
       sourceFiles: result.source?.files?.length ?? 0,
       toolCalls: agent.toolCalls?.length ?? 0,
@@ -94,6 +95,20 @@ export function buildReport(result) {
 
 function yesNo(value) {
   return value ? '通过' : '失败';
+}
+
+function correlationText(report) {
+  const strategy = report.summary.correlation;
+  const id = report.summary.correlationId;
+  if (!strategy || strategy === 'none') return '未匹配到日志';
+  const labels = {
+    marker: 'marker',
+    'business-id': 'business-id',
+    'trace-id': 'trace-id',
+    'window-thread': '时间窗 + 线程',
+    'time-window': '时间窗兜底（可能混入其他请求）',
+  };
+  return `${labels[strategy] ?? strategy}${id ? `（${id}）` : ''}`;
 }
 
 /**
@@ -135,13 +150,14 @@ export function renderMarkdown(report) {
     '',
     '## 证据摘要',
     '',
-    `- 日志命中：${report.summary.logs} 条（marker ${report.summary.markerMatched ? '已匹配' : '未匹配'}）`,
+    `- 日志命中：${report.summary.logs} 条`,
+    `- 日志关联：${correlationText(report)}`,
+    ...(report.summary.markerInjected
+      ? [`- marker：${report.summary.markerMatched ? '已匹配' : '已注入但未匹配'}`]
+      : []),
     `- 线程数：${report.summary.threads}`,
     `- 源码片段：${report.summary.sourceFiles} 处`,
     `- 工具调用：${report.summary.toolCalls} 次`,
-    ...(report.summary.correlation
-      ? [`- 关联方式：${report.summary.correlation}${report.summary.correlationId ? `（${report.summary.correlationId}）` : ''}`]
-      : []),
     ...(report.summary.frontendErrors
       ? [`- 前端错误：${report.summary.frontendErrors} 条（源码片段 ${report.summary.frontendSources} 处）`]
       : []),
