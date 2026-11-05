@@ -137,6 +137,13 @@ button:hover { filter: brightness(1.08); }
 
 .tabbar { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; flex-wrap: wrap; }
 .flex { flex: 1; }
+.tabbar .flex { flex: 0 0 16px; }
+#browser-url {
+  flex: 1 1 320px;
+  width: auto;
+  min-width: 220px;
+  max-width: 560px;
+}
 .tab {
   background: transparent;
   border: 1px solid transparent;

@@ -165,6 +165,9 @@ test('electron shell boots, captures, routes and diagnoses', {
   assert.match(stdout, /"consolePanel":true/);
   assert.match(stdout, /"requestFilterPresent":true/);
   assert.match(stdout, /"browserClearPresent":true/);
+  const smokeResult = JSON.parse(stdout.match(/SMOKE_RESULT (\{.*\})/)[1]);
+  assert.ok(smokeResult.browserUrlLayout.width > 260, JSON.stringify(smokeResult.browserUrlLayout));
+  assert.ok(smokeResult.browserUrlLayout.gap >= 8, JSON.stringify(smokeResult.browserUrlLayout));
   assert.match(stdout, /"advancedTogglePresent":true/);
   assert.match(stdout, /"advancedHiddenByDefault":true/);
   assert.match(stdout, /"advancedExpand":true/);

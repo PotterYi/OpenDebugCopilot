@@ -833,6 +833,17 @@ async function runSmoke(window, host) {
           consolePanel: Boolean(document.getElementById('console-list')),
           requestFilterPresent: document.querySelectorAll('#request-filter button[data-filter]').length === 3,
           browserClearPresent: Boolean(document.getElementById('browser-clear')),
+          browserUrlLayout: (() => {
+            const input = document.getElementById('browser-url');
+            const historyTab = document.querySelector('[data-tab="history"]');
+            if (!input || !historyTab) return null;
+            const inputRect = input.getBoundingClientRect();
+            const historyRect = historyTab.getBoundingClientRect();
+            return {
+              width: Math.round(inputRect.width),
+              gap: Math.round(inputRect.left - historyRect.right),
+            };
+          })(),
           advancedTogglePresent: Boolean(document.getElementById('toggle-advanced'))
             && Boolean(document.getElementById('advanced-config')),
           advancedHiddenByDefault: document.getElementById('advanced-config')?.hidden === true,
