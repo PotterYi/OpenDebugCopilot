@@ -26,12 +26,15 @@
         <label>日志文件（每行一个）
           <textarea name="logfiles" rows="4" placeholder="logs/app.log"></textarea>
         </label>
+        <label>后端源码目录
+          <input name="sourceRoot" placeholder="../backend-project" />
+        </label>
+        <label>前端项目目录（含 package.json）
+          <input name="frontendProjectRoot" placeholder="如 ../frontend-project；留空则从前端源码目录向上推断" />
+        </label>
         <button id="toggle-advanced" type="button" class="secondary advanced-toggle" aria-expanded="false">高级配置 ▾</button>
         <div id="advanced-config" class="advanced-config" hidden>
           <p class="muted small">以下均为可选配置，留空使用自动推断或默认值。</p>
-          <label>后端源码目录
-            <input name="sourceRoot" placeholder="../backend-project" />
-          </label>
           <label>其他后端源码目录（每行一个，可选）
             <textarea name="extraSourceRoots" rows="3" placeholder="默认不扫描；诊断时勾选「同时扫描其他后端源码」才会读取/修改"></textarea>
           </label>
@@ -45,9 +48,6 @@
               <option value="node">Node</option>
               <option value="raw">原始文本 raw</option>
             </select>
-          </label>
-          <label>前端项目目录（含 package.json）
-            <input name="frontendProjectRoot" placeholder="如 ../frontend-project；留空则从前端源码目录向上推断" />
           </label>
           <label>前端源码目录（可选）
             <input name="frontendSourceRoot" placeholder="留空默认使用前端项目目录；仅 monorepo 等非标准布局需要填写" />
