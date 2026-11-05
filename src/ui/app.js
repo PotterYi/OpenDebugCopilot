@@ -1568,6 +1568,17 @@ window.addEventListener('mouseup', () => {
   syncBounds();
 });
 
+const advancedToggle = $('toggle-advanced');
+const advancedConfig = $('advanced-config');
+let advancedOpen = false;
+function setAdvancedOpen(open) {
+  advancedOpen = Boolean(open);
+  advancedConfig.hidden = !advancedOpen;
+  advancedToggle.setAttribute('aria-expanded', String(advancedOpen));
+  advancedToggle.textContent = advancedOpen ? '收起高级配置 ▴' : '高级配置 ▾';
+}
+advancedToggle.addEventListener('click', () => setAdvancedOpen(!advancedOpen));
+
 form.addEventListener('submit', async (event) => {
   event.preventDefault();
   setMessage('保存中…');

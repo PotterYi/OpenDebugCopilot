@@ -758,6 +758,18 @@ async function runSmoke(window, host) {
           consolePanel: Boolean(document.getElementById('console-list')),
           requestFilterPresent: document.querySelectorAll('#request-filter button[data-filter]').length === 3,
           browserClearPresent: Boolean(document.getElementById('browser-clear')),
+          advancedTogglePresent: Boolean(document.getElementById('toggle-advanced'))
+            && Boolean(document.getElementById('advanced-config')),
+          advancedHiddenByDefault: document.getElementById('advanced-config')?.hidden === true,
+          advancedExpand: (() => {
+            const button = document.getElementById('toggle-advanced');
+            const panel = document.getElementById('advanced-config');
+            if (!button || !panel) return false;
+            button.click();
+            const opened = panel.hidden === false && button.getAttribute('aria-expanded') === 'true';
+            button.click();
+            return opened && panel.hidden === true;
+          })(),
           devServerControlsPresent: Boolean(document.getElementById('devserver-start'))
             && Boolean(document.getElementById('devserver-restart'))
             && Boolean(document.getElementById('devserver-stop')),

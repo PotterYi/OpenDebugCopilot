@@ -26,28 +26,32 @@
         <label>日志文件（每行一个）
           <textarea name="logfiles" rows="4" placeholder="logs/app.log"></textarea>
         </label>
-        <label>后端源码目录
-          <input name="sourceRoot" placeholder="../backend-project" />
-        </label>
-        <label>前端项目目录（含 package.json）
-          <input name="frontendProjectRoot" placeholder="如 ../frontend-project；留空则从前端源码目录向上推断" />
-        </label>
-        <label>前端源码目录（可选）
-          <input name="frontendSourceRoot" placeholder="留空默认使用前端项目目录；仅 monorepo 等非标准布局需要填写" />
-        </label>
-        <label>前端启动命令（可选）
-          <input name="frontendStartCommand" placeholder="留空自动识别（如 npm run dev）" />
-        </label>
-        <label>验证命令（可选）
-          <input name="verifyCommand" placeholder="如 npm run build 或 npm test" />
-        </label>
-        <div class="row">
-          <label>时间窗前 (ms)
-            <input name="beforeMs" type="number" min="0" step="500" />
+        <button id="toggle-advanced" type="button" class="secondary advanced-toggle" aria-expanded="false">高级配置 ▾</button>
+        <div id="advanced-config" class="advanced-config" hidden>
+          <p class="muted small">以下均为可选配置，留空使用自动推断或默认值。</p>
+          <label>后端源码目录
+            <input name="sourceRoot" placeholder="../backend-project" />
           </label>
-          <label>时间窗后 (ms)
-            <input name="afterMs" type="number" min="0" step="500" />
+          <label>前端项目目录（含 package.json）
+            <input name="frontendProjectRoot" placeholder="如 ../frontend-project；留空则从前端源码目录向上推断" />
           </label>
+          <label>前端源码目录（可选）
+            <input name="frontendSourceRoot" placeholder="留空默认使用前端项目目录；仅 monorepo 等非标准布局需要填写" />
+          </label>
+          <label>前端启动命令（可选）
+            <input name="frontendStartCommand" placeholder="留空自动识别（如 npm run dev）" />
+          </label>
+          <label>验证命令（可选）
+            <input name="verifyCommand" placeholder="如 npm run build 或 npm test" />
+          </label>
+          <div class="row">
+            <label>时间窗前 (ms)
+              <input name="beforeMs" type="number" min="0" step="500" />
+            </label>
+            <label>时间窗后 (ms)
+              <input name="afterMs" type="number" min="0" step="500" />
+            </label>
+          </div>
         </div>
         <button type="submit">保存配置</button>
         <p id="config-message" class="message"></p>

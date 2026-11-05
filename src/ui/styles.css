@@ -54,6 +54,15 @@ body {
 .panel h2 { margin: 0 0 12px; font-size: 14px; font-weight: 600; }
 .panel-head { display: flex; align-items: center; justify-content: space-between; }
 .form { display: flex; flex-direction: column; gap: 10px; }
+.advanced-toggle { text-align: left; }
+.advanced-config {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+}
 .form label { display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 12px; }
 .form input, .form textarea {
   background: var(--panel-2);
