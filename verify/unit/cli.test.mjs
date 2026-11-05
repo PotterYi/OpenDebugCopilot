@@ -48,6 +48,16 @@ test('check mode validates a browser scenario and prints JSON', () => {
   assert.equal(summary.status, 'validated');
 });
 
+test('accepts --max-turns and rejects invalid values', () => {
+  const scenario = path.join(FIXTURES, 'browser.json');
+  const ok = runCli(['run', scenario, '--check', '--max-turns', '12']);
+  assert.equal(ok.status, 0, ok.stderr);
+
+  const bad = runCli(['run', scenario, '--check', '--max-turns', '0']);
+  assert.notEqual(bad.status, 0);
+  assert.match(bad.stderr, /--max-turns must be a positive integer/);
+});
+
 test('mock run executes the full loop through the CLI', async (t) => {
   await mkdir(TMP, { recursive: true });
   t.after(async () => { await rm(TMP, { recursive: true, force: true }); });

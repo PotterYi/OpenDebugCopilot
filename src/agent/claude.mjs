@@ -1,7 +1,6 @@
 import { AppError } from '../core/errors.mjs';
 import { normalizeFixList } from '../core/fixes.mjs';
 
-const DEFAULT_MAX_TURNS = 24;
 const DEFAULT_TIMEOUT_MS = 180_000;
 const MAX_TOOL_TEXT = 20_000;
 
@@ -247,9 +246,10 @@ function parseStructured(text) {
  * Live diagnoser backed by the Claude Agent SDK.
  * In-process MCP tools are read-only; built-in Claude Code tools are disabled.
  *
- * @param {{ model?: string, maxTurns?: number, timeoutMs?: number, cwd?: string }} [options]
+ * @param {{ model?: string, maxTurns?: number | null, timeoutMs?: number, cwd?: string }} [options]
+ * `maxTurns` omitted/null means no turn limit; callers should still provide a budget/timeout.
  */
-export function createClaudeAgent({ model, maxTurns = DEFAULT_MAX_TURNS, timeoutMs = DEFAULT_TIMEOUT_MS, cwd, maxBudgetUsd } = {}) {
+export function createClaudeAgent({ model, maxTurns = null, timeoutMs = DEFAULT_TIMEOUT_MS, cwd, maxBudgetUsd } = {}) {
   return {
     id: 'claude',
     async diagnose({ question, evidence, tools, budget }) {

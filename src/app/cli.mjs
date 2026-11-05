@@ -32,6 +32,7 @@ Options:
   --check           Validate the scenario and stop (no request is fired)
   --mock            Run with the deterministic mock diagnoser
   --model <name>    Model for the live Claude agent
+  --max-turns <n>   Max model turns for one live diagnosis (omit = unlimited)
   --budget-usd <n>  Cost cap for one live diagnosis (SDK maxBudgetUsd)
   --recheck <n>     Run consistency recheck n times (default: 1)
   -q, --question    Symptom description used by the diagnoser
@@ -95,7 +96,7 @@ function parseArgv(argv) {
     throw new UsageError(`Unknown command: ${command}`);
   }
 
-  const opts = { command: 'run', scenarioPath: undefined, mock: false, check: false, recheck: 1, json: false, question: '', runsDir: undefined, model: undefined, budgetUsd: undefined };
+  const opts = { command: 'run', scenarioPath: undefined, mock: false, check: false, recheck: 1, json: false, question: '', runsDir: undefined, model: undefined, maxTurns: undefined, budgetUsd: undefined };
   for (let i = 1; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '-h' || arg === '--help') return { command: 'help' };
@@ -119,6 +120,19 @@ function parseArgv(argv) {
       opts.model = value;
     } else if (arg.startsWith('--model=')) {
       opts.model = arg.slice('--model='.length);
+    } else if (arg === '--max-turns') {
+      const value = argv[i + 1];
+      if (value === undefined) throw new UsageError('--max-turns requires a value');
+      i += 1;
+      opts.maxTurns = Number(value);
+      if (!Number.isInteger(opts.maxTurns) || opts.maxTurns < 1) {
+        throw new UsageError('--max-turns must be a positive integer');
+      }
+    } else if (arg.startsWith('--max-turns=')) {
+      opts.maxTurns = Number(arg.slice('--max-turns='.length));
+      if (!Number.isInteger(opts.maxTurns) || opts.maxTurns < 1) {
+        throw new UsageError('--max-turns must be a positive integer');
+      }
     } else if (arg === '--budget-usd') {
       const value = argv[i + 1];
       if (value === undefined) throw new UsageError('--budget-usd requires a value');
@@ -292,7 +306,12 @@ export async function main(argv = process.argv.slice(2), { root = ROOT } = {}) {
     const paths = resolveScenarioPaths(scenario);
     const agent = parsed.mock
       ? createMockAgent()
-      : createClaudeAgent({ model: parsed.model, cwd: paths.sourceRoot ?? undefined, maxBudgetUsd: parsed.budgetUsd });
+      : createClaudeAgent({
+          model: parsed.model,
+          maxTurns: parsed.maxTurns,
+          cwd: paths.sourceRoot ?? undefined,
+          maxBudgetUsd: parsed.budgetUsd,
+        });
 
     const { result, runDir } = await runDiagnosis(scenario, {
       runsDir: parsed.runsDir ? path.resolve(parsed.runsDir) : path.resolve(root, config.runsDir ?? 'runs'),
