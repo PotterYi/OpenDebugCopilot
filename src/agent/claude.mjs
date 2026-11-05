@@ -27,7 +27,8 @@ const FOLLOWUP_SYSTEM_PROMPT = `你是 DebugCopilot 的诊断助手，正在和�
 2. 用户可能在评估方案，要求先给修复方案、解释风险，或对当前方案不满意并要求调整。
 3. 输出 JSON Schema：conclusion 是本轮回复；fixes 是本轮建议，会覆盖上一轮展示。
 4. 如果用户只想先看方案，不要给 search/replace 具体代码；要求具体修改时再给可唯一定位的 search/replace。
-5. 不要直接修改文件。使用中文回答。`;
+5. 可以使用 debugcopilot 提供的只读工具补充日志、线程或源码证据；不要假设未读取的内容。
+6. 不要直接修改文件。使用中文回答。`;
 
 const RESULT_SCHEMA = {
   type: 'object',
@@ -307,6 +308,7 @@ export function createClaudeAgent({ model, maxTurns = DEFAULT_MAX_TURNS, timeout
       });
       const toolNames = tools.specs.map((spec) => `mcp__debugcopilot__${spec.name}`);
 
+      const turnLimit = budget?.maxRounds ?? maxTurns;
       const session = query({
         prompt: buildPrompt(question, evidence),
         options: {
@@ -315,7 +317,7 @@ export function createClaudeAgent({ model, maxTurns = DEFAULT_MAX_TURNS, timeout
           strictMcpConfig: true,
           allowedTools: toolNames,
           permissionMode: 'dontAsk',
-          maxTurns: budget?.maxRounds ?? maxTurns,
+          ...(Number.isFinite(turnLimit) && turnLimit > 0 ? { maxTurns: Math.floor(turnLimit) } : {}),
           ...(maxBudgetUsd ? { maxBudgetUsd } : {}),
           systemPrompt: SYSTEM_PROMPT,
           outputFormat: { type: 'json_schema', schema: RESULT_SCHEMA },
@@ -325,6 +327,7 @@ export function createClaudeAgent({ model, maxTurns = DEFAULT_MAX_TURNS, timeout
       });
 
       let resultMessage = null;
+      let partialText = '';
       const timer = setTimeout(() => {
         try {
           session.close();
@@ -335,6 +338,11 @@ export function createClaudeAgent({ model, maxTurns = DEFAULT_MAX_TURNS, timeout
 
       try {
         for await (const message of session) {
+          if (message.type === 'assistant') {
+            for (const block of message.message?.content ?? []) {
+              if (block?.type === 'text' && block.text) partialText += block.text;
+            }
+          }
           if (message.type === 'result') resultMessage = message;
         }
       } finally {
@@ -347,11 +355,30 @@ export function createClaudeAgent({ model, maxTurns = DEFAULT_MAX_TURNS, timeout
         });
       }
       if (resultMessage.subtype !== 'success' || resultMessage.is_error) {
-        throw new AppError(
-          'AGENT_RUN_FAILED',
-          `Agent failed: ${resultMessage.subtype ?? 'unknown'}`,
-          { exitCode: 1, details: { result: resultMessage.result } },
-        );
+        const reason = resultMessage.subtype === 'error_max_turns'
+          ? '达到最大轮次'
+          : resultMessage.subtype === 'error_max_budget_usd'
+            ? '达到费用上限'
+            : resultMessage.subtype === 'error_max_structured_output_retries'
+              ? '结构化输出重试次数用尽'
+              : `Agent 未完成（${resultMessage.subtype ?? 'unknown'}）`;
+        const parsed = parseStructured(resultMessage.result ?? partialText);
+        return {
+          ...parsed,
+          conclusion: parsed.conclusion?.trim() ? parsed.conclusion : `诊断未完成：${reason}`,
+          evidenceRefs: parsed.evidenceRefs ?? [],
+          needsMoreInfo: [...(parsed.needsMoreInfo ?? []), `诊断未完成：${reason}`],
+          fixes: normalizeFixList(parsed.fixes),
+          toolCalls: tools.calls ?? [],
+          usage: {
+            numTurns: resultMessage.num_turns ?? null,
+            costUsd: resultMessage.total_cost_usd ?? null,
+            durationMs: resultMessage.duration_ms ?? null,
+          },
+          incomplete: true,
+          incompleteReason: resultMessage.subtype ?? 'error',
+          errors: Array.isArray(resultMessage.errors) ? resultMessage.errors : [],
+        };
       }
 
       const parsed = parseStructured(resultMessage.result);
@@ -366,17 +393,75 @@ export function createClaudeAgent({ model, maxTurns = DEFAULT_MAX_TURNS, timeout
       };
     },
 
-    async followUp({ question, previous, budget }) {
+    async followUp({ question, previous, tools, budget }) {
       const { query } = await import('@anthropic-ai/claude-agent-sdk');
+      let sdkTools = [];
+      let server = null;
+      let toolNames = [];
+      if (tools?.specs?.length) {
+        const { tool, createSdkMcpServer } = await import('@anthropic-ai/claude-agent-sdk');
+        const { z } = await import('zod');
+        const shapes = {
+          get_logs: {
+            marker: z.string().optional(),
+            keyword: z.string().optional(),
+            thread: z.string().optional(),
+            level: z.string().optional(),
+            minLevel: z.string().optional(),
+            limit: z.number().int().min(1).max(500).optional(),
+          },
+          list_threads: {},
+          search_log: {
+            keyword: z.string(),
+            limit: z.number().int().min(1).max(500).optional(),
+          },
+          read_source: {
+            target: z.string(),
+            root: z.enum(['backend', 'frontend', 'extra']).optional(),
+            extraRoot: z.string().optional(),
+            startLine: z.number().int().min(1).optional(),
+            endLine: z.number().int().min(1).optional(),
+          },
+          search_source: {
+            keyword: z.string(),
+            root: z.enum(['backend', 'frontend', 'extra']).optional(),
+            extraRoot: z.string().optional(),
+            limit: z.number().int().min(1).max(200).optional(),
+          },
+          read: {
+            file: z.string(),
+            startLine: z.number().int().min(1).optional(),
+            endLine: z.number().int().min(1).optional(),
+          },
+        };
+        sdkTools = tools.specs.map((spec) =>
+          tool(spec.name, spec.description, shapes[spec.name], async (args) => {
+            const result = await tools.tools[spec.name](args);
+            return {
+              content: [{ type: 'text', text: toolResultText(result) }],
+              isError: Boolean(result?.error),
+            };
+          }),
+        );
+        server = createSdkMcpServer({
+          name: 'debugcopilot',
+          version: '0.1.0',
+          tools: sdkTools,
+          alwaysLoad: true,
+        });
+        toolNames = tools.specs.map((spec) => `mcp__debugcopilot__${spec.name}`);
+      }
       const session = query({
         prompt: buildFollowUpPrompt(question, previous),
         options: {
           tools: [],
-          mcpServers: {},
-          strictMcpConfig: true,
-          allowedTools: [],
+          ...(server
+            ? { mcpServers: { debugcopilot: server }, strictMcpConfig: true, allowedTools: toolNames }
+            : { mcpServers: {}, strictMcpConfig: true, allowedTools: [] }),
           permissionMode: 'dontAsk',
-          maxTurns: budget?.maxRounds ?? 4,
+          ...(Number.isFinite(budget?.maxRounds ?? maxTurns) && (budget?.maxRounds ?? maxTurns) > 0
+            ? { maxTurns: Math.floor(budget?.maxRounds ?? maxTurns) }
+            : {}),
           ...(maxBudgetUsd ? { maxBudgetUsd } : {}),
           systemPrompt: FOLLOWUP_SYSTEM_PROMPT,
           outputFormat: { type: 'json_schema', schema: RESULT_SCHEMA },
@@ -386,6 +471,7 @@ export function createClaudeAgent({ model, maxTurns = DEFAULT_MAX_TURNS, timeout
       });
 
       let resultMessage = null;
+      let partialText = '';
       const timer = setTimeout(() => {
         try {
           session.close();
@@ -396,6 +482,11 @@ export function createClaudeAgent({ model, maxTurns = DEFAULT_MAX_TURNS, timeout
 
       try {
         for await (const message of session) {
+          if (message.type === 'assistant') {
+            for (const block of message.message?.content ?? []) {
+              if (block?.type === 'text' && block.text) partialText += block.text;
+            }
+          }
           if (message.type === 'result') resultMessage = message;
         }
       } finally {
@@ -408,17 +499,33 @@ export function createClaudeAgent({ model, maxTurns = DEFAULT_MAX_TURNS, timeout
         });
       }
       if (resultMessage.subtype !== 'success' || resultMessage.is_error) {
-        throw new AppError(
-          'AGENT_RUN_FAILED',
-          `Agent failed: ${resultMessage.subtype ?? 'unknown'}`,
-          { exitCode: 1, details: { result: resultMessage.result } },
-        );
+        const reason = resultMessage.subtype === 'error_max_turns'
+          ? '达到最大轮次'
+          : resultMessage.subtype === 'error_max_budget_usd'
+            ? '达到费用上限'
+            : `继续诊断未完成（${resultMessage.subtype ?? 'unknown'}）`;
+        const parsed = parseStructured(resultMessage.result ?? partialText);
+        return {
+          ...parsed,
+          conclusion: parsed.conclusion?.trim() ? parsed.conclusion : `继续诊断未完成：${reason}`,
+          needsMoreInfo: [...(parsed.needsMoreInfo ?? []), `继续诊断未完成：${reason}`],
+          fixes: normalizeFixList(parsed.fixes),
+          toolCalls: tools?.calls ?? [],
+          usage: {
+            numTurns: resultMessage.num_turns ?? null,
+            costUsd: resultMessage.total_cost_usd ?? null,
+            durationMs: resultMessage.duration_ms ?? null,
+          },
+          incomplete: true,
+          incompleteReason: resultMessage.subtype ?? 'error',
+          errors: Array.isArray(resultMessage.errors) ? resultMessage.errors : [],
+        };
       }
 
       const parsed = parseStructured(resultMessage.result);
       return {
         ...parsed,
-        toolCalls: [],
+        toolCalls: tools?.calls ?? [],
         usage: {
           numTurns: resultMessage.num_turns ?? null,
           costUsd: resultMessage.total_cost_usd ?? null,

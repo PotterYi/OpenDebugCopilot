@@ -137,3 +137,44 @@ test('capture diagnosis works without log evidence', async (t) => {
   assert.equal(result.extraSources.authorized, false);
   assert.deepEqual(result.meta.fixRoots.extraSourceRoots, []);
 });
+
+test('persists an incomplete agent result with evidence', async (t) => {
+  await rm(TMP, { recursive: true, force: true });
+  await mkdir(TMP, { recursive: true });
+  t.after(async () => { await rm(TMP, { recursive: true, force: true }); });
+  const agent = {
+    id: 'mock',
+    async diagnose() {
+      return {
+        conclusion: '已定位到部分线索，但未给出最终结论',
+        evidenceRefs: [{ type: 'request', ref: 'request' }],
+        confidence: 0.3,
+        needsMoreInfo: ['诊断未完成：达到最大轮次'],
+        fixes: [],
+        toolCalls: [],
+        incomplete: true,
+        incompleteReason: 'error_max_turns',
+      };
+    },
+  };
+
+  const { result, runDir } = await runCaptureDiagnosis({
+    request: { method: 'GET', url: 'http://localhost:8080/api/ping', headers: {}, body: null, startedAt: Date.now() },
+    response: { status: 200, statusText: 'OK', ok: true, headers: {}, body: '{"ok":true}', durationMs: 3 },
+    firedAt: Date.now(),
+    resourceType: 'xhr',
+  }, {
+    workspace: { logfiles: [], sourceRoot: '', window: { beforeMs: 3000, afterMs: 2000 } },
+    root: ROOT,
+    runsDir: path.join(TMP, 'runs'),
+    question: '',
+    agent,
+  });
+
+  assert.equal(result.meta.incomplete, true);
+  assert.equal(result.meta.incompleteReason, 'error_max_turns');
+  assert.equal(result.agent.incomplete, true);
+  assert.match(result.agent.conclusion, /部分线索/);
+  const persisted = JSON.parse(await readFile(path.join(runDir, 'result.json'), 'utf8'));
+  assert.equal(persisted.meta.incomplete, true);
+});

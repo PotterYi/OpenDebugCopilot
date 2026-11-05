@@ -48,6 +48,11 @@ const diagnoseProgressEl = $('diagnose-progress');
 const consoleList = $('console-list');
 const consoleCount = $('console-count');
 const diagnoseResult = $('diagnose-result');
+const modelModal = $('model-modal');
+const modelNameInput = $('model-name');
+const modelMaxTurnsInput = $('model-max-turns');
+const modelMaxBudgetInput = $('model-max-budget');
+const modelTimeoutInput = $('model-timeout');
 
 let currentTab = 'browser';
 let configCache = null;
@@ -118,6 +123,7 @@ function readForm() {
       frontendProjectRoot: form.elements.frontendProjectRoot.value.trim(),
       frontendStartCommand: form.elements.frontendStartCommand.value.trim(),
       verifyCommand: form.elements.verifyCommand.value.trim(),
+      agent: configCache?.workspace?.agent ?? {},
       window: {
         beforeMs: Number(form.elements.beforeMs.value) || 0,
         afterMs: Number(form.elements.afterMs.value) || 0,
@@ -820,7 +826,19 @@ function renderRunBody(container, result, agent, view, { readOnly = false, showH
       el('span', `badge ${result.gates?.ok ? 'ok' : 'error'}`, result.gates?.ok ? 'Gates ok' : 'Gates failed'),
       el('span', 'badge', `${result.meta?.agent ?? '-'} / ${result.meta?.mode ?? '-'}`),
     );
+    if (agent?.incomplete || result.meta?.incomplete) {
+      head.append(el('span', 'badge error', '未完成'));
+    }
     container.append(head);
+  }
+  if (agent?.incomplete || result.meta?.incomplete) {
+    const rawReason = agent?.incompleteReason ?? result.meta?.incompleteReason ?? 'unknown';
+    const reasonLabel = {
+      error_max_turns: '达到最大轮次',
+      error_max_budget_usd: '达到费用上限',
+      error_max_structured_output_retries: '结构化输出重试次数用尽',
+    }[rawReason] ?? rawReason;
+    container.append(el('p', 'error-text small', `未完成：${reasonLabel}`));
   }
 
   container.append(section('结论', el('p', 'conclusion', agent?.conclusion ?? '(无结论)')));
@@ -1639,6 +1657,57 @@ window.addEventListener('mouseup', () => {
   splitter.classList.remove('dragging');
   syncBounds();
 });
+
+function openModelModal() {
+  const agent = configCache?.workspace?.agent ?? {};
+  modelNameInput.value = agent.model ?? '';
+  modelMaxTurnsInput.value = agent.maxTurns ?? '';
+  modelMaxBudgetInput.value = agent.maxBudgetUsd ?? '';
+  modelTimeoutInput.value = agent.timeoutMs ?? 180000;
+  modelModal.hidden = false;
+  modelNameInput.focus();
+}
+
+function closeModelModal() {
+  modelModal.hidden = true;
+}
+
+async function saveModelSettings() {
+  if (!configCache?.workspace) {
+    setStatus('配置尚未加载，请稍后重试', 'error');
+    return;
+  }
+  const maxTurns = Number(modelMaxTurnsInput.value);
+  const maxBudget = Number(modelMaxBudgetInput.value);
+  const timeout = Number(modelTimeoutInput.value);
+  const agent = {
+    model: modelNameInput.value.trim(),
+    maxTurns: Number.isFinite(maxTurns) && maxTurns > 0 ? Math.floor(maxTurns) : null,
+    maxBudgetUsd: Number.isFinite(maxBudget) && maxBudget > 0 ? maxBudget : null,
+    timeoutMs: Number.isFinite(timeout) && timeout > 0 ? Math.floor(timeout) : 180000,
+  };
+  try {
+    const saved = await api.saveConfig({
+      workspace: { ...(configCache?.workspace ?? {}), agent },
+    });
+    configCache = saved;
+    closeModelModal();
+    setStatus('模型设置已保存', 'ok');
+  } catch (error) {
+    setStatus(`模型设置保存失败：${error.message}`, 'error');
+  }
+}
+
+$('model-save').addEventListener('click', saveModelSettings);
+$('model-cancel').addEventListener('click', closeModelModal);
+modelModal.addEventListener('click', (event) => {
+  if (event.target === modelModal) closeModelModal();
+});
+window.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && !modelModal.hidden) closeModelModal();
+});
+
+api.onModelSettings(openModelModal);
 
 const advancedToggle = $('toggle-advanced');
 const advancedConfig = $('advanced-config');

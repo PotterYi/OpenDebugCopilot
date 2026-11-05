@@ -84,6 +84,8 @@ export function buildReport(result) {
       runId: result.meta?.runId ?? null,
       agent: result.meta?.agent ?? null,
       mode: result.meta?.mode ?? null,
+      incomplete: Boolean(result.meta?.incomplete),
+      incompleteReason: result.meta?.incompleteReason ?? null,
       startedAt: result.meta?.startedAt ?? null,
       endedAt: result.meta?.endedAt ?? null,
     },
@@ -106,6 +108,9 @@ export function renderMarkdown(report) {
     `- 症状：${report.symptom}`,
     `- 耗时：${report.durationMs} ms`,
     `- Run ID：${report.meta.runId ?? '(unknown)'}`,
+    ...(report.meta.incomplete
+      ? [`- 状态：未完成（${report.meta.incompleteReason ?? 'unknown'}）`]
+      : []),
     '',
     '## 结论',
     '',

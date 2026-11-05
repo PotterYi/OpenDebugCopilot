@@ -97,4 +97,8 @@ export const api = {
     if (!dc?.on) return () => {};
     return dc.on('dc:followup:progress', handler);
   },
+  onModelSettings(handler) {
+    if (!dc?.on) return () => {};
+    return dc.on('dc:model:open', handler);
+  },
 };

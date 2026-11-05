@@ -14,6 +14,7 @@ import { buildFixPreviews } from '../../core/fixes.mjs';
 import { buildReport, renderMarkdown } from '../../report/report.mjs';
 import { resolveFrontendProjectRoot } from '../../core/frontend-service.mjs';
 import { runVerifyCommand } from './verify-command.mjs';
+import { createTools } from '../../tools/index.mjs';
 import { readLogs } from '../../evidence/logs.mjs';
 import { runCaptureDiagnosis } from '../../diagnose/run.mjs';
 import { createMockAgent } from '../../agent/mock.mjs';
@@ -129,6 +130,17 @@ async function loadRunFix(service, runId, fixIndex) {
   const context = await loadRunFixes(service, runId);
   if (!context.fixes[fixIndex]) throw new Error('修复建议不存在');
   return { ...context, fix: context.fixes[fixIndex] };
+}
+
+function agentOptionsFromWorkspace(workspace = {}) {
+  const agent = workspace.agent ?? {};
+  return {
+    cwd: workspace.sourceRoot ? path.resolve(ROOT, workspace.sourceRoot) : undefined,
+    model: agent.model || undefined,
+    maxTurns: agent.maxTurns,
+    maxBudgetUsd: agent.maxBudgetUsd ?? undefined,
+    timeoutMs: agent.timeoutMs ?? undefined,
+  };
 }
 
 function confirmFixDialog(parent, { title, message, detail }) {
@@ -580,9 +592,7 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
 
     const agent = payload.mock === true
       ? createMockAgent()
-      : createClaudeAgent({
-          cwd: workspace.sourceRoot ? path.resolve(ROOT, workspace.sourceRoot) : undefined,
-        });
+      : createClaudeAgent(agentOptionsFromWorkspace(workspace));
 
     const sendProgress = (progress) => {
       if (!event.sender.isDestroyed()) event.sender.send('dc:diagnose:progress', progress);
@@ -628,14 +638,58 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
       const workspace = (await service.getConfig()).workspace;
       const agent = payload.mock === true || smoke
         ? createMockAgent()
-        : createClaudeAgent({
-            cwd: workspace.sourceRoot ? path.resolve(ROOT, workspace.sourceRoot) : undefined,
-          });
+        : createClaudeAgent(agentOptionsFromWorkspace(workspace));
       if (typeof agent.followUp !== 'function') throw new Error('当前 Agent 不支持继续诊断');
 
+      let followTools = null;
+      const logContext = result.meta?.logContext;
+      if (logContext) {
+        const toolLabels = {
+          get_logs: '查询日志',
+          list_threads: '分析线程',
+          search_log: '搜索日志',
+          read_source: '读取源码',
+          search_source: '搜索源码',
+          read: '读取工具结果',
+        };
+        const followWindow = logContext.window ?? result.window;
+        const scenario = {
+          logfiles: logContext.logfiles ?? [],
+          parser: logContext.parser ?? { preset: 'auto' },
+          logEncoding: logContext.logEncoding ?? 'auto',
+          source: logContext.sourceRoot ? { root: logContext.sourceRoot } : undefined,
+          frontendSourceRoot: logContext.frontendSourceRoot ?? null,
+          extraSourceRoots: logContext.extraSourceRoots ?? [],
+          window: followWindow,
+          dir: ROOT,
+        };
+        followTools = createTools({
+          scenario,
+          anchor: logContext.anchor ?? result.window?.anchor ?? Date.now(),
+          runDir: path.join(service.runsRoot, runId),
+          logfiles: logContext.logfiles,
+          sourceRoot: logContext.sourceRoot,
+          frontendSourceRoot: logContext.frontendSourceRoot,
+          extraSourceRoots: logContext.extraSourceRoots,
+          window: followWindow,
+          onCall: (call) => sendProgress({
+            id: `tool-${call.id}`,
+            label: call.stage === 'start'
+              ? `${toolLabels[call.name] ?? call.name}…`
+              : (toolLabels[call.name] ?? call.name),
+            status: call.stage === 'start' ? 'start' : call.error ? 'error' : 'done',
+            detail: call.name,
+          }),
+        });
+      }
+
       sendProgress({ id: 'agent', label: 'AI 正在继续分析', status: 'start' });
-      const follow = await agent.followUp({ question, previous: result, budget: { maxRounds: 4 } });
-      sendProgress({ id: 'agent', label: 'AI 已给出本轮回复', status: 'done' });
+      const follow = await agent.followUp({ question, previous: result, tools: followTools });
+      sendProgress({
+        id: 'agent',
+        label: follow.incomplete ? 'AI 未完成，已保留部分回复' : 'AI 已给出本轮回复',
+        status: follow.incomplete ? 'error' : 'done',
+      });
       sendProgress({ id: 'preview', label: '生成修复预览', status: 'start' });
       const followAgent = {
         ...follow,
@@ -784,6 +838,7 @@ async function runSmoke(window, host) {
           advancedHiddenByDefault: document.getElementById('advanced-config')?.hidden === true,
           extraSourceRootsFieldPresent: Boolean(document.querySelector('[name="extraSourceRoots"]')),
           logParserFieldPresent: Boolean(document.querySelector('[name="logParser"]')),
+          modelModalPresent: Boolean(document.getElementById('model-modal')),
           allowExtraSourcesPresent: Boolean(document.getElementById('allow-extra-sources')),
           allowExtraSourcesDefault: document.getElementById('allow-extra-sources')?.checked === false,
           advancedExpand: (() => {
@@ -993,6 +1048,19 @@ function installApplicationMenu() {
     { role: 'editMenu' },
     { role: 'viewMenu' },
     { role: 'windowMenu' },
+    {
+      label: '模型',
+      submenu: [
+        {
+          label: '模型设置…',
+          click: () => {
+            if (mainWindow && !mainWindow.isDestroyed()) {
+              mainWindow.webContents.send('dc:model:open');
+            }
+          },
+        },
+      ],
+    },
     {
       label: '日志',
       submenu: [

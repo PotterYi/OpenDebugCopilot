@@ -18,6 +18,7 @@ const EVENTS = new Set([
   'dc:diagnose:progress',
   'dc:followup:progress',
   'dc:devserver:event',
+  'dc:model:open',
 ]);
 
 contextBridge.exposeInMainWorld('dc', {

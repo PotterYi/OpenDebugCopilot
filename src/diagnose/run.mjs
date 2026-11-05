@@ -346,7 +346,7 @@ async function diagnoseWithFired({
   await runLog.info(`agent=${agent.id} mode=${agent.id === 'mock' ? 'mock' : 'live'}`);
   const callAgent = async () => {
     try {
-      return await agent.diagnose({ question, evidence, tools: toolsBundle, budget: { maxRounds: 24 } });
+      return await agent.diagnose({ question, evidence, tools: toolsBundle });
     } catch (error) {
       await runLog.error(`agent failed: ${error?.message ?? error}`);
       throw error;
@@ -356,7 +356,11 @@ async function diagnoseWithFired({
   let agentResult;
   try {
     agentResult = await callAgent();
-    progress('agent', 'AI 已给出结论', 'done');
+    progress(
+      'agent',
+      agentResult.incomplete ? 'AI 未完成，已保留部分结论' : 'AI 已给出结论',
+      agentResult.incomplete ? 'error' : 'done',
+    );
   } catch (error) {
     progress('agent', 'AI 分析失败', 'error');
     throw error;
@@ -440,8 +444,22 @@ async function diagnoseWithFired({
       durationMs: endedAt - startedAt,
       question,
       runLog: 'run.log',
+      incomplete: Boolean(agentResult.incomplete),
+      incompleteReason: agentResult.incompleteReason ?? null,
+      agentErrors: agentResult.errors ?? [],
       // Needed by 2b apply/undo to re-resolve fix files safely.
       fixRoots: {
+        sourceRoot: paths.sourceRoot ?? null,
+        frontendSourceRoot: frontendFixRoot,
+        extraSourceRoots,
+      },
+      // Needed to rebuild read-only tools for follow-up turns.
+      logContext: {
+        logfiles: paths.logfiles,
+        parser: scenario.parser,
+        logEncoding: scenario.logEncoding,
+        anchor: fired.firedAt,
+        window: timeWindow,
         sourceRoot: paths.sourceRoot ?? null,
         frontendSourceRoot: frontendFixRoot,
         extraSourceRoots,

@@ -445,6 +445,38 @@ button:hover { filter: brightness(1.08); }
    Keep the hidden attribute authoritative for the zero-framework UI. */
 [hidden] { display: none !important; }
 
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+}
+.modal {
+  width: min(420px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+}
+.modal h2 { margin: 0 0 4px; font-size: 15px; }
+.modal label { display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 12px; }
+.modal input {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 7px 9px;
+  font: inherit;
+}
+.modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+
 .probe-status { font-size: 11px; color: var(--muted); }
 .probe-status.ok { color: #5bd693; }
 .probe-status.error { color: var(--danger); }

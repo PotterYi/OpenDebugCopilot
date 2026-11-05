@@ -31,11 +31,18 @@ test('saves workspace atomically and reads it back', async (t) => {
     sourceRoot: '../demo',
     extraSourceRoots: ['../other-backend', '  ../third-backend  ', ''],
     logParser: 'logback',
+    agent: { model: 'claude-sonnet-5', maxTurns: 0, maxBudgetUsd: 1.5, timeoutMs: 60000 },
     window: { beforeMs: 1000, afterMs: 500 },
   });
   assert.equal(saved.backendUrl, 'http://127.0.0.1:9090');
   assert.deepEqual(saved.extraSourceRoots, ['../other-backend', '../third-backend']);
   assert.equal(saved.logParser, 'logback');
+  assert.deepEqual(saved.agent, {
+    model: 'claude-sonnet-5',
+    maxTurns: null,
+    maxBudgetUsd: 1.5,
+    timeoutMs: 60000,
+  });
   const reloaded = await createStore({ configDir: TMP }).getWorkspace();
   assert.deepEqual(reloaded, saved);
   const files = await readdir(TMP);

@@ -13,6 +13,12 @@ export const DEFAULT_WORKSPACE = Object.freeze({
   frontendProjectRoot: '',
   frontendStartCommand: '',
   verifyCommand: '',
+  agent: {
+    model: '',
+    maxTurns: 24,
+    maxBudgetUsd: null,
+    timeoutMs: 180000,
+  },
   window: { beforeMs: 3000, afterMs: 2000 },
 });
 
@@ -35,6 +41,18 @@ export function validateWorkspace(value) {
       ? value.extraSourceRoots.map(String).map((item) => item.trim()).filter(Boolean)
       : [],
     logParser: String(value.logParser ?? 'auto'),
+    agent: (() => {
+      const raw = isObject(value.agent) ? value.agent : {};
+      const maxTurns = Number(raw.maxTurns === undefined ? DEFAULT_WORKSPACE.agent.maxTurns : raw.maxTurns);
+      const maxBudget = Number(raw.maxBudgetUsd === undefined ? null : raw.maxBudgetUsd);
+      const timeout = Number(raw.timeoutMs === undefined ? DEFAULT_WORKSPACE.agent.timeoutMs : raw.timeoutMs);
+      return {
+        model: String(raw.model ?? ''),
+        maxTurns: Number.isFinite(maxTurns) && maxTurns > 0 ? Math.floor(maxTurns) : null,
+        maxBudgetUsd: Number.isFinite(maxBudget) && maxBudget > 0 ? maxBudget : null,
+        timeoutMs: Number.isFinite(timeout) && timeout > 0 ? Math.floor(timeout) : 180000,
+      };
+    })(),
     frontendSourceRoot: String(value.frontendSourceRoot ?? ''),
     frontendProjectRoot: String(value.frontendProjectRoot ?? ''),
     frontendStartCommand: String(value.frontendStartCommand ?? ''),
