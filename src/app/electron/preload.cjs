@@ -11,6 +11,7 @@ const CHANNELS = new Set([
   'dc:fixes',
   'dc:verify',
   'dc:followup',
+  'dc:profiles',
 ]);
 
 const EVENTS = new Set([

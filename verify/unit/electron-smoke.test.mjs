@@ -171,7 +171,7 @@ test('electron shell boots, captures, routes and diagnoses', {
   assert.match(stdout, /"advancedTogglePresent":true/);
   assert.match(stdout, /"advancedHiddenByDefault":true/);
   assert.match(stdout, /"advancedExpand":true/);
-  assert.match(stdout, /"extraSourceRootsFieldPresent":true,"logParserFieldPresent":true,"modelModalPresent":true,"logToolbar":\{"row":true,"anchorText":"[^"]+"/);
+  assert.match(stdout, /"extraSourceRootsFieldPresent":true,"logParserFieldPresent":true,"modelModalPresent":true,"profileBarPresent":true,"logToolbar":\{"row":true,"anchorText":"[^"]+"/);
   assert.match(stdout, /"allowExtraSourcesPresent":true,"allowExtraSourcesDefault":true/);
   assert.match(stdout, /"devServerControlsPresent":true/);
   assert.match(stdout, /"singleDiagnoseButton":true/);

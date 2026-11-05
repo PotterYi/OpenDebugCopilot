@@ -131,6 +131,7 @@ export function validateRouting(value) {
 export function createStore({ configDir = path.resolve('configs') } = {}) {
   const workspacePath = path.join(configDir, 'workspace.json');
   const routingPath = path.join(configDir, 'routing.json');
+  const profilesPath = path.join(configDir, 'profiles.json');
 
   async function readJson(file, fallback) {
     let text;
@@ -154,25 +155,167 @@ export function createStore({ configDir = path.resolve('configs') } = {}) {
     await rename(tmp, file);
   }
 
+  function normalizeProfiles(value) {
+    const rawProfiles = Array.isArray(value?.profiles) ? value.profiles : [];
+    const profiles = rawProfiles
+      .filter(isObject)
+      .map((profile) => ({
+        id: String(profile.id ?? '').trim(),
+        name: String(profile.name ?? '').trim() || '未命名配置',
+        workspace: isObject(profile.workspace) ? profile.workspace : undefined,
+        routing: isObject(profile.routing) ? profile.routing : undefined,
+        createdAt: Number(profile.createdAt) || Date.now(),
+        updatedAt: Number(profile.updatedAt) || Date.now(),
+      }))
+      .filter((profile) => profile.id);
+    let activeId = value?.activeId ? String(value.activeId) : null;
+    if (!profiles.some((profile) => profile.id === activeId)) activeId = null;
+    return { activeId, profiles };
+  }
+
+  async function readProfiles() {
+    return normalizeProfiles(await readJson(profilesPath, { activeId: null, profiles: [] }));
+  }
+
+  async function writeProfiles(state) {
+    await writeJsonAtomic(profilesPath, state);
+  }
+
+  function summary(state) {
+    return {
+      activeId: state.activeId,
+      profiles: state.profiles.map((profile) => ({
+        id: profile.id,
+        name: profile.name,
+        frontendUrl: profile.workspace?.frontendUrl ?? '',
+        backendUrl: profile.workspace?.backendUrl ?? '',
+        createdAt: profile.createdAt,
+        updatedAt: profile.updatedAt,
+      })),
+    };
+  }
+
+  async function getWorkspace() {
+    return validateWorkspace(await readJson(workspacePath, DEFAULT_WORKSPACE));
+  }
+
+  async function getRouting() {
+    return validateRouting(await readJson(routingPath, DEFAULT_ROUTING));
+  }
+
+  async function rememberActive(patch) {
+    const state = await readProfiles();
+    const active = state.profiles.find((profile) => profile.id === state.activeId);
+    if (!active) return;
+    if (patch.workspace) active.workspace = patch.workspace;
+    if (patch.routing) active.routing = patch.routing;
+    active.updatedAt = Date.now();
+    await writeProfiles(state);
+  }
+
+  async function saveWorkspace(value) {
+    const workspace = validateWorkspace(value);
+    await writeJsonAtomic(workspacePath, workspace);
+    await rememberActive({ workspace });
+    return workspace;
+  }
+
+  async function saveRouting(value) {
+    const routing = validateRouting(value);
+    // Warnings are derived on every load; do not persist them.
+    await writeJsonAtomic(routingPath, { rules: routing.rules });
+    await rememberActive({ routing: { rules: routing.rules } });
+    return routing;
+  }
+
+  async function listProfiles() {
+    return summary(await readProfiles());
+  }
+
+  async function createProfile(name, snapshot = {}) {
+    const profileName = String(name ?? '').trim();
+    if (!profileName) throw new AppError('PROFILE_NAME_REQUIRED', 'Profile name is required', { exitCode: 2 });
+    const workspace = snapshot.workspace !== undefined
+      ? validateWorkspace(snapshot.workspace)
+      : await getWorkspace();
+    const routing = snapshot.routing !== undefined
+      ? validateRouting(snapshot.routing)
+      : { rules: (await getRouting()).rules };
+    const state = await readProfiles();
+    const now = Date.now();
+    const id = `profile-${now.toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    state.profiles.push({
+      id,
+      name: profileName,
+      workspace,
+      routing: { rules: routing.rules },
+      createdAt: now,
+      updatedAt: now,
+    });
+    state.activeId = id;
+    // Saving as a new profile should not mutate the previously active profile.
+    await writeJsonAtomic(workspacePath, workspace);
+    await writeJsonAtomic(routingPath, { rules: routing.rules });
+    await writeProfiles(state);
+    return summary(state);
+  }
+
+  async function switchProfile(id) {
+    const state = await readProfiles();
+    const profile = state.profiles.find((item) => item.id === id);
+    if (!profile) throw new AppError('PROFILE_NOT_FOUND', `Profile not found: ${id}`, { exitCode: 3 });
+    const workspace = validateWorkspace(profile.workspace ?? DEFAULT_WORKSPACE);
+    const routing = validateRouting(profile.routing ?? DEFAULT_ROUTING);
+    await writeJsonAtomic(workspacePath, workspace);
+    await writeJsonAtomic(routingPath, { rules: routing.rules });
+    state.activeId = id;
+    await writeProfiles(state);
+    return { workspace, routing };
+  }
+
+  async function renameProfile(id, name) {
+    const profileName = String(name ?? '').trim();
+    if (!profileName) throw new AppError('PROFILE_NAME_REQUIRED', 'Profile name is required', { exitCode: 2 });
+    const state = await readProfiles();
+    const profile = state.profiles.find((item) => item.id === id);
+    if (!profile) throw new AppError('PROFILE_NOT_FOUND', `Profile not found: ${id}`, { exitCode: 3 });
+    profile.name = profileName;
+    profile.updatedAt = Date.now();
+    await writeProfiles(state);
+    return summary(state);
+  }
+
+  async function deleteProfile(id) {
+    const state = await readProfiles();
+    const index = state.profiles.findIndex((item) => item.id === id);
+    if (index < 0) throw new AppError('PROFILE_NOT_FOUND', `Profile not found: ${id}`, { exitCode: 3 });
+    const [removed] = state.profiles.splice(index, 1);
+    if (state.activeId === id) {
+      const fallback = state.profiles[0] ?? null;
+      state.activeId = fallback?.id ?? null;
+      if (fallback) {
+        const workspace = validateWorkspace(fallback.workspace ?? DEFAULT_WORKSPACE);
+        const routing = validateRouting(fallback.routing ?? DEFAULT_ROUTING);
+        await writeJsonAtomic(workspacePath, workspace);
+        await writeJsonAtomic(routingPath, { rules: routing.rules });
+      }
+    }
+    await writeProfiles(state);
+    return { ...summary(state), deleted: removed.id };
+  }
+
   return {
     workspacePath,
     routingPath,
-    async getWorkspace() {
-      return validateWorkspace(await readJson(workspacePath, DEFAULT_WORKSPACE));
-    },
-    async saveWorkspace(value) {
-      const workspace = validateWorkspace(value);
-      await writeJsonAtomic(workspacePath, workspace);
-      return workspace;
-    },
-    async getRouting() {
-      return validateRouting(await readJson(routingPath, DEFAULT_ROUTING));
-    },
-    async saveRouting(value) {
-      const routing = validateRouting(value);
-      // Warnings are derived on every load; do not persist them.
-      await writeJsonAtomic(routingPath, { rules: routing.rules });
-      return routing;
-    },
+    profilesPath,
+    getWorkspace,
+    saveWorkspace,
+    getRouting,
+    saveRouting,
+    listProfiles,
+    createProfile,
+    switchProfile,
+    renameProfile,
+    deleteProfile,
   };
 }

@@ -30,8 +30,8 @@ function sendJson(res, status, payload) {
 
 function httpStatusFor(err) {
   if (!(err instanceof AppError)) return 500;
-  if (['CONFIG_INVALID', 'RUN_ID_INVALID', 'BODY_INVALID_JSON', 'BODY_TOO_LARGE'].includes(err.code)) return 400;
-  if (err.code === 'RUN_NOT_FOUND') return 404;
+  if (['CONFIG_INVALID', 'RUN_ID_INVALID', 'BODY_INVALID_JSON', 'BODY_TOO_LARGE', 'PROFILE_NAME_REQUIRED'].includes(err.code)) return 400;
+  if (['RUN_NOT_FOUND', 'PROFILE_NOT_FOUND'].includes(err.code)) return 404;
   return 500;
 }
 
@@ -100,6 +100,43 @@ export async function startServer({ service, uiDir, host = '127.0.0.1', port = 7
         }
         sendJson(res, 405, { error: 'method_not_allowed' });
         return;
+      }
+      if (pathname === '/api/profiles') {
+        if (req.method === 'GET') {
+          sendJson(res, 200, await service.listProfiles());
+          return;
+        }
+        if (req.method === 'POST') {
+          const body = await readJsonBody(req);
+          await service.createProfile(body?.name, {
+            workspace: body?.workspace,
+            routing: body?.routing,
+          });
+          sendJson(res, 200, { config: await service.getConfig(), profiles: await service.listProfiles() });
+          return;
+        }
+        sendJson(res, 405, { error: 'method_not_allowed' });
+        return;
+      }
+      const profileMatch = pathname.match(/^\/api\/profiles\/([^/]+)(\/activate)?$/);
+      if (profileMatch) {
+        const profileId = decodeURIComponent(profileMatch[1]);
+        if (req.method === 'POST' && profileMatch[2]) {
+          await service.switchProfile(profileId);
+          sendJson(res, 200, { config: await service.getConfig(), profiles: await service.listProfiles() });
+          return;
+        }
+        if (req.method === 'PATCH') {
+          const body = await readJsonBody(req);
+          await service.renameProfile(profileId, body?.name);
+          sendJson(res, 200, { config: await service.getConfig(), profiles: await service.listProfiles() });
+          return;
+        }
+        if (req.method === 'DELETE') {
+          await service.deleteProfile(profileId);
+          sendJson(res, 200, { config: await service.getConfig(), profiles: await service.listProfiles() });
+          return;
+        }
       }
       if (pathname === '/api/runs' && req.method === 'GET') {
         sendJson(res, 200, { runs: await service.listRuns() });

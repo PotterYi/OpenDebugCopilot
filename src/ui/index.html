@@ -19,6 +19,13 @@
   <main class="layout">
     <section class="panel">
       <h2>工作区</h2>
+      <div class="profile-bar">
+        <span class="muted small">配置</span>
+        <select id="profile-select" title="切换工作区配置"></select>
+        <button id="profile-save-as" type="button" class="secondary">保存为…</button>
+        <button id="profile-rename" type="button" class="secondary" disabled>重命名</button>
+        <button id="profile-delete" type="button" class="secondary" disabled>删除</button>
+      </div>
       <form id="config-form" class="form">
         <label>后端地址（本地）
           <input name="backendUrl" placeholder="http://127.0.0.1:8080" />
@@ -224,6 +231,20 @@
       </div>
     </section>
   </main>
+
+  <div id="profile-modal" class="modal-backdrop" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="profile-modal-title">
+      <h2 id="profile-modal-title">保存工作区配置</h2>
+      <label>配置名称
+        <input id="profile-name-input" placeholder="例如：本地订单服务 / 测试环境" />
+      </label>
+      <p class="muted small">会同时保存当前工作区与路由规则。</p>
+      <div class="modal-actions">
+        <button id="profile-modal-save" type="button">保存</button>
+        <button id="profile-modal-cancel" type="button" class="secondary">取消</button>
+      </div>
+    </div>
+  </div>
 
   <div id="model-modal" class="modal-backdrop" hidden>
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="model-modal-title">

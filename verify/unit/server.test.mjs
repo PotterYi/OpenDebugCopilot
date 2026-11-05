@@ -100,3 +100,53 @@ test('reports EADDRINUSE when the port is already taken', async (t) => {
     (err) => err.code === 'EADDRINUSE',
   );
 });
+
+test('manages workspace profiles over HTTP', async (t) => {
+  const DIR = path.join(TMP, 'profiles');
+  await rm(DIR, { recursive: true, force: true });
+  await mkdir(DIR, { recursive: true });
+  t.after(async () => { await rm(DIR, { recursive: true, force: true }); });
+  const service = createService({ root: DIR, configDir: path.join(DIR, 'configs'), runsDir: path.join(DIR, 'runs') });
+  const server = await startServer({ service, uiDir: UI_DIR, port: 0 });
+  t.after(async () => { await server.close(); });
+
+  const workspace = (port) => ({
+    frontendUrl: `http://localhost:${port}`,
+    backendUrl: 'http://127.0.0.1:8080',
+    logfiles: [],
+    window: { beforeMs: 3000, afterMs: 2000 },
+  });
+  const create = (name, port) => fetch(`${server.url}/api/profiles`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, workspace: workspace(port), routing: { rules: [] } }),
+  }).then((r) => r.json());
+
+  const a = await create('A', 5173);
+  const b = await create('B', 6000);
+  assert.equal(a.profiles.profiles.length, 1);
+  assert.equal(b.profiles.profiles.length, 2);
+  const profileA = b.profiles.profiles.find((profile) => profile.name === 'A');
+  const profileB = b.profiles.profiles.find((profile) => profile.name === 'B');
+  assert.equal(b.profiles.activeId, profileB.id);
+
+  const activated = await fetch(`${server.url}/api/profiles/${profileA.id}/activate`, { method: 'POST' })
+    .then((r) => r.json());
+  assert.equal(activated.config.workspace.frontendUrl, 'http://localhost:5173');
+
+  const renamed = await fetch(`${server.url}/api/profiles/${profileA.id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'A renamed' }),
+  }).then((r) => r.json());
+  assert.equal(renamed.profiles.profiles.find((profile) => profile.id === profileA.id).name, 'A renamed');
+
+  const deletedB = await fetch(`${server.url}/api/profiles/${profileB.id}`, { method: 'DELETE' })
+    .then((r) => r.json());
+  assert.equal(deletedB.profiles.profiles.length, 1);
+
+  const deletedA = await fetch(`${server.url}/api/profiles/${profileA.id}`, { method: 'DELETE' })
+    .then((r) => r.json());
+  assert.equal(deletedA.profiles.activeId, null);
+  assert.deepEqual(deletedA.profiles.profiles, []);
+});

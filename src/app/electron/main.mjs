@@ -189,6 +189,42 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
     throw new Error(`dc:config: unknown action ${payload.action}`);
   });
 
+  handle('dc:profiles', async (_event, payload = {}) => {
+    switch (payload.action) {
+      case 'list':
+        return service.listProfiles();
+      case 'create': {
+        const config = await service.createProfile(payload.name, {
+          workspace: payload.workspace,
+          routing: payload.routing,
+        });
+        setRules(config.routing.rules);
+        getRouter()?.apply();
+        return { config, profiles: await service.listProfiles() };
+      }
+      case 'switch': {
+        const config = await service.switchProfile(payload.profileId);
+        setRules(config.routing.rules);
+        getRouter()?.apply();
+        await getDevServer()?.stop();
+        return { config, profiles: await service.listProfiles() };
+      }
+      case 'rename': {
+        const config = await service.renameProfile(payload.profileId, payload.name);
+        return { config, profiles: await service.listProfiles() };
+      }
+      case 'delete': {
+        const config = await service.deleteProfile(payload.profileId);
+        setRules(config.routing.rules);
+        getRouter()?.apply();
+        await getDevServer()?.stop();
+        return { config, profiles: await service.listProfiles() };
+      }
+      default:
+        throw new Error(`dc:profiles: unknown action ${payload.action}`);
+    }
+  });
+
   handle('dc:runs', async (_event, payload = {}) => {
     if (payload.action === 'list') return { runs: await service.listRuns() };
     if (payload.action === 'get') return service.getRun(payload.runId);
@@ -850,6 +886,8 @@ async function runSmoke(window, host) {
           extraSourceRootsFieldPresent: Boolean(document.querySelector('[name="extraSourceRoots"]')),
           logParserFieldPresent: Boolean(document.querySelector('[name="logParser"]')),
           modelModalPresent: Boolean(document.getElementById('model-modal')),
+          profileBarPresent: Boolean(document.getElementById('profile-select'))
+            && Boolean(document.getElementById('profile-save-as')),
           logToolbar: (() => {
             document.querySelector('[data-tab="logs"]').click();
             const parser = document.getElementById('log-parser');

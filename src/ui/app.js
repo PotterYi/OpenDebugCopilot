@@ -48,6 +48,12 @@ const diagnoseProgressEl = $('diagnose-progress');
 const consoleList = $('console-list');
 const consoleCount = $('console-count');
 const diagnoseResult = $('diagnose-result');
+const profileSelect = $('profile-select');
+const profileSaveAsBtn = $('profile-save-as');
+const profileRenameBtn = $('profile-rename');
+const profileDeleteBtn = $('profile-delete');
+const profileModal = $('profile-modal');
+const profileNameInput = $('profile-name-input');
 const modelModal = $('model-modal');
 const modelNameInput = $('model-name');
 const modelMaxTurnsInput = $('model-max-turns');
@@ -71,6 +77,9 @@ let devServerState = null;
 let devServerLogLines = [];
 let currentRunView = null;
 let selectedRunId = null;
+let profilesState = { activeId: null, profiles: [] };
+let profileModalMode = 'create';
+let profileModalTargetId = null;
 let diagnoseProgressSteps = [];
 let followUpProgressContext = null;
 const MAX_DEV_LOG_LINES = 300;
@@ -133,6 +142,115 @@ function readForm() {
   };
 }
 
+function renderProfiles() {
+  profileSelect.textContent = '';
+  if (profilesState.profiles.length === 0) {
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = '当前配置（未保存）';
+    profileSelect.append(option);
+    profileSelect.value = '';
+  } else {
+    if (!profilesState.activeId) {
+      const option = document.createElement('option');
+      option.value = '';
+      option.textContent = '当前配置（未保存）';
+      profileSelect.append(option);
+    }
+    for (const profile of profilesState.profiles) {
+      const option = document.createElement('option');
+      option.value = profile.id;
+      option.textContent = profile.name;
+      option.title = [profile.frontendUrl, profile.backendUrl].filter(Boolean).join(' · ');
+      profileSelect.append(option);
+    }
+    profileSelect.value = profilesState.activeId ?? '';
+  }
+  const hasActive = profilesState.profiles.some((profile) => profile.id === profilesState.activeId);
+  profileRenameBtn.disabled = !hasActive;
+  profileDeleteBtn.disabled = !hasActive;
+}
+
+async function loadProfiles() {
+  try {
+    profilesState = await api.listProfiles();
+  } catch (error) {
+    profilesState = { activeId: null, profiles: [] };
+    setStatus(`读取配置列表失败：${error.message}`, 'error');
+  }
+  renderProfiles();
+}
+
+function openProfileModal(mode, profileId = null) {
+  profileModalMode = mode;
+  profileModalTargetId = profileId;
+  const profile = profilesState.profiles.find((item) => item.id === profileId);
+  $('profile-modal-title').textContent = mode === 'rename' ? '重命名工作区配置' : '保存工作区配置';
+  profileNameInput.value = mode === 'rename' ? (profile?.name ?? '') : '';
+  profileModal.hidden = false;
+  profileNameInput.focus();
+  profileNameInput.select();
+}
+
+async function submitProfileName() {
+  const name = profileNameInput.value.trim();
+  if (!name) {
+    setStatus('配置名称不能为空', 'error');
+    return;
+  }
+  try {
+    if (profileModalMode === 'rename') {
+      await api.renameProfile(profileModalTargetId, name);
+      profileModal.hidden = true;
+      await loadConfig();
+      setStatus(`配置已重命名为 ${name}`, 'ok');
+    } else {
+      await api.createProfile(name, {
+        workspace: readForm().workspace,
+        routing: { rules: collectRules() },
+      });
+      profileModal.hidden = true;
+      await loadConfig();
+      setStatus(`已保存配置 ${name}`, 'ok');
+    }
+  } catch (error) {
+    setStatus(`保存配置失败：${error.message}`, 'error');
+  }
+}
+
+async function switchProfileById(profileId) {
+  if (!profileId || profileId === profilesState.activeId) return;
+  const profile = profilesState.profiles.find((item) => item.id === profileId);
+  setStatus(`正在切换配置${profile ? `：${profile.name}` : ''}…`);
+  try {
+    await api.switchProfile(profileId);
+    await loadConfig();
+    if (configCache?.workspace?.frontendUrl) {
+      browserUrlInput.value = configCache.workspace.frontendUrl;
+    }
+    setStatus(`已切换配置${profile ? `：${profile.name}` : ''}`, 'ok');
+  } catch (error) {
+    setStatus(`切换配置失败：${error.message}`, 'error');
+    await loadProfiles();
+  }
+}
+
+async function deleteSelectedProfile() {
+  const profile = profilesState.profiles.find((item) => item.id === profileSelect.value);
+  if (!profile) return;
+  const suffix = profile.id === profilesState.activeId
+    ? '\n\n这是当前配置，删除后会切换到其他配置（若存在）。'
+    : '';
+  if (!window.confirm(`删除配置 ${profile.name}？${suffix}`)) return;
+  try {
+    await api.deleteProfile(profile.id);
+    await loadConfig();
+    setStatus(`已删除配置 ${profile.name}`, 'ok');
+  } catch (error) {
+    setStatus(`删除配置失败：${error.message}`, 'error');
+  }
+}
+
 async function loadConfig() {
   try {
     const config = await api.getConfig();
@@ -141,6 +259,7 @@ async function loadConfig() {
     routingWarnings = config.routing?.warnings ?? [];
     fillForm(config);
     renderRouting();
+    loadProfiles().catch(() => {});
     refreshTargetCandidates().catch(() => {});
     refreshDevServer().catch(() => {});
     renderLogSource(config.workspace?.logfiles ?? []);
@@ -1753,8 +1872,26 @@ $('model-cancel').addEventListener('click', closeModelModal);
 modelModal.addEventListener('click', (event) => {
   if (event.target === modelModal) closeModelModal();
 });
+
+profileSaveAsBtn.addEventListener('click', () => openProfileModal('create'));
+profileRenameBtn.addEventListener('click', () => openProfileModal('rename', profilesState.activeId));
+profileDeleteBtn.addEventListener('click', deleteSelectedProfile);
+profileSelect.addEventListener('change', () => switchProfileById(profileSelect.value));
+$('profile-modal-save').addEventListener('click', submitProfileName);
+$('profile-modal-cancel').addEventListener('click', () => { profileModal.hidden = true; });
+profileNameInput.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    submitProfileName();
+  }
+});
+profileModal.addEventListener('click', (event) => {
+  if (event.target === profileModal) profileModal.hidden = true;
+});
 window.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape' && !modelModal.hidden) closeModelModal();
+  if (event.key !== 'Escape') return;
+  if (!profileModal.hidden) profileModal.hidden = true;
+  else if (!modelModal.hidden) closeModelModal();
 });
 
 api.onModelSettings(openModelModal);
@@ -1780,6 +1917,7 @@ form.addEventListener('submit', async (event) => {
     if (saved.meta?.configDir) configPath.textContent = `配置目录：${saved.meta.configDir}`;
     setMessage(saved.meta?.configDir ? `已保存到 ${saved.meta.configDir}` : '已保存', 'ok');
     if (logParser) logParser.value = saved.workspace?.logParser ?? 'auto';
+    loadProfiles().catch(() => {});
     refreshDevServer().catch(() => {});
     if (currentRunView) renderRunInto(currentRunView);
   } catch (err) {

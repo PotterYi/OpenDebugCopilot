@@ -133,3 +133,64 @@ test('warns and falls back to local for an unknown target kind', async (t) => {
   assert.equal(routing.rules[0].target.kind, 'local');
   assert.equal(routing.warnings[0].code, 'UNKNOWN_TARGET_KIND');
 });
+
+test('manages multiple workspace profiles', async (t) => {
+  await rm(TMP, { recursive: true, force: true });
+  t.after(async () => { await rm(TMP, { recursive: true, force: true }); });
+  const store = createStore({ configDir: TMP });
+  const workspaceA = {
+    frontendUrl: 'http://localhost:5173',
+    backendUrl: 'http://127.0.0.1:8080',
+    logfiles: ['logs/a.log'],
+    window: { beforeMs: 3000, afterMs: 2000 },
+  };
+  const workspaceB = {
+    frontendUrl: 'http://localhost:6000',
+    backendUrl: 'http://127.0.0.1:9090',
+    logfiles: ['logs/b.log'],
+    window: { beforeMs: 4000, afterMs: 1000 },
+  };
+  const ruleA = { id: 'rule-a', match: { prefix: '/a' }, target: { kind: 'local', baseUrl: 'http://localhost:8080' } };
+  const ruleB = { id: 'rule-b', match: { prefix: '/b' }, target: { kind: 'sit' } };
+
+  const createdA = await store.createProfile('A', {
+    workspace: workspaceA,
+    routing: { rules: [ruleA] },
+  });
+  const profileA = createdA.profiles.find((profile) => profile.name === 'A');
+  assert.equal(createdA.activeId, profileA.id);
+
+  const createdB = await store.createProfile('B', {
+    workspace: workspaceB,
+    routing: { rules: [ruleB] },
+  });
+  const profileB = createdB.profiles.find((profile) => profile.name === 'B');
+  assert.equal(createdB.activeId, profileB.id);
+
+  await store.saveWorkspace({ ...workspaceB, frontendUrl: 'http://localhost:6001' });
+  const switchedA = await store.switchProfile(profileA.id);
+  assert.equal(switchedA.workspace.frontendUrl, 'http://localhost:5173');
+  assert.equal(switchedA.routing.rules[0].id, 'rule-a');
+
+  await store.saveWorkspace({ ...workspaceA, frontendUrl: 'http://localhost:5174' });
+  const switchedB = await store.switchProfile(profileB.id);
+  assert.equal(switchedB.workspace.frontendUrl, 'http://localhost:6001');
+  assert.equal(switchedB.routing.rules[0].id, 'rule-b');
+
+  const switchedBack = await store.switchProfile(profileA.id);
+  assert.equal(switchedBack.workspace.frontendUrl, 'http://localhost:5174');
+  assert.equal(switchedBack.routing.rules[0].id, 'rule-a');
+
+  await store.renameProfile(profileA.id, 'A renamed');
+  const renamed = await store.listProfiles();
+  assert.equal(renamed.profiles.find((profile) => profile.id === profileA.id).name, 'A renamed');
+
+  const deletedA = await store.deleteProfile(profileA.id);
+  assert.equal(deletedA.activeId, profileB.id);
+  const afterDelete = await store.getWorkspace();
+  assert.equal(afterDelete.frontendUrl, 'http://localhost:6001');
+
+  const deletedB = await store.deleteProfile(profileB.id);
+  assert.equal(deletedB.activeId, null);
+  assert.deepEqual(deletedB.profiles, []);
+});

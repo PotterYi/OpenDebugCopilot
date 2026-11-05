@@ -105,6 +105,30 @@ export function createService({ root = process.cwd(), configDir, runsDir } = {})
     return { runId, deleted: true };
   }
 
+  async function listProfiles() {
+    return store.listProfiles();
+  }
+
+  async function createProfile(name, snapshot = {}) {
+    await store.createProfile(name, snapshot);
+    return getConfig();
+  }
+
+  async function switchProfile(id) {
+    await store.switchProfile(id);
+    return getConfig();
+  }
+
+  async function renameProfile(id, name) {
+    await store.renameProfile(id, name);
+    return getConfig();
+  }
+
+  async function deleteProfile(id) {
+    await store.deleteProfile(id);
+    return getConfig();
+  }
+
   return {
     root,
     runsRoot,
@@ -115,5 +139,10 @@ export function createService({ root = process.cwd(), configDir, runsDir } = {})
     listRuns,
     getRun,
     deleteRun,
+    listProfiles,
+    createProfile,
+    switchProfile,
+    renameProfile,
+    deleteProfile,
   };
 }

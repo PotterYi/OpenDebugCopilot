@@ -57,6 +57,26 @@ export const api = {
     if (dc?.invoke) return dc.invoke('dc:diagnose', payload);
     return http('/api/diagnose', { method: 'POST', body: JSON.stringify(payload) });
   },
+  async listProfiles() {
+    if (dc?.invoke) return dc.invoke('dc:profiles', { action: 'list' });
+    return http('/api/profiles');
+  },
+  async createProfile(name, snapshot = {}) {
+    if (dc?.invoke) return dc.invoke('dc:profiles', { action: 'create', name, ...snapshot });
+    return http('/api/profiles', { method: 'POST', body: JSON.stringify({ name, ...snapshot }) });
+  },
+  async switchProfile(profileId) {
+    if (dc?.invoke) return dc.invoke('dc:profiles', { action: 'switch', profileId });
+    return http(`/api/profiles/${encodeURIComponent(profileId)}/activate`, { method: 'POST' });
+  },
+  async renameProfile(profileId, name) {
+    if (dc?.invoke) return dc.invoke('dc:profiles', { action: 'rename', profileId, name });
+    return http(`/api/profiles/${encodeURIComponent(profileId)}`, { method: 'PATCH', body: JSON.stringify({ name }) });
+  },
+  async deleteProfile(profileId) {
+    if (dc?.invoke) return dc.invoke('dc:profiles', { action: 'delete', profileId });
+    return http(`/api/profiles/${encodeURIComponent(profileId)}`, { method: 'DELETE' });
+  },
   async devServer(action, payload = {}) {
     if (!dc?.invoke) return { pending: true };
     return dc.invoke('dc:devserver', { action, ...payload });

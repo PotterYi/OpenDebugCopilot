@@ -53,6 +53,25 @@ body {
 .panel.grow { display: flex; flex-direction: column; }
 .panel h2 { margin: 0 0 12px; font-size: 14px; font-weight: 600; }
 .panel-head { display: flex; align-items: center; justify-content: space-between; }
+.profile-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+.profile-bar select {
+  flex: 1 1 160px;
+  min-width: 0;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 6px 8px;
+  font: inherit;
+}
+.profile-bar select option { background: var(--panel-2); color: var(--text); }
+.profile-bar button { padding: 4px 8px; font-size: 11px; }
 .form { display: flex; flex-direction: column; gap: 10px; }
 .advanced-toggle { text-align: left; }
 .advanced-config {
