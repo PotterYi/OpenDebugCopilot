@@ -517,7 +517,7 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
     }
   });
 
-  handle('dc:diagnose', async (_event, payload = {}) => {
+  handle('dc:diagnose', async (event, payload = {}) => {
     const host = getHost();
     if (!host) throw new Error('browser host is not ready');
     const workspace = (await service.getConfig()).workspace;
@@ -584,15 +584,30 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
           cwd: workspace.sourceRoot ? path.resolve(ROOT, workspace.sourceRoot) : undefined,
         });
 
-    return runCaptureDiagnosis(observation, {
-      workspace,
-      root: ROOT,
-      runsDir: service.runsRoot,
-      question: payload.question ?? '',
-      recheck: payload.recheck ?? 1,
-      agent,
-      frontendErrors,
-    });
+    const sendProgress = (progress) => {
+      if (!event.sender.isDestroyed()) event.sender.send('dc:diagnose:progress', progress);
+    };
+    try {
+      return await runCaptureDiagnosis(observation, {
+        workspace,
+        root: ROOT,
+        runsDir: service.runsRoot,
+        question: payload.question ?? '',
+        recheck: payload.recheck ?? 1,
+        agent,
+        frontendErrors,
+        onProgress: sendProgress,
+      });
+    } catch (error) {
+      sendProgress({
+        id: 'error',
+        label: '诊断失败',
+        status: 'error',
+        detail: error?.message ?? String(error),
+        at: Date.now(),
+      });
+      throw error;
+    }
   });
 
   handle('dc:followup', async (_event, payload = {}) => {
@@ -783,6 +798,7 @@ async function runSmoke(window, host) {
     let captured = 0;
     let captureOk = true;
     let diagnose = null;
+    let diagnoseUi = null;
     let pageTitle = null;
     let evalResult = null;
     let consoleDiagnose = null;
@@ -833,6 +849,12 @@ async function runSmoke(window, host) {
             frontendErrors: response.result?.frontend?.errors?.length ?? 0,
           };
         })()`);
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        diagnoseUi = await window.webContents.executeJavaScript(`({
+          progressVisible: document.getElementById('diagnose-progress')?.hidden === false,
+          progressSteps: document.querySelectorAll('#diagnose-progress .diagnose-step').length,
+          lastLabel: [...document.querySelectorAll('#diagnose-progress .diagnose-step-label')].pop()?.textContent ?? '',
+        })`).catch(() => null);
       }
     }
 
@@ -866,6 +888,7 @@ async function runSmoke(window, host) {
       captureSample: sample ? { url: sample.url, status: sample.status } : null,
       captureBody: Boolean(sampleBody),
       diagnose,
+      diagnoseUi,
       consoleDiagnose,
       pageTitle,
       menuHasLog: Boolean(Menu.getApplicationMenu()?.items?.some((item) => item.label === '日志')),

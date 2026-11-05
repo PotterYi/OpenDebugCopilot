@@ -186,10 +186,29 @@ async function diagnoseWithFired({
   pollIntervalMs,
   preflight,
   startedAt,
+  onProgress = () => {},
 }) {
+  const progress = (id, label, status = 'done', detail = null) => {
+    try {
+      onProgress({ id, label, status, detail, at: Date.now() });
+    } catch {
+      // progress must never break diagnosis
+    }
+  };
+  const TOOL_LABELS = {
+    get_logs: '查询日志',
+    list_threads: '分析线程',
+    search_log: '搜索日志',
+    read_source: '读取源码',
+    search_source: '搜索源码',
+    read: '读取工具结果',
+  };
+
   const runLog = createRunLog(runDir);
   await runLog.info(`start scenario=${scenario.name} driver=${scenario.driverKind} question=${question || '-'}`);
+  progress('prepare', '整理请求与证据', 'start');
 
+  progress('logs', '关联日志与线程', 'start');
   const marker = fired.marker?.injected ? fired.marker.value : null;
   const wait = await waitForMarker({
     logfiles: paths.logfiles,
@@ -227,6 +246,8 @@ async function diagnoseWithFired({
     anchor: fired.firedAt,
     window: timeWindow,
   });
+  progress('logs', '关联日志与线程', 'done');
+  progress('source', '读取后端/前端源码', 'start');
 
   const source = await collectSource(paths.sourceRoot, logsResult.records);
   const frontendErrors = (fired.consoleErrors ?? []).slice(0, 10).map((error) => ({
@@ -243,6 +264,9 @@ async function diagnoseWithFired({
     frontendSourceRoot: frontendFixRoot,
     errors: frontendErrors,
   });
+  progress('source', '读取后端/前端源码', 'done');
+  progress('prepare', '整理请求与证据', 'done');
+
   const toolsBundle = createTools({
     scenario,
     anchor: fired.firedAt,
@@ -251,6 +275,15 @@ async function diagnoseWithFired({
     sourceRoot: paths.sourceRoot,
     frontendSourceRoot: frontendFixRoot,
     window: timeWindow,
+    onCall: (call) => {
+      const label = TOOL_LABELS[call.name] ?? call.name;
+      progress(
+        `tool-${call.id}`,
+        call.stage === 'start' ? `${label}…` : label,
+        call.stage === 'start' ? 'start' : call.error ? 'error' : 'done',
+        call.name,
+      );
+    },
   });
 
   const evidence = {
@@ -311,19 +344,38 @@ async function diagnoseWithFired({
       throw error;
     }
   };
-  const agentResult = await callAgent();
+  progress('agent', 'AI 正在分析证据', 'start');
+  let agentResult;
+  try {
+    agentResult = await callAgent();
+    progress('agent', 'AI 已给出结论', 'done');
+  } catch (error) {
+    progress('agent', 'AI 分析失败', 'error');
+    throw error;
+  }
   const agentRuns = [agentResult];
   for (let i = 1; i < recheck; i += 1) {
-    agentRuns.push(await callAgent());
+    const id = `recheck-${i}`;
+    progress(id, `第 ${i + 1}/${recheck} 轮复核`, 'start');
+    try {
+      agentRuns.push(await callAgent());
+      progress(id, `第 ${i + 1}/${recheck} 轮复核`, 'done');
+    } catch (error) {
+      progress(id, `第 ${i + 1}/${recheck} 轮复核失败`, 'error');
+      throw error;
+    }
   }
 
   // 2a: attach read-only diff previews; never write the working tree here.
+  progress('preview', '生成修复预览', 'start');
   try {
     agentResult.fixes = await buildFixPreviews(agentResult.fixes, {
       sourceRoot: paths.sourceRoot,
       frontendSourceRoot: frontendFixRoot,
     });
+    progress('preview', '生成修复预览', 'done');
   } catch (error) {
+    progress('preview', '生成修复预览失败', 'error');
     await runLog.error(`fix preview failed: ${error?.message ?? error}`);
   }
 
@@ -364,6 +416,7 @@ async function diagnoseWithFired({
   }
 
   await runLog.info(`gates=${gates.ok} recheck=${recheckInfo ? recheckInfo.verdict : 'off'}`);
+  progress('gates', '执行自检', 'done');
 
   const result = {
     meta: {
@@ -411,6 +464,7 @@ async function diagnoseWithFired({
     'utf8',
   );
   await runLog.info(`done durationMs=${Date.now() - startedAt} result=${runDir}`);
+  progress('done', '诊断完成', 'done');
 
   return { result, runDir, runId, report };
 }
@@ -427,6 +481,7 @@ export async function runDiagnosis(scenario, options = {}) {
     driverContext = {},
     window,
     preflight: preflightOverride,
+    onProgress = () => {},
   } = options;
 
   const startedAt = Date.now();
@@ -461,6 +516,7 @@ export async function runDiagnosis(scenario, options = {}) {
     pollIntervalMs,
     preflight,
     startedAt,
+    onProgress,
   });
 
 }
@@ -493,6 +549,7 @@ export async function runCaptureDiagnosis(observation, options = {}) {
     pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
     window,
     preflight: preflightOverride,
+    onProgress = () => {},
   } = options;
 
   const startedAt = Date.now();
@@ -565,5 +622,6 @@ export async function runCaptureDiagnosis(observation, options = {}) {
     pollIntervalMs,
     preflight,
     startedAt,
+    onProgress,
   });
 }

@@ -55,7 +55,9 @@ test('diagnoses a captured request without replay and correlates by business id'
     }],
   };
 
+  const progress = [];
   const { result, runDir } = await runCaptureDiagnosis(observation, {
+    onProgress: (event) => progress.push(event),
     workspace: {
       logfiles: [logFile],
       sourceRoot: path.join(ROOT, 'verify/fixtures/source'),
@@ -84,6 +86,10 @@ test('diagnoses a captured request without replay and correlates by business id'
     result.meta.fixRoots.frontendSourceRoot,
     path.join(ROOT, 'verify/fixtures/frontend'),
   );
+  for (const id of ['prepare', 'logs', 'source', 'agent', 'preview', 'done']) {
+    assert.ok(progress.some((event) => event.id === id), `missing progress step ${id}`);
+  }
+  assert.ok(progress.some((event) => event.id === 'agent' && event.status === 'done'));
 
   const persisted = JSON.parse(await readFile(path.join(runDir, 'result.json'), 'utf8'));
   assert.equal(persisted.meta.driver, 'capture');

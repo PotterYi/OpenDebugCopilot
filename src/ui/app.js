@@ -44,6 +44,7 @@ const routingList = $('routing-list');
 const routingMessage = $('routing-message');
 const diagnoseQuestion = $('diagnose-question');
 const diagnoseMessage = $('diagnose-message');
+const diagnoseProgressEl = $('diagnose-progress');
 const consoleList = $('console-list');
 const consoleCount = $('console-count');
 const diagnoseResult = $('diagnose-result');
@@ -64,6 +65,7 @@ let requestFilter = 'all';
 let devServerState = null;
 let devServerLogLines = [];
 let currentRunView = null;
+let diagnoseProgressSteps = [];
 const MAX_DEV_LOG_LINES = 300;
 const DEV_STATUS_LABELS = {
   stopped: '未启动',
@@ -1227,10 +1229,58 @@ function renderConsoleList() {
   }
 }
 
+function renderDiagnoseProgress() {
+  diagnoseProgressEl.textContent = '';
+  if (diagnoseProgressSteps.length === 0) {
+    diagnoseProgressEl.hidden = true;
+    return;
+  }
+  diagnoseProgressEl.hidden = false;
+  for (const step of diagnoseProgressSteps) {
+    const row = el('div', `diagnose-step ${step.status ?? 'start'}`);
+    const icon = step.status === 'start' ? '◌' : step.status === 'error' ? '✕' : '✓';
+    row.append(
+      el('span', 'diagnose-step-icon', icon),
+      el('span', 'diagnose-step-label', step.label ?? ''),
+    );
+    if (step.detail) {
+      const detail = el('span', 'diagnose-step-detail', step.detail);
+      detail.title = step.detail;
+      row.append(detail);
+    }
+    diagnoseProgressEl.append(row);
+  }
+  diagnoseProgressEl.scrollTop = diagnoseProgressEl.scrollHeight;
+}
+
+function upsertDiagnoseProgress(event) {
+  if (!event) return;
+  const id = event.id ?? event.label;
+  if (!id) return;
+  const existing = diagnoseProgressSteps.find((step) => step.id === id);
+  if (existing) {
+    Object.assign(existing, event, { id });
+  } else {
+    diagnoseProgressSteps.push({ ...event, id });
+    if (diagnoseProgressSteps.length > 40) {
+      diagnoseProgressSteps = diagnoseProgressSteps.slice(-40);
+    }
+  }
+  renderDiagnoseProgress();
+}
+
+function resetDiagnoseProgress() {
+  diagnoseProgressSteps = [];
+  diagnoseProgressEl.textContent = '';
+  diagnoseProgressEl.hidden = true;
+}
+
 async function runDiagnosisPayload(payload, label) {
   diagnoseMessage.textContent = `${label}诊断中…`;
   diagnoseMessage.className = 'muted';
   diagnoseResult.hidden = true;
+  resetDiagnoseProgress();
+  upsertDiagnoseProgress({ id: 'client-start', label: `${label}诊断已开始`, status: 'start' });
   const button = $('diagnose-request');
   button.disabled = true;
   try {
@@ -1240,11 +1290,17 @@ async function runDiagnosisPayload(payload, label) {
       mock: false,
       recheck: 1,
     });
+    if (!diagnoseProgressSteps.some((step) => step.id === 'done')) {
+      upsertDiagnoseProgress({ id: 'client-done', label: '诊断完成', status: 'done' });
+    }
     renderDiagnosis(response);
     diagnoseMessage.textContent = '诊断完成';
     diagnoseMessage.className = 'message ok';
     await loadRuns();
   } catch (err) {
+    if (!diagnoseProgressSteps.some((step) => step.id === 'error')) {
+      upsertDiagnoseProgress({ id: 'client-error', label: '诊断失败', status: 'error', detail: err.message });
+    }
     diagnoseMessage.textContent = `诊断失败：${err.message}`;
     diagnoseMessage.className = 'message error';
   } finally {
@@ -1593,6 +1649,10 @@ $('save-routing').addEventListener('click', saveRouting);
 for (const tab of document.querySelectorAll('.tab')) {
   tab.addEventListener('click', () => setTab(tab.dataset.tab));
 }
+
+api.onDiagnoseProgress((progress) => {
+  upsertDiagnoseProgress(progress);
+});
 
 api.onDevServer((event) => {
   if (event.type === 'state') {

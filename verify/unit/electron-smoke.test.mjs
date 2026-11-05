@@ -179,6 +179,7 @@ test('electron shell boots, captures, routes and diagnoses', {
   assert.match(stdout, /"isLoading":false/);
   assert.match(stdout, /"captureBody":true/);
   assert.match(stdout, /"diagnose":\{"ok":true/);
+  assert.match(stdout, /"diagnoseUi":\{"progressVisible":true,"progressSteps":[1-9]\d*/);
   assert.match(stdout, /"gates":true/);
   assert.match(stdout, /"frontendErrors":[1-9]/);
   assert.match(stdout, /"consoleDiagnose":\{"ok":true/);

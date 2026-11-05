@@ -102,7 +102,8 @@ export function toolSpecs() {
  *   sourceRoot?: string | null,
  *   frontendSourceRoot?: string | null,
  *   window?: { beforeMs: number, afterMs: number },
- *   limitBytes?: number
+ *   limitBytes?: number,
+ *   onCall?: (event: { id: number, stage: 'start'|'done', name: string, error?: boolean, durationMs?: number }) => void
  * }} options
  */
 export function createTools({
@@ -114,6 +115,7 @@ export function createTools({
   frontendSourceRoot,
   window,
   limitBytes = DEFAULT_MAX_RESULT_BYTES,
+  onCall = null,
 }) {
   const paths = resolveScenarioPaths(scenario);
   const files = logfiles ?? paths.logfiles;
@@ -161,16 +163,23 @@ export function createTools({
 
   async function safe(name, fn, args = {}) {
     const started = Date.now();
+    const id = calls.length + 1;
     try {
+      onCall?.({ id, stage: 'start', name });
       const result = await fn(args);
-      calls.push({ name, args, result: summarizeCallResult(result), durationMs: Date.now() - started });
+      const durationMs = Date.now() - started;
+      calls.push({ name, args, result: summarizeCallResult(result), durationMs });
+      onCall?.({ id, stage: 'done', name, durationMs });
       return result;
     } catch (err) {
       if (err instanceof AppError) {
         const payload = { error: true, code: err.code, message: err.message };
-        calls.push({ name, args, result: payload, durationMs: Date.now() - started, error: true });
+        const durationMs = Date.now() - started;
+        calls.push({ name, args, result: payload, durationMs, error: true });
+        onCall?.({ id, stage: 'done', name, durationMs, error: true });
         return payload;
       }
+      onCall?.({ id, stage: 'done', name, durationMs: Date.now() - started, error: true });
       throw err;
     }
   }

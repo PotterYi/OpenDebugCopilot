@@ -295,6 +295,32 @@ button:hover { filter: brightness(1.08); }
   padding: 12px;
   font-size: 13px;
 }
+.diagnose-progress {
+  flex: none;
+  max-height: 150px;
+  overflow: auto;
+  margin-bottom: 8px;
+  padding: 7px 9px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+}
+.diagnose-step { display: flex; align-items: baseline; gap: 6px; padding: 1px 0; color: var(--muted); }
+.diagnose-step-icon { flex: none; width: 12px; color: #5bd693; }
+.diagnose-step.start { color: var(--text); }
+.diagnose-step.start .diagnose-step-icon { color: var(--accent); display: inline-block; animation: dc-spin 1s linear infinite; }
+.diagnose-step.error { color: var(--danger); }
+.diagnose-step.error .diagnose-step-icon { color: var(--danger); }
+.diagnose-step-label { flex: none; }
+.diagnose-step-detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 11px;
+}
+@keyframes dc-spin { to { transform: rotate(360deg); } }
 .card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
 .badge {
   display: inline-block;

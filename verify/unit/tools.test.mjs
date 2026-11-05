@@ -72,12 +72,14 @@ test('oversized tool results spill to disk and can be read back', async (t) => {
 test('reads and searches frontend source with root=frontend', async (t) => {
   t.after(async () => { await rm(RUN_DIR, { recursive: true, force: true }); });
   const frontendSourceRoot = path.join(FIXTURES, 'frontend');
+  const calls = [];
   const { tools } = createTools({
     scenario,
     anchor,
     runDir: RUN_DIR,
     window,
     frontendSourceRoot,
+    onCall: (event) => calls.push(event),
   });
 
   const source = await tools.read_source({ root: 'frontend', target: 'src/App.vue' });
@@ -86,4 +88,7 @@ test('reads and searches frontend source with root=frontend', async (t) => {
 
   const found = await tools.search_source({ root: 'frontend', keyword: 'inventory ui boom' });
   assert.ok(found.matches.length >= 1);
+  assert.equal(calls[0].stage, 'start');
+  assert.equal(calls[0].name, 'read_source');
+  assert.ok(calls.some((call) => call.stage === 'done' && call.name === 'read_source'));
 });
