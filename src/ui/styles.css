@@ -484,7 +484,8 @@ button:hover { filter: brightness(1.08); }
 
 .small.error { color: var(--danger); }
 
-.log-toolbar { flex-wrap: wrap; align-items: flex-start; }
+.log-toolbar { flex-wrap: wrap; align-items: center; }
+.log-controls { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .log-output {
   flex: 1;
   overflow: auto;
@@ -553,7 +554,11 @@ button:hover { filter: brightness(1.08); }
   min-width: 150px;
 }
 .log-toolbar select:focus { outline: 1px solid var(--accent); }
-#log-anchor { min-width: 280px; }
+.log-toolbar select option {
+  background: var(--panel-2);
+  color: var(--text);
+}
+.log-controls #log-anchor { flex: 1 1 260px; min-width: 160px; }
 
 .routing-warnings {
   margin: 8px 0;

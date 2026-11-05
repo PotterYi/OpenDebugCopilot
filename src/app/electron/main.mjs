@@ -839,6 +839,21 @@ async function runSmoke(window, host) {
           extraSourceRootsFieldPresent: Boolean(document.querySelector('[name="extraSourceRoots"]')),
           logParserFieldPresent: Boolean(document.querySelector('[name="logParser"]')),
           modelModalPresent: Boolean(document.getElementById('model-modal')),
+          logToolbar: (() => {
+            document.querySelector('[data-tab="logs"]').click();
+            const parser = document.getElementById('log-parser');
+            const anchor = document.getElementById('log-anchor');
+            const query = document.getElementById('query-logs');
+            const rects = [parser, anchor, query]
+              .filter(Boolean)
+              .map((node) => node.getBoundingClientRect());
+            const centerY = (rect) => rect.top + rect.height / 2;
+            const row = rects.length === 3
+              && rects.every((rect) => Math.abs(centerY(rect) - centerY(rects[0])) < 4);
+            const anchorText = anchor?.options?.[0]?.textContent?.trim() ?? '';
+            document.querySelector('[data-tab="browser"]').click();
+            return { row, anchorText };
+          })(),
           allowExtraSourcesPresent: Boolean(document.getElementById('allow-extra-sources')),
           allowExtraSourcesDefault: document.getElementById('allow-extra-sources')?.checked === false,
           advancedExpand: (() => {

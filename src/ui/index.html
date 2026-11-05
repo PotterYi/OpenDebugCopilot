@@ -191,20 +191,21 @@
       <div id="tab-logs" class="tab-pane">
         <p id="logs-warning" class="message error" hidden>日志查询仅在桌面版可用。</p>
         <div class="toolbar log-toolbar">
-          <span class="muted small">查询解析器</span>
-          <select id="log-parser" title="仅用于日志查询；诊断使用工作区高级配置中的诊断日志解析器">
-            <option value="auto">自动探测</option>
-            <option value="pipe">竖线分隔 pipe</option>
-            <option value="spring-boot">Spring Boot</option>
-            <option value="logback">Logback</option>
-            <option value="json-lines">JSON Lines</option>
-            <option value="node">Node</option>
-            <option value="raw">原始文本 raw</option>
-            <option value="regex">自定义正则</option>
-          </select>
-          <input id="log-regex" class="url-input" placeholder="正则（命名组 ts/level/thread/logger/message）" hidden />
-          <select id="log-anchor"></select>
-          <button id="query-logs" type="button">查询</button>
+          <div class="log-controls">
+            <select id="log-parser" title="查询解析器（仅用于日志查询；诊断使用工作区高级配置中的诊断日志解析器）">
+              <option value="auto">自动探测</option>
+              <option value="pipe">竖线分隔 pipe</option>
+              <option value="spring-boot">Spring Boot</option>
+              <option value="logback">Logback</option>
+              <option value="json-lines">JSON Lines</option>
+              <option value="node">Node</option>
+              <option value="raw">原始文本 raw</option>
+              <option value="regex">自定义正则</option>
+            </select>
+            <input id="log-regex" class="url-input" placeholder="正则（命名组 ts/level/thread/logger/message）" hidden />
+            <select id="log-anchor"></select>
+            <button id="query-logs" type="button">查询</button>
+          </div>
           <span id="log-message" class="message"></span>
         </div>
         <div id="log-source" class="muted small"></div>
