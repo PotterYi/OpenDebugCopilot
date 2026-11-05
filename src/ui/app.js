@@ -92,6 +92,7 @@ function fillForm(config) {
   form.elements.backendUrl.value = workspace.backendUrl ?? '';
   form.elements.logfiles.value = (workspace.logfiles ?? []).join('\n');
   form.elements.sourceRoot.value = workspace.sourceRoot ?? '';
+  form.elements.extraSourceRoots.value = (workspace.extraSourceRoots ?? []).join('\n');
   form.elements.frontendSourceRoot.value = workspace.frontendSourceRoot ?? '';
   form.elements.frontendProjectRoot.value = workspace.frontendProjectRoot ?? '';
   form.elements.frontendStartCommand.value = workspace.frontendStartCommand ?? '';
@@ -108,6 +109,7 @@ function readForm() {
       backendUrl: form.elements.backendUrl.value.trim(),
       logfiles: form.elements.logfiles.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean),
       sourceRoot: form.elements.sourceRoot.value.trim(),
+      extraSourceRoots: form.elements.extraSourceRoots.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean),
       frontendSourceRoot: form.elements.frontendSourceRoot.value.trim(),
       frontendProjectRoot: form.elements.frontendProjectRoot.value.trim(),
       frontendStartCommand: form.elements.frontendStartCommand.value.trim(),
@@ -575,7 +577,7 @@ function renderFixCard(fix, view, fixIndex) {
   else if (reverted) head.append(el('span', 'badge', '已撤销'));
   card.append(head);
 
-  const target = [fix.root ?? null, fix.file ?? null].filter(Boolean).join(' / ');
+  const target = [fix.root ?? null, fix.extraRoot ?? null, fix.file ?? null].filter(Boolean).join(' / ');
   if (target) card.append(el('div', 'muted small', target));
   if (fix.verification) card.append(el('div', 'muted small', `验证：${fix.verification}`));
   if (fix.note) card.append(el('div', 'muted small', `说明：${fix.note}`));
@@ -1287,6 +1289,7 @@ async function runDiagnosisPayload(payload, label) {
     const response = await api.diagnose({
       ...payload,
       question: diagnoseQuestion.value.trim(),
+      allowExtraSources: $('allow-extra-sources').checked,
       mock: false,
       recheck: 1,
     });

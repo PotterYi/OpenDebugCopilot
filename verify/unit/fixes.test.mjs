@@ -131,3 +131,39 @@ test('text-only fixes and the preview cap are explicit', async (t) => {
   assert.equal(many[2].preview.status, 'no-edit');
   assert.equal(many[3].preview.status, 'skipped');
 });
+
+test('previews fixes in an authorized additional backend root', async (t) => {
+  const dirs = await fixture(t);
+  const extraRoot = path.join(TMP, 'extra-backend');
+  await mkdir(path.join(extraRoot, 'com/demo'), { recursive: true });
+  await writeFile(path.join(extraRoot, 'com/demo/Other.java'), 'class Other {\n    int value = 1;\n}\n', 'utf8');
+  const rootsWithExtra = {
+    ...roots(dirs),
+    extraSourceRoots: [{ id: 'extra-1', root: extraRoot }],
+  };
+
+  const fix = await buildFixPreview({
+    summary: '修改其他后端',
+    root: 'extra',
+    extraRoot: 'extra-1',
+    file: 'com/demo/Other.java',
+    search: '    int value = 1;',
+    replace: '    int value = 2;',
+    risk: 'medium',
+  }, rootsWithExtra);
+  assert.equal(fix.preview.status, 'ready');
+  assert.equal(fix.root, 'extra');
+  assert.equal(fix.extraRoot, 'extra-1');
+
+  const unauthorized = await buildFixPreview({
+    summary: '未授权',
+    root: 'extra',
+    extraRoot: 'extra-1',
+    file: 'com/demo/Other.java',
+    search: '    int value = 1;',
+    replace: '    int value = 2;',
+    risk: 'medium',
+  }, roots(dirs));
+  assert.equal(unauthorized.preview.status, 'error');
+  assert.match(unauthorized.preview.message, /未授权|无效/);
+});

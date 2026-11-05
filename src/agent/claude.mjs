@@ -16,7 +16,9 @@ const SYSTEM_PROMPT = `你是 DebugCopilot 的后端问题定位助手。你的�
 6. 不要输出密码、Token、Cookie 等敏感信息。
 7. 修复建议放在 fixes 中，只能修改已通过 read_source 读取过的文件；file 使用工具返回的相对路径，root 标明 backend 或 frontend。读取前端源码时给 read_source/search_source 传 root=frontend。
 8. 代码修改必须提供可唯一定位的 search（文件中的精确原文，出现次数必须为 1）和 replace；无法给出精确修改时，只写 summary，不要编造 search/replace。
-9. 不要直接修改文件；本阶段只生成修复建议和 diff 预览，由用户确认。`;
+9. 不要直接修改文件；本阶段只生成修复建议和 diff 预览，由用户确认。
+10. 证据包的 extraSources 里可能列出已配置但未授权的其他后端源码根；不要假设其内容。若判断需要这些代码，写入 needsMoreInfo，提示用户勾选「同时扫描其他后端源码」后重新诊断。
+11. 已授权时，读取/搜索其他后端源码使用 root=extra 和 extraRoot=<id>；修改建议同时带 root=extra 与 extraRoot=<id>。`;
 
 const FOLLOWUP_SYSTEM_PROMPT = `你是 DebugCopilot 的诊断助手，正在和用户继续讨论一条已有诊断。
 
@@ -57,7 +59,8 @@ const RESULT_SCHEMA = {
         required: ['summary', 'risk'],
         properties: {
           summary: { type: 'string' },
-          root: { enum: ['backend', 'frontend'] },
+          root: { enum: ['backend', 'frontend', 'extra'] },
+          extraRoot: { type: 'string' },
           file: { type: 'string' },
           search: { type: 'string' },
           replace: { type: 'string' },
@@ -110,6 +113,7 @@ function sanitizeEvidence(evidence) {
     threads: evidence.threads,
     source: evidence.source,
     frontend: evidence.frontend,
+    extraSources: evidence.extraSources,
   };
 }
 
@@ -137,6 +141,7 @@ function buildFollowUpPrompt(question, previous = {}) {
       : {
           summary: fix.summary,
           root: fix.root,
+          extraRoot: fix.extraRoot,
           file: fix.file,
           search: fix.search,
           replace: fix.replace,
@@ -174,6 +179,7 @@ function buildFollowUpPrompt(question, previous = {}) {
     threads: previous.threads,
     source: previous.source,
     frontend: previous.frontend,
+    extraSources: previous.extraSources,
   };
   const pack = JSON.stringify(snapshot, null, 2);
   return [
@@ -259,13 +265,15 @@ export function createClaudeAgent({ model, maxTurns = DEFAULT_MAX_TURNS, timeout
         },
         read_source: {
           target: z.string(),
-          root: z.enum(['backend', 'frontend']).optional(),
+          root: z.enum(['backend', 'frontend', 'extra']).optional(),
+          extraRoot: z.string().optional(),
           startLine: z.number().int().min(1).optional(),
           endLine: z.number().int().min(1).optional(),
         },
         search_source: {
           keyword: z.string(),
-          root: z.enum(['backend', 'frontend']).optional(),
+          root: z.enum(['backend', 'frontend', 'extra']).optional(),
+          extraRoot: z.string().optional(),
           limit: z.number().int().min(1).max(200).optional(),
         },
         read: {

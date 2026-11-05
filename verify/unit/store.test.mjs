@@ -29,9 +29,11 @@ test('saves workspace atomically and reads it back', async (t) => {
     backendUrl: 'http://127.0.0.1:9090',
     logfiles: ['logs/app.log'],
     sourceRoot: '../demo',
+    extraSourceRoots: ['../other-backend', '  ../third-backend  ', ''],
     window: { beforeMs: 1000, afterMs: 500 },
   });
   assert.equal(saved.backendUrl, 'http://127.0.0.1:9090');
+  assert.deepEqual(saved.extraSourceRoots, ['../other-backend', '../third-backend']);
   const reloaded = await createStore({ configDir: TMP }).getWorkspace();
   assert.deepEqual(reloaded, saved);
   const files = await readdir(TMP);

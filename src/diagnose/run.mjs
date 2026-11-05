@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { AppError } from '../core/errors.mjs';
 import { newRunId } from '../core/ids.mjs';
@@ -204,6 +204,7 @@ async function diagnoseWithFired({
     read: '读取工具结果',
   };
 
+  const extraSourceRoots = Array.isArray(scenario.extraSourceRoots) ? scenario.extraSourceRoots : [];
   const runLog = createRunLog(runDir);
   await runLog.info(`start scenario=${scenario.name} driver=${scenario.driverKind} question=${question || '-'}`);
   progress('prepare', '整理请求与证据', 'start');
@@ -274,6 +275,7 @@ async function diagnoseWithFired({
     logfiles: paths.logfiles,
     sourceRoot: paths.sourceRoot,
     frontendSourceRoot: frontendFixRoot,
+    extraSourceRoots,
     window: timeWindow,
     onCall: (call) => {
       const label = TOOL_LABELS[call.name] ?? call.name;
@@ -333,6 +335,10 @@ async function diagnoseWithFired({
       files: frontendSources.files,
       errors: frontendErrors,
     },
+    extraSources: {
+      configured: scenario.extraSourcesConfigured ?? extraSourceRoots.map(({ id, label }) => ({ id, label })),
+      authorized: extraSourceRoots.length > 0,
+    },
   };
 
   await runLog.info(`agent=${agent.id} mode=${agent.id === 'mock' ? 'mock' : 'live'}`);
@@ -372,6 +378,7 @@ async function diagnoseWithFired({
     agentResult.fixes = await buildFixPreviews(agentResult.fixes, {
       sourceRoot: paths.sourceRoot,
       frontendSourceRoot: frontendFixRoot,
+      extraSourceRoots,
     });
     progress('preview', '生成修复预览', 'done');
   } catch (error) {
@@ -435,6 +442,7 @@ async function diagnoseWithFired({
       fixRoots: {
         sourceRoot: paths.sourceRoot ?? null,
         frontendSourceRoot: frontendFixRoot,
+        extraSourceRoots,
       },
     },
     target,
@@ -450,6 +458,7 @@ async function diagnoseWithFired({
     threads: evidence.threads,
     source: evidence.source,
     frontend: evidence.frontend,
+    extraSources: evidence.extraSources,
     agent: agentResult,
     gates,
     recheck: recheckInfo,
@@ -549,12 +558,30 @@ export async function runCaptureDiagnosis(observation, options = {}) {
     pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
     window,
     preflight: preflightOverride,
+    allowExtraSources = false,
     onProgress = () => {},
   } = options;
 
   const startedAt = Date.now();
   const logfiles = (workspace.logfiles ?? []).map((file) => path.resolve(root, file));
   const sourceRoot = workspace.sourceRoot ? path.resolve(root, workspace.sourceRoot) : null;
+  const configuredExtraRoots = [];
+  for (const [index, entry] of (workspace.extraSourceRoots ?? []).entries()) {
+    if (!entry) continue;
+    const resolved = path.resolve(root, String(entry));
+    try {
+      const info = await stat(resolved);
+      if (!info.isDirectory()) continue;
+    } catch {
+      continue;
+    }
+    configuredExtraRoots.push({
+      id: `extra-${index + 1}`,
+      root: resolved,
+      label: path.basename(resolved) || `extra-${index + 1}`,
+    });
+  }
+  const authorizedExtraRoots = allowExtraSources ? configuredExtraRoots : [];
   const configuredFrontendSourceRoot = workspace.frontendSourceRoot
     ? path.resolve(root, workspace.frontendSourceRoot)
     : null;
@@ -576,6 +603,8 @@ export async function runCaptureDiagnosis(observation, options = {}) {
     },
     logfiles,
     source: sourceRoot ? { root: sourceRoot } : undefined,
+    extraSourceRoots: authorizedExtraRoots,
+    extraSourcesConfigured: configuredExtraRoots.map(({ id, label }) => ({ id, label })),
     frontendSourceRoot,
     frontendProjectRoot,
     parser: { preset: 'auto' },

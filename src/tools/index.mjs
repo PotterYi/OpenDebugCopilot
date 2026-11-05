@@ -47,12 +47,13 @@ export function toolSpecs() {
     },
     {
       name: 'read_source',
-      description: 'Read source by file path or fully-qualified class name. Use root=frontend for frontend source. Ambiguous names return candidates instead of guessing.',
+      description: 'Read source by file path or fully-qualified class name. Use root=frontend for frontend source, or root=extra with extraRoot=<id> for an authorized additional backend root. Ambiguous names return candidates instead of guessing.',
       input_schema: {
         type: 'object',
         properties: {
           target: { type: 'string' },
-          root: { enum: ['backend', 'frontend'] },
+          root: { enum: ['backend', 'frontend', 'extra'] },
+          extraRoot: { type: 'string' },
           startLine: { type: 'integer', minimum: 1 },
           endLine: { type: 'integer', minimum: 1 },
         },
@@ -62,12 +63,13 @@ export function toolSpecs() {
     },
     {
       name: 'search_source',
-      description: 'Search source files by keyword (case-insensitive). Use root=frontend for frontend source.',
+      description: 'Search source files by keyword (case-insensitive). Use root=frontend for frontend source, or root=extra with extraRoot=<id> for an authorized additional backend root.',
       input_schema: {
         type: 'object',
         properties: {
           keyword: { type: 'string' },
-          root: { enum: ['backend', 'frontend'] },
+          root: { enum: ['backend', 'frontend', 'extra'] },
+          extraRoot: { type: 'string' },
           limit: { type: 'integer', minimum: 1, maximum: 200 },
         },
         required: ['keyword'],
@@ -101,6 +103,7 @@ export function toolSpecs() {
  *   logfiles?: string[],
  *   sourceRoot?: string | null,
  *   frontendSourceRoot?: string | null,
+ *   extraSourceRoots?: Array<{ id: string, root: string }>,
  *   window?: { beforeMs: number, afterMs: number },
  *   limitBytes?: number,
  *   onCall?: (event: { id: number, stage: 'start'|'done', name: string, error?: boolean, durationMs?: number }) => void
@@ -113,6 +116,7 @@ export function createTools({
   logfiles,
   sourceRoot,
   frontendSourceRoot,
+  extraSourceRoots = [],
   window,
   limitBytes = DEFAULT_MAX_RESULT_BYTES,
   onCall = null,
@@ -121,10 +125,18 @@ export function createTools({
   const files = logfiles ?? paths.logfiles;
   const root = sourceRoot ?? paths.sourceRoot;
   const frontendRoot = frontendSourceRoot ?? scenario.frontendSourceRoot ?? null;
-  const pickRoot = (kind) => {
+  const extraRoots = Array.isArray(extraSourceRoots) ? extraSourceRoots : [];
+  const pickRoot = (kind, extraRootId) => {
     if (kind === 'frontend') {
       if (!frontendRoot) throw new AppError('FRONTEND_SOURCE_ROOT_REQUIRED', 'frontend source root is not configured', { exitCode: 3 });
       return frontendRoot;
+    }
+    if (kind === 'extra') {
+      const matched = extraRoots.find((item) => item.id === extraRootId);
+      if (!matched) {
+        throw new AppError('EXTRA_SOURCE_ROOT_REQUIRED', 'extra source root is not authorized or does not exist', { exitCode: 3 });
+      }
+      return matched.root;
     }
     if (kind === 'backend') {
       if (!root) throw new AppError('SOURCE_ROOT_REQUIRED', 'source.root is required for read_source', { exitCode: 3 });
@@ -226,7 +238,7 @@ export function createTools({
 
     read_source: (args = {}) => safe('read_source', async () => {
       const result = await readSource({
-        sourceRoot: pickRoot(args.root),
+        sourceRoot: pickRoot(args.root, args.extraRoot),
         target: args.target,
         startLine: args.startLine,
         endLine: args.endLine,
@@ -237,7 +249,7 @@ export function createTools({
 
     search_source: (args = {}) => safe('search_source', async () => {
       const result = await searchSource({
-        sourceRoot: pickRoot(args.root),
+        sourceRoot: pickRoot(args.root, args.extraRoot),
         keyword: args.keyword,
         limit: args.limit ?? 50,
       });

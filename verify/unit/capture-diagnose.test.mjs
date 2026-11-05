@@ -61,6 +61,7 @@ test('diagnoses a captured request without replay and correlates by business id'
     workspace: {
       logfiles: [logFile],
       sourceRoot: path.join(ROOT, 'verify/fixtures/source'),
+      extraSourceRoots: [path.join(ROOT, 'verify/fixtures')],
       frontendProjectRoot: path.join(ROOT, 'verify/fixtures/frontend'),
       window: { beforeMs: 5000, afterMs: 5000 },
     },
@@ -68,6 +69,7 @@ test('diagnoses a captured request without replay and correlates by business id'
     runsDir: path.join(TMP, 'runs'),
     question: '下单失败',
     recheck: 1,
+    allowExtraSources: true,
   });
 
   assert.equal(result.meta.driver, 'capture');
@@ -90,6 +92,9 @@ test('diagnoses a captured request without replay and correlates by business id'
     assert.ok(progress.some((event) => event.id === id), `missing progress step ${id}`);
   }
   assert.ok(progress.some((event) => event.id === 'agent' && event.status === 'done'));
+  assert.equal(result.extraSources.authorized, true);
+  assert.equal(result.meta.fixRoots.extraSourceRoots.length, 1);
+  assert.equal(result.meta.fixRoots.extraSourceRoots[0].id, 'extra-1');
 
   const persisted = JSON.parse(await readFile(path.join(runDir, 'result.json'), 'utf8'));
   assert.equal(persisted.meta.driver, 'capture');
@@ -114,7 +119,12 @@ test('capture diagnosis works without log evidence', async (t) => {
     firedAt: Date.now(),
     resourceType: 'xhr',
   }, {
-    workspace: { logfiles: [], sourceRoot: '', window: { beforeMs: 3000, afterMs: 2000 } },
+    workspace: {
+      logfiles: [],
+      sourceRoot: '',
+      extraSourceRoots: [path.join(ROOT, 'verify/fixtures')],
+      window: { beforeMs: 3000, afterMs: 2000 },
+    },
     root: ROOT,
     runsDir: path.join(TMP, 'runs'),
     question: '',
@@ -122,4 +132,6 @@ test('capture diagnosis works without log evidence', async (t) => {
 
   assert.equal(result.logs.correlation.strategy, 'none');
   assert.equal(result.gates.ok, true, JSON.stringify(result.gates.checks));
+  assert.equal(result.extraSources.authorized, false);
+  assert.deepEqual(result.meta.fixRoots.extraSourceRoots, []);
 });

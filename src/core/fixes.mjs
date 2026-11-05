@@ -24,7 +24,7 @@ export function normalizeFix(item) {
   if (typeof item === 'string') {
     const summary = clean(item);
     return summary
-      ? { summary, kind: 'text', root: null, file: '', search: '', replace: '', risk: null, verification: '', note: '' }
+      ? { summary, kind: 'text', root: null, extraRoot: null, file: '', search: '', replace: '', risk: null, verification: '', note: '' }
       : null;
   }
   if (!item || typeof item !== 'object' || Array.isArray(item)) return null;
@@ -34,7 +34,7 @@ export function normalizeFix(item) {
   const search = cleanBlock(item.search);
   const replace = cleanBlock(item.replace);
   const kind = search || replace ? 'edit' : 'text';
-  const root = item.root === 'frontend' ? 'frontend' : item.root === 'backend' ? 'backend' : null;
+  const root = ['frontend', 'backend', 'extra'].includes(item.root) ? item.root : null;
   const risk = FIX_RISKS.includes(item.risk) ? item.risk : kind === 'edit' ? 'medium' : null;
   if (!summary && !file) return null;
 
@@ -42,6 +42,7 @@ export function normalizeFix(item) {
     summary: summary || `修改 ${file}`,
     kind,
     root,
+    extraRoot: clean(item.extraRoot, 200) || null,
     file,
     search,
     replace,
@@ -78,9 +79,17 @@ function isInside(root, target) {
  * Exported so the apply/undo path uses exactly the same validation as the preview.
  *
  * @param {any} item
- * @param {{ sourceRoot?: string | null, frontendSourceRoot?: string | null }} roots
+ * @param {{
+ *   sourceRoot?: string | null,
+ *   frontendSourceRoot?: string | null,
+ *   extraSourceRoots?: Array<{ id: string, root: string }>
+ * }} roots
  */
-export async function resolveFixTarget(item, { sourceRoot = null, frontendSourceRoot = null } = {}) {
+export async function resolveFixTarget(item, {
+  sourceRoot = null,
+  frontendSourceRoot = null,
+  extraSourceRoots = [],
+} = {}) {
   const fix = normalizeFix(item);
   if (!fix) return { error: '无效的修复建议' };
   if (!fix.file) return { error: '修复建议没有指定文件' };
@@ -88,19 +97,26 @@ export async function resolveFixTarget(item, { sourceRoot = null, frontendSource
 
   const relative = fix.file.replace(/\\/g, '/');
   const candidates = [];
-  const add = (name, root) => {
+  const add = (name, root, extraRoot = null) => {
     if (!root) return;
     const resolved = path.resolve(root, relative);
     if (!isInside(root, resolved)) {
-      candidates.push({ name, root, outside: true });
+      candidates.push({ name, root, extraRoot, outside: true });
       return;
     }
-    candidates.push({ name, root, resolved });
+    candidates.push({ name, root, extraRoot, resolved });
   };
 
   if (fix.root === 'backend') add('backend', sourceRoot);
   else if (fix.root === 'frontend') add('frontend', frontendSourceRoot);
-  else {
+  else if (fix.root === 'extra') {
+    const list = Array.isArray(extraSourceRoots) ? extraSourceRoots : [];
+    const matched = list.find((entry) => entry.id === fix.extraRoot);
+    if (!matched) {
+      return { error: '其他后端源码未授权或 extraRoot 无效，无法生成预览' };
+    }
+    add('extra', matched.root, matched.id);
+  } else {
     add('backend', sourceRoot);
     add('frontend', frontendSourceRoot);
   }
@@ -242,9 +258,17 @@ function buildPatch({ file, line, search, replace, text }) {
  * Build a read-only diff preview for a structured fix. Never writes files.
  *
  * @param {any} item
- * @param {{ sourceRoot?: string | null, frontendSourceRoot?: string | null }} roots
+ * @param {{
+ *   sourceRoot?: string | null,
+ *   frontendSourceRoot?: string | null,
+ *   extraSourceRoots?: Array<{ id: string, root: string }>
+ * }} roots
  */
-export async function buildFixPreview(item, { sourceRoot = null, frontendSourceRoot = null } = {}) {
+export async function buildFixPreview(item, {
+  sourceRoot = null,
+  frontendSourceRoot = null,
+  extraSourceRoots = [],
+} = {}) {
   const fix = normalizeFix(item);
   if (!fix) return null;
   if (fix.kind !== 'edit') {
@@ -254,7 +278,7 @@ export async function buildFixPreview(item, { sourceRoot = null, frontendSourceR
     return { ...fix, preview: { status: 'error', message: 'search 片段不能为空' } };
   }
 
-  const target = await resolveFixTarget(fix, { sourceRoot, frontendSourceRoot });
+  const target = await resolveFixTarget(fix, { sourceRoot, frontendSourceRoot, extraSourceRoots });
   if (target.error) return { ...fix, preview: { status: 'error', message: target.error } };
 
   let text;
@@ -302,7 +326,12 @@ export async function buildFixPreview(item, { sourceRoot = null, frontendSourceR
  * Normalize and preview a list of fixes. Previewing is capped to avoid reading many files.
  *
  * @param {any} value
- * @param {{ sourceRoot?: string | null, frontendSourceRoot?: string | null, maxFixes?: number }} [options]
+ * @param {{
+ *   sourceRoot?: string | null,
+ *   frontendSourceRoot?: string | null,
+ *   extraSourceRoots?: Array<{ id: string, root: string }>,
+ *   maxFixes?: number
+ * }} [options]
  */
 export async function buildFixPreviews(value, options = {}) {
   const fixes = normalizeFixList(value);

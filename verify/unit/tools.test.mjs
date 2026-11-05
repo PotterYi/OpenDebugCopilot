@@ -92,3 +92,30 @@ test('reads and searches frontend source with root=frontend', async (t) => {
   assert.equal(calls[0].name, 'read_source');
   assert.ok(calls.some((call) => call.stage === 'done' && call.name === 'read_source'));
 });
+
+test('reads additional backend roots only when authorized', async (t) => {
+  t.after(async () => { await rm(RUN_DIR, { recursive: true, force: true }); });
+  const { tools } = createTools({
+    scenario,
+    anchor,
+    runDir: RUN_DIR,
+    window,
+    extraSourceRoots: [{ id: 'extra-1', root: SOURCE }],
+  });
+
+  const source = await tools.read_source({
+    root: 'extra',
+    extraRoot: 'extra-1',
+    target: 'com/demo/OrderService.java',
+  });
+  assert.equal(source.found, true);
+  assert.match(source.content, /IllegalArgumentException/);
+
+  const denied = await tools.read_source({
+    root: 'extra',
+    extraRoot: 'missing',
+    target: 'com/demo/OrderService.java',
+  });
+  assert.equal(denied.error, true);
+  assert.equal(denied.code, 'EXTRA_SOURCE_ROOT_REQUIRED');
+});

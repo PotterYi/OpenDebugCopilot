@@ -91,3 +91,35 @@ test('refuses to apply a text-only suggestion', async (t) => {
     /没有可应用的代码修改/,
   );
 });
+
+test('applies and reverts a fix in an authorized additional backend root', async (t) => {
+  const { roots } = await fixture(t);
+  const extraRoot = path.join(TMP, 'extra');
+  const extraFile = path.join(extraRoot, 'com/demo/Other.java');
+  const originalExtra = 'class Other {\n    int value = 1;\n}\n';
+  await mkdir(path.dirname(extraFile), { recursive: true });
+  await writeFile(extraFile, originalExtra, 'utf8');
+  const extraFix = {
+    summary: '修改其他后端',
+    root: 'extra',
+    extraRoot: 'extra-1',
+    file: 'com/demo/Other.java',
+    search: '    int value = 1;',
+    replace: '    int value = 2;',
+    risk: 'medium',
+  };
+  const rootsWithExtra = {
+    ...roots,
+    extraSourceRoots: [{ id: 'extra-1', root: extraRoot }],
+  };
+  const backupPath = path.join(TMP, 'backups', 'fix-extra.orig');
+  await applyFix({ fix: extraFix, roots: rootsWithExtra, backupPath });
+  assert.match(await readFile(extraFile, 'utf8'), /int value = 2;/);
+  await revertFix({ fix: extraFix, roots: rootsWithExtra, backupPath });
+  assert.equal(await readFile(extraFile, 'utf8'), originalExtra);
+
+  await assert.rejects(
+    applyFix({ fix: extraFix, roots, backupPath }),
+    /未授权|无效/,
+  );
+});

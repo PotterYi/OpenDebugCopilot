@@ -32,6 +32,9 @@
           <label>后端源码目录
             <input name="sourceRoot" placeholder="../backend-project" />
           </label>
+          <label>其他后端源码目录（每行一个，可选）
+            <textarea name="extraSourceRoots" rows="3" placeholder="默认不扫描；诊断时勾选「同时扫描其他后端源码」才会读取/修改"></textarea>
+          </label>
           <label>前端项目目录（含 package.json）
             <input name="frontendProjectRoot" placeholder="如 ../frontend-project；留空则从前端源码目录向上推断" />
           </label>
@@ -124,8 +127,11 @@
             <div class="question-row">
               <textarea id="diagnose-question" class="question-input" rows="2" placeholder="描述现象（可选），例如：登录后用户列表报错"></textarea>
             </div>
-            <div class="toolbar">
+            <div class="toolbar diagnose-toolbar">
               <button id="diagnose-request" type="button">诊断此请求</button>
+              <label class="inline" title="勾选后才允许读取和修改「其他后端源码目录」中的代码">
+                <input type="checkbox" id="allow-extra-sources" /> 同时扫描其他后端源码
+              </label>
               <button id="make-rule" type="button" class="secondary">生成路由规则</button>
               <span id="diagnose-message" class="muted"></span>
             </div>

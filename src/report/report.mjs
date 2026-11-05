@@ -19,7 +19,8 @@ function scrubText(value) {
 
 function formatFix(fix) {
   const parts = [fix.summary];
-  if (fix.file) parts.push(`文件：${fix.file}`);
+  const fileLabel = fix.root === 'extra' && fix.extraRoot ? `${fix.extraRoot}/${fix.file}` : fix.file;
+  if (fileLabel) parts.push(`文件：${fileLabel}`);
   if (fix.risk) parts.push(`风险：${fix.risk}`);
   if (fix.verification) parts.push(`验证：${fix.verification}`);
   return parts.join('；');

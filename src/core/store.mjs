@@ -7,6 +7,7 @@ export const DEFAULT_WORKSPACE = Object.freeze({
   backendUrl: 'http://127.0.0.1:8080',
   logfiles: [],
   sourceRoot: '',
+  extraSourceRoots: [],
   frontendSourceRoot: '',
   frontendProjectRoot: '',
   frontendStartCommand: '',
@@ -29,6 +30,9 @@ export function validateWorkspace(value) {
     backendUrl: String(value.backendUrl ?? ''),
     logfiles: Array.isArray(value.logfiles) ? value.logfiles.map(String) : [],
     sourceRoot: String(value.sourceRoot ?? ''),
+    extraSourceRoots: Array.isArray(value.extraSourceRoots)
+      ? value.extraSourceRoots.map(String).map((item) => item.trim()).filter(Boolean)
+      : [],
     frontendSourceRoot: String(value.frontendSourceRoot ?? ''),
     frontendProjectRoot: String(value.frontendProjectRoot ?? ''),
     frontendStartCommand: String(value.frontendStartCommand ?? ''),

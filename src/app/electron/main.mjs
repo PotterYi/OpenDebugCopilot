@@ -596,6 +596,7 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
         recheck: payload.recheck ?? 1,
         agent,
         frontendErrors,
+        allowExtraSources: payload.allowExtraSources === true,
         onProgress: sendProgress,
       });
     } catch (error) {
@@ -761,6 +762,9 @@ async function runSmoke(window, host) {
           advancedTogglePresent: Boolean(document.getElementById('toggle-advanced'))
             && Boolean(document.getElementById('advanced-config')),
           advancedHiddenByDefault: document.getElementById('advanced-config')?.hidden === true,
+          extraSourceRootsFieldPresent: Boolean(document.querySelector('[name="extraSourceRoots"]')),
+          allowExtraSourcesPresent: Boolean(document.getElementById('allow-extra-sources')),
+          allowExtraSourcesDefault: document.getElementById('allow-extra-sources')?.checked === false,
           advancedExpand: (() => {
             const button = document.getElementById('toggle-advanced');
             const panel = document.getElementById('advanced-config');
