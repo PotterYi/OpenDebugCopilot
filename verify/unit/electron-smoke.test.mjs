@@ -818,3 +818,54 @@ test('history runs behave as an accordion', {
     secondOpen: { reportHidden: false, visibleRuns: 1, selected: true },
   });
 });
+
+test('saving config persists the current browser URL input', {
+  skip: available ? false : 'Electron binary is not installed',
+  timeout: 60_000,
+}, async (t) => {
+  const DIR = tempDir('electron-profile-save-url');
+  await rm(DIR, { recursive: true, force: true });
+  await mkdir(path.join(DIR, 'configs'), { recursive: true });
+  t.after(async () => { await rm(DIR, { recursive: true, force: true }); });
+
+  const uiScript = `(async () => {
+    const waitFor = async (fn, timeout = 6000) => {
+      const deadline = Date.now() + timeout;
+      while (Date.now() < deadline) {
+        if (fn()) return true;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      return false;
+    };
+    document.getElementById('browser-url').value = 'http://localhost:6001';
+    document.getElementById('config-form').requestSubmit();
+    await waitFor(() => (document.getElementById('config-message')?.textContent ?? '').includes('已保存'));
+    const config = await window.dc.invoke('dc:config', { action: 'get' });
+    return {
+      frontendUrl: config.workspace.frontendUrl,
+      message: document.getElementById('config-message')?.textContent ?? '',
+    };
+  })()`;
+
+  const child = spawn(electronPath, [
+    MAIN, '--smoke', '--port', '0',
+    '--config-dir', path.join(DIR, 'configs'),
+    '--runs-dir', path.join(DIR, 'runs'),
+    '--smoke-ui-eval', Buffer.from(uiScript).toString('base64'),
+  ], { env: { ...process.env } });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (chunk) => { stdout += chunk; });
+  child.stderr.on('data', (chunk) => { stderr += chunk; });
+  const code = await new Promise((resolve) => {
+    const timer = setTimeout(() => { child.kill(); resolve(-1); }, 50_000);
+    child.on('close', (exitCode) => { clearTimeout(timer); resolve(exitCode); });
+  });
+
+  assert.equal(code, 0, `electron exited ${code}\nstdout:\n${stdout}\nstderr:\n${stderr}`);
+  assert.match(stdout, /SMOKE_OK/);
+  const match = stdout.match(/SMOKE_RESULT (\{.*\})/);
+  const smoke = JSON.parse(match[1]);
+  assert.equal(smoke.uiEvalResult.frontendUrl, 'http://localhost:6001');
+  assert.match(smoke.uiEvalResult.message, /已保存/);
+});

@@ -123,7 +123,7 @@ function fillForm(config) {
 function readForm() {
   return {
     workspace: {
-      frontendUrl: configCache?.workspace?.frontendUrl ?? browserUrlInput.value.trim(),
+      frontendUrl: browserUrlInput.value.trim() || configCache?.workspace?.frontendUrl || '',
       backendUrl: form.elements.backendUrl.value.trim(),
       logfiles: form.elements.logfiles.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean),
       sourceRoot: form.elements.sourceRoot.value.trim(),
