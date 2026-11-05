@@ -208,6 +208,12 @@ export const PRESETS = Object.freeze({
   node: regexParser(NODE_REGEX, 'node'),
 });
 
+/** Last-resort parser: keep every non-empty line as a raw message. */
+export const RAW_PARSER = Object.freeze({
+  name: 'raw',
+  parse: (line) => (String(line ?? '').trim() ? { message: String(line) } : null),
+});
+
 /**
  * Resolve a parser spec ({ preset } | { regex } | 'auto' | preset name).
  *
@@ -218,31 +224,28 @@ export function resolveParser(spec) {
   if (spec === undefined || spec === null) return { name: 'auto' };
   if (typeof spec === 'string') {
     if (spec === 'auto') return { name: 'auto' };
+    if (spec === 'raw') return RAW_PARSER;
     if (spec in PRESETS) return PRESETS[spec];
     throw new Error(`Unknown log parser preset: ${spec}`);
   }
   if (spec.regex) return regexParser(spec.regex, 'custom');
   if (spec.preset && spec.preset !== 'auto') {
+    if (spec.preset === 'raw') return RAW_PARSER;
     if (!(spec.preset in PRESETS)) throw new Error(`Unknown log parser preset: ${spec.preset}`);
     return PRESETS[spec.preset];
   }
   return { name: 'auto' };
 }
 
-/**
- * Pick a preset for a sample of lines.
- * Criterion (from the verified DEMO): hit rate > 60% AND every non-continuation line parses.
- *
- * @param {string[]} lines
- * @returns {string | null} preset name
- */
-export function detectParserFromLines(lines) {
+/** Evaluate every preset against a sample and keep diagnostics for the UI. */
+export function evaluateParserCandidates(lines) {
   const candidates = [];
   for (const [name, preset] of Object.entries(PRESETS)) {
     let startLines = 0;
     let matched = 0;
     let unparsed = 0;
     let hasCurrent = false;
+    const unparsedSamples = [];
     for (const line of lines) {
       if (!line.trim()) continue;
       const record = preset.parse(line);
@@ -255,12 +258,45 @@ export function detectParserFromLines(lines) {
       if (isContinuationLine(line, hasCurrent)) continue;
       startLines += 1;
       unparsed += 1;
+      if (unparsedSamples.length < 5) unparsedSamples.push(String(line).slice(0, 300));
     }
     const hitRate = startLines === 0 ? 0 : matched / startLines;
-    if (hitRate > 0.6 && unparsed === 0) {
-      candidates.push({ name, hitRate, matched });
-    }
+    candidates.push({ name, hitRate, matched, unparsed, total: startLines, unparsedSamples });
   }
-  candidates.sort((a, b) => b.hitRate - a.hitRate || b.matched - a.matched);
-  return candidates[0]?.name ?? null;
+  return candidates;
+}
+
+/**
+ * Pick a preset with a strict pass first, then a best-effort fallback.
+ * Strict: hit rate > 60% AND every non-continuation line parses.
+ * Fallback: highest hit rate among presets that parsed at least one line.
+ *
+ * @param {string[]} lines
+ */
+export function detectParserDetailed(lines) {
+  const candidates = evaluateParserCandidates(lines);
+  const strict = candidates
+    .filter((candidate) => candidate.hitRate > 0.6 && candidate.unparsed === 0)
+    .sort((a, b) => b.hitRate - a.hitRate || b.matched - a.matched);
+  if (strict.length > 0) {
+    return { selected: strict[0].name, fallback: false, candidates, selectedCandidate: strict[0] };
+  }
+  const relaxed = candidates
+    .filter((candidate) => candidate.matched > 0)
+    .sort((a, b) => b.hitRate - a.hitRate || a.unparsed - b.unparsed || b.matched - a.matched);
+  if (relaxed.length > 0) {
+    return { selected: relaxed[0].name, fallback: true, candidates, selectedCandidate: relaxed[0] };
+  }
+  return { selected: null, fallback: true, candidates, selectedCandidate: null };
+}
+
+/**
+ * Strict preset detection (kept for callers that require an exact match).
+ *
+ * @param {string[]} lines
+ * @returns {string | null} preset name
+ */
+export function detectParserFromLines(lines) {
+  const detailed = detectParserDetailed(lines);
+  return detailed.fallback ? null : detailed.selected;
 }

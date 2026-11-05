@@ -8,6 +8,7 @@ export const DEFAULT_WORKSPACE = Object.freeze({
   logfiles: [],
   sourceRoot: '',
   extraSourceRoots: [],
+  logParser: 'auto',
   frontendSourceRoot: '',
   frontendProjectRoot: '',
   frontendStartCommand: '',
@@ -33,6 +34,7 @@ export function validateWorkspace(value) {
     extraSourceRoots: Array.isArray(value.extraSourceRoots)
       ? value.extraSourceRoots.map(String).map((item) => item.trim()).filter(Boolean)
       : [],
+    logParser: String(value.logParser ?? 'auto'),
     frontendSourceRoot: String(value.frontendSourceRoot ?? ''),
     frontendProjectRoot: String(value.frontendProjectRoot ?? ''),
     frontendStartCommand: String(value.frontendStartCommand ?? ''),

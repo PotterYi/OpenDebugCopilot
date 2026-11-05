@@ -783,6 +783,7 @@ async function runSmoke(window, host) {
             && Boolean(document.getElementById('advanced-config')),
           advancedHiddenByDefault: document.getElementById('advanced-config')?.hidden === true,
           extraSourceRootsFieldPresent: Boolean(document.querySelector('[name="extraSourceRoots"]')),
+          logParserFieldPresent: Boolean(document.querySelector('[name="logParser"]')),
           allowExtraSourcesPresent: Boolean(document.getElementById('allow-extra-sources')),
           allowExtraSourcesDefault: document.getElementById('allow-extra-sources')?.checked === false,
           advancedExpand: (() => {

@@ -94,6 +94,7 @@ npm run dev        # http://127.0.0.1:5173
     "G:/develop/project/test-targets/ruoyi/logs-sit/sys-error.log"
   ],
   "sourceRoot": "G:/develop/project/test-targets/ruoyi/backend",
+  "logParser": "auto",
   "frontendProjectRoot": "G:/develop/project/test-targets/ruoyi/frontend",
   "frontendStartCommand": "npm run dev",
   "verifyCommand": "npm run build:prod",
@@ -104,6 +105,7 @@ npm run dev        # http://127.0.0.1:5173
 > 通常只需要 `frontendProjectRoot`；`frontendSourceRoot` 是可选项，留空时默认等于项目目录，仅 monorepo / 非标准布局需要填写。
 > 启动命令也可留空，按 `pnpm/yarn/npm` 与 `dev → serve → start` 自动选择。左侧「前端服务」可一键启动/重启/停止；关闭 DebugCopilot 时会一并停止由它启动的前端进程。
 > 高级配置的「其他后端源码目录」默认不扫描、不修改；只有诊断时勾选「同时扫描其他后端源码」才会授权读取和修复。
+> 「诊断日志解析器」默认 auto；如果自动探测降级或手动知道格式，可固定为 logback / spring-boot / pipe 等。
 
 路由（`configs/routing.json`）：
 

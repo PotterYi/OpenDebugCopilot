@@ -62,6 +62,7 @@ test('diagnoses a captured request without replay and correlates by business id'
       logfiles: [logFile],
       sourceRoot: path.join(ROOT, 'verify/fixtures/source'),
       extraSourceRoots: [path.join(ROOT, 'verify/fixtures')],
+      logParser: 'logback',
       frontendProjectRoot: path.join(ROOT, 'verify/fixtures/frontend'),
       window: { beforeMs: 5000, afterMs: 5000 },
     },
@@ -75,6 +76,7 @@ test('diagnoses a captured request without replay and correlates by business id'
   assert.equal(result.meta.driver, 'capture');
   assert.equal(result.target.driver, 'capture');
   assert.equal(result.marker.injected, false);
+  assert.equal(result.logs.parser, 'logback');
   assert.equal(result.logs.correlation.strategy, 'business-id');
   assert.equal(result.logs.correlation.matchedId, 'ORD999');
   assert.equal(result.logs.count, 2);

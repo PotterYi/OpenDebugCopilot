@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readLogs, listThreads, searchAll } from '../../src/evidence/logs.mjs';
-import { discoverLogFiles } from '../../src/evidence/logfiles.mjs';
+import { discoverLogFiles, sampleLines } from '../../src/evidence/logfiles.mjs';
 import { mkdir, rm, utimes, writeFile } from 'node:fs/promises';
 import { tempDir } from './tmp.mjs';
 import { parseTimestamp } from '../../src/evidence/parsers.mjs';
@@ -102,11 +102,64 @@ test('explicit node preset tolerates missing thread', async () => {
   assert.match(result.records[2].message, /single warning/);
 });
 
-test('auto detection failure reports a stable code', async () => {
-  await assert.rejects(
-    readLogs({ logfiles: [garbage] }),
-    (err) => err.code === 'LOG_PARSER_DETECT_FAILED' && err.exitCode === 3,
-  );
+test('auto detection falls back to raw text instead of failing', async () => {
+  const result = await readLogs({ logfiles: [garbage] });
+  assert.equal(result.parser, 'raw');
+  assert.equal(result.parserFallback, true);
+  assert.match(result.parserWarning, /原始文本/);
+  assert.equal(result.records.length, 2);
+  assert.match(result.records[0].message, /hello world/);
+});
+
+test('auto detection ignores a partial last line in small files', async (t) => {
+  const dir = tempDir('partial-log');
+  await rm(dir, { recursive: true, force: true });
+  await mkdir(dir, { recursive: true });
+  t.after(async () => { await rm(dir, { recursive: true, force: true }); });
+  const file = path.join(dir, 'app.log');
+  const content = [
+    '2026-11-02 19:30:00.000  INFO 1 --- [main] a.B : first',
+    '2026-11-02 19:30:01.000 ERROR 1 --- [main] a.B : second',
+    'half-written-line-without-newline',
+  ].join('\n');
+  await writeFile(file, content, 'utf8');
+
+  const result = await readLogs({ logfiles: [file] });
+  assert.equal(result.parser, 'logback');
+  assert.equal(result.parserFallback, false);
+  assert.equal(result.records.length, 2);
+});
+
+test('auto detection keeps the best effort preset when one line is unparseable', async (t) => {
+  const dir = tempDir('fallback-log');
+  await rm(dir, { recursive: true, force: true });
+  await mkdir(dir, { recursive: true });
+  t.after(async () => { await rm(dir, { recursive: true, force: true }); });
+  const file = path.join(dir, 'app.log');
+  await writeFile(file, [
+    '2026-11-02 19:30:00.000  INFO 1 --- [main] a.B : first',
+    'random junk line',
+    '2026-11-02 19:30:01.000 ERROR 1 --- [main] a.B : second',
+    '2026-11-02 19:30:02.000  WARN 1 --- [main] a.B : third',
+    '',
+  ].join('\n'), 'utf8');
+
+  const result = await readLogs({ logfiles: [file] });
+  assert.equal(result.parser, 'logback');
+  assert.equal(result.parserFallback, true);
+  assert.match(result.parserWarning, /降级/);
+  assert.equal(result.parserDetection.selectedCandidate.unparsed, 1);
+});
+
+test('sampleLines drops an unterminated last line', async (t) => {
+  const dir = tempDir('sample-lines');
+  await rm(dir, { recursive: true, force: true });
+  await mkdir(dir, { recursive: true });
+  t.after(async () => { await rm(dir, { recursive: true, force: true }); });
+  const file = path.join(dir, 'sample.log');
+  await writeFile(file, 'a\nb\npartial', 'utf8');
+  assert.deepEqual(await sampleLines(file, 2000), ['a', 'b']);
+  assert.deepEqual(await sampleLines(file, 2), ['a', 'b']);
 });
 
 test('no logfiles yields an empty result', async () => {

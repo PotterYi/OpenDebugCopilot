@@ -126,9 +126,16 @@ export async function* readLines(filePath, { encoding = 'auto', maxBytes = 32 * 
  */
 export async function sampleLines(filePath, limit = 2000, options = {}) {
   const lines = [];
+  let reachedLimit = false;
   for await (const { line } of readLines(filePath, options)) {
     lines.push(line);
-    if (lines.length >= limit) break;
+    if (lines.length >= limit) {
+      reachedLimit = true;
+      break;
+    }
   }
+  // Files ending without a newline may still be mid-write. Drop that last
+  // (possibly partial) line from auto-detection samples; full scans keep it.
+  if (!reachedLimit && lines.length > 1) lines.pop();
   return lines;
 }

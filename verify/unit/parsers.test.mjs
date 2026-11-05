@@ -5,6 +5,7 @@ import {
   parseTimestamp,
   resolveParser,
   detectParserFromLines,
+  detectParserDetailed,
 } from '../../src/evidence/parsers.mjs';
 
 test('normalizes level aliases', () => {
@@ -64,4 +65,10 @@ test('auto detection requires >60% hits and no unparsed lines', () => {
 
   const polluted = [...logback, 'random junk line'];
   assert.equal(detectParserFromLines(polluted), null);
+
+  const detailed = detectParserDetailed(polluted);
+  assert.equal(detailed.selected, 'logback');
+  assert.equal(detailed.fallback, true);
+  assert.equal(detailed.selectedCandidate.unparsed, 1);
+  assert.equal(detailed.selectedCandidate.unparsedSamples.length, 1);
 });

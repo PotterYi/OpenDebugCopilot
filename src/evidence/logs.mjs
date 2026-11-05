@@ -1,6 +1,6 @@
 import { AppError } from '../core/errors.mjs';
 import { discoverLogFiles, readLines, sampleLines } from './logfiles.mjs';
-import { detectParserFromLines, isContinuationLine, levelRank, resolveParser } from './parsers.mjs';
+import { detectParserDetailed, isContinuationLine, levelRank, RAW_PARSER, resolveParser } from './parsers.mjs';
 
 const DEFAULT_MAX_BYTES = 32 * 1024 * 1024;
 const SAMPLE_LINES = 2000;
@@ -26,12 +26,26 @@ function normalizeRecord(parsed) {
 export async function resolveLogParser({ logfiles = [], parser = { preset: 'auto' }, encoding = 'auto', maxBytesPerFile = DEFAULT_MAX_BYTES } = {}) {
   const files = await discoverLogFiles(logfiles);
   if (files.length === 0) {
-    return { files, parserName: 'none', parser: null };
+    return {
+      files,
+      parserName: 'none',
+      parser: null,
+      parserFallback: false,
+      parserWarning: null,
+      parserDetection: null,
+    };
   }
 
   const spec = resolveParser(parser);
   if (spec.name !== 'auto') {
-    return { files, parserName: spec.name, parser: spec };
+    return {
+      files,
+      parserName: spec.name,
+      parser: spec,
+      parserFallback: false,
+      parserWarning: null,
+      parserDetection: null,
+    };
   }
 
   const perFile = Math.max(50, Math.ceil(SAMPLE_LINES / files.length));
@@ -40,15 +54,29 @@ export async function resolveLogParser({ logfiles = [], parser = { preset: 'auto
     samples.push(...(await sampleLines(file.path, perFile, { encoding, maxBytes: maxBytesPerFile })));
     if (samples.length >= SAMPLE_LINES) break;
   }
-  const detected = detectParserFromLines(samples);
-  if (!detected) {
-    throw new AppError(
-      'LOG_PARSER_DETECT_FAILED',
-      'Cannot auto-detect log format: no preset exceeds 60% hit rate with all lines parseable',
-      { exitCode: 3, details: { files: files.map((f) => f.path), presets: ['json-lines', 'logback', 'node'] } },
-    );
+  const detection = detectParserDetailed(samples);
+  if (!detection.selected) {
+    return {
+      files,
+      parserName: 'raw',
+      parser: RAW_PARSER,
+      parserFallback: true,
+      parserWarning: '所有日志解析预设均无法匹配，已按原始文本处理',
+      parserDetection: detection,
+    };
   }
-  return { files, parserName: detected, parser: resolveParser({ preset: detected }) };
+  const selected = detection.selectedCandidate;
+  const warning = detection.fallback
+    ? `自动探测已降级为 ${detection.selected}：命中率 ${Math.round((selected?.hitRate ?? 0) * 100)}%，${selected?.unparsed ?? 0} 行未解析`
+    : null;
+  return {
+    files,
+    parserName: detection.selected,
+    parser: resolveParser({ preset: detection.selected }),
+    parserFallback: detection.fallback,
+    parserWarning: warning,
+    parserDetection: detection,
+  };
 }
 
 /**
@@ -58,7 +86,7 @@ export async function resolveLogParser({ logfiles = [], parser = { preset: 'auto
  * @param {{ logfiles?: string[], parser?: any, encoding?: string, maxBytesPerFile?: number }} [options]
  */
 export async function createLogScanner(options = {}) {
-  const { files, parserName, parser } = await resolveLogParser(options);
+  const { files, parserName, parser, parserFallback, parserWarning, parserDetection } = await resolveLogParser(options);
   const { encoding = 'auto', maxBytesPerFile = DEFAULT_MAX_BYTES } = options;
   const stats = { files: files.length, lines: 0, parsed: 0, continuations: 0, unparsed: 0 };
 
@@ -95,7 +123,7 @@ export async function createLogScanner(options = {}) {
     }
   }
 
-  return { files, parserName, stats, records: iterate() };
+  return { files, parserName, parserFallback, parserWarning, parserDetection, stats, records: iterate() };
 }
 
 function inWindow(ts, anchor, window) {
@@ -161,6 +189,9 @@ export async function readLogs(options = {}) {
   return {
     records,
     parser: scanner.parserName,
+    parserFallback: scanner.parserFallback,
+    parserWarning: scanner.parserWarning,
+    parserDetection: scanner.parserDetection,
     files: scanner.files.map((f) => f.path),
     stats: scanner.stats,
     truncated,
@@ -201,6 +232,9 @@ export async function listThreads(options = {}) {
     threads,
     total: scanned,
     parser: scanner.parserName,
+    parserFallback: scanner.parserFallback,
+    parserWarning: scanner.parserWarning,
+    parserDetection: scanner.parserDetection,
     files: scanner.files.map((f) => f.path),
     stats: scanner.stats,
     stoppedEarly,
@@ -232,6 +266,9 @@ export async function searchAll(options = {}) {
     keyword,
     truncated: matches.length >= limit,
     parser: scanner.parserName,
+    parserFallback: scanner.parserFallback,
+    parserWarning: scanner.parserWarning,
+    parserDetection: scanner.parserDetection,
     files: scanner.files.map((f) => f.path),
     stats: scanner.stats,
   };

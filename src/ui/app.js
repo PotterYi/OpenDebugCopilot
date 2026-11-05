@@ -94,6 +94,8 @@ function fillForm(config) {
   form.elements.logfiles.value = (workspace.logfiles ?? []).join('\n');
   form.elements.sourceRoot.value = workspace.sourceRoot ?? '';
   form.elements.extraSourceRoots.value = (workspace.extraSourceRoots ?? []).join('\n');
+  form.elements.logParser.value = workspace.logParser ?? 'auto';
+  if (logParser) logParser.value = workspace.logParser ?? 'auto';
   form.elements.frontendSourceRoot.value = workspace.frontendSourceRoot ?? '';
   form.elements.frontendProjectRoot.value = workspace.frontendProjectRoot ?? '';
   form.elements.frontendStartCommand.value = workspace.frontendStartCommand ?? '';
@@ -111,6 +113,7 @@ function readForm() {
       logfiles: form.elements.logfiles.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean),
       sourceRoot: form.elements.sourceRoot.value.trim(),
       extraSourceRoots: form.elements.extraSourceRoots.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean),
+      logParser: form.elements.logParser.value,
       frontendSourceRoot: form.elements.frontendSourceRoot.value.trim(),
       frontendProjectRoot: form.elements.frontendProjectRoot.value.trim(),
       frontendStartCommand: form.elements.frontendStartCommand.value.trim(),
@@ -834,12 +837,18 @@ function renderRunBody(container, result, agent, view, { readOnly = false, showH
   container.append(section('上下文', kv([
     ['关联方式', correlation ? `${correlation.strategy}${correlation.matchedId ? ` (${correlation.matchedId})` : ''}` : 'n/a'],
     ['日志', `${result.logs?.count ?? 0} 条`],
+    ['日志解析', result.logs?.parser
+      ? `${result.logs.parser}${result.logs.parserFallback ? '（降级）' : ''}`
+      : 'n/a'],
     ['线程', String(result.threads?.total ?? 0)],
     ['工具调用', String(agent?.toolCalls?.length ?? 0)],
     ['前端错误', String(result.frontend?.errors?.length ?? 0)],
     ['前端源码', String(result.frontend?.files?.length ?? 0)],
     ['耗时', `${result.meta?.durationMs ?? 0} ms`],
   ])));
+  if (result.logs?.parserWarning) {
+    container.append(el('p', 'error-text small', `日志解析告警：${result.logs.parserWarning}`));
+  }
 
   const refs = Array.isArray(agent?.evidenceRefs) ? agent.evidenceRefs : [];
   if (refs.length) {
@@ -1485,7 +1494,8 @@ function renderLogResult(result, anchorRequest, tailMode = false) {
     : anchorRequest
       ? `${anchorRequest.method} ${requestPath(anchorRequest.url)} [${anchorRequest.status ?? '…'}] @ ${new Date(anchorRequest.startedAt ?? Date.now()).toLocaleString()}`
       : `时间窗 @ ${new Date().toLocaleString()}`;
-  logSummary.textContent = `${anchorText} · 解析器 ${result.parser ?? '-'} · 文件 ${stats.files ?? 0} · 行 ${stats.lines ?? 0} · 解析 ${stats.parsed ?? 0} · 续行 ${stats.continuations ?? 0} · 未解析 ${stats.unparsed ?? 0}`;
+  const parserLabel = `${result.parser ?? '-'}${result.parserFallback ? '（降级）' : ''}`;
+  logSummary.textContent = `${anchorText} · 解析器 ${parserLabel} · 文件 ${stats.files ?? 0} · 行 ${stats.lines ?? 0} · 解析 ${stats.parsed ?? 0} · 续行 ${stats.continuations ?? 0} · 未解析 ${stats.unparsed ?? 0}`;
   logOutput.textContent = '';
   if (!result.records || result.records.length === 0) {
     logOutput.textContent = '时间窗内没有匹配日志；可调整时间窗或切换解析器。';
@@ -1551,8 +1561,13 @@ async function queryLogsTab() {
       limit: 300,
     });
     renderLogResult(result, anchorRequest, tail);
-    logMessage.textContent = `查询完成：${result.records?.length ?? 0} 条`;
-    logMessage.className = 'message ok';
+    if (result.parserFallback && result.parserWarning) {
+      logMessage.textContent = `查询完成（降级解析）：${result.parserWarning}`;
+      logMessage.className = 'message error';
+    } else {
+      logMessage.textContent = `查询完成：${result.records?.length ?? 0} 条`;
+      logMessage.className = 'message ok';
+    }
   } catch (err) {
     logOutput.textContent = '';
     logSummary.textContent = '';
@@ -1645,6 +1660,7 @@ form.addEventListener('submit', async (event) => {
     renderLogSource(saved.workspace?.logfiles ?? []);
     if (saved.meta?.configDir) configPath.textContent = `配置目录：${saved.meta.configDir}`;
     setMessage(saved.meta?.configDir ? `已保存到 ${saved.meta.configDir}` : '已保存', 'ok');
+    if (logParser) logParser.value = saved.workspace?.logParser ?? 'auto';
     refreshDevServer().catch(() => {});
     if (currentRunView) renderRunInto(currentRunView);
   } catch (err) {
