@@ -11,7 +11,7 @@ const SYSTEM_PROMPT = `你是 DebugCopilot 的后端问题定位助手。你的�
 1. 只能通过 debugcopilot 提供的只读工具获取证据，不要假设未读取的文件内容。
 2. 每条结论都必须有证据支撑；evidenceRefs 的 ref 必须指向证据包中的条目（request / response / logs.records[i] / source.files[i] / threads）。
 3. 证据不足时写入 needsMoreInfo，不要编造日志、堆栈或源码。
-4. 工具调用轮次有限（最多 24 轮），没有新增证据就停止并给出阶段性结论。
+4. 工具调用应有节制；没有新增证据就停止并给出阶段性结论。
 5. 使用中文回答，结论要具体（涉及类名、日志关键行、HTTP 状态码）。
 6. 不要输出密码、Token、Cookie 等敏感信息。
 7. 修复建议放在 fixes 中，只能修改已通过 read_source 读取过的文件；file 使用工具返回的相对路径，root 标明 backend 或 frontend。读取前端源码时给 read_source/search_source 传 root=frontend。
@@ -29,6 +29,12 @@ const FOLLOWUP_SYSTEM_PROMPT = `你是 DebugCopilot 的诊断助手，正在和�
 4. 如果用户只想先看方案，不要给 search/replace 具体代码；要求具体修改时再给可唯一定位的 search/replace。
 5. 可以使用 debugcopilot 提供的只读工具补充日志、线程或源码证据；不要假设未读取的内容。
 6. 不要直接修改文件。使用中文回答。`;
+
+function turnLimitNote(turnLimit) {
+  return Number.isFinite(turnLimit) && turnLimit > 0
+    ? `\n\n补充：本轮最多 ${Math.floor(turnLimit)} 轮模型/工具交互。`
+    : '\n\n补充：本轮不设固定轮次上限；不要重复调用没有新增证据的工具。';
+}
 
 const RESULT_SCHEMA = {
   type: 'object',
@@ -321,7 +327,7 @@ export function createClaudeAgent({ model, maxTurns = null, timeoutMs = DEFAULT_
           permissionMode: 'dontAsk',
           ...(Number.isFinite(turnLimit) && turnLimit > 0 ? { maxTurns: Math.floor(turnLimit) } : {}),
           ...(maxBudgetUsd ? { maxBudgetUsd } : {}),
-          systemPrompt: SYSTEM_PROMPT,
+          systemPrompt: `${SYSTEM_PROMPT}${turnLimitNote(turnLimit)}`,
           outputFormat: { type: 'json_schema', schema: RESULT_SCHEMA },
           ...(model ? { model } : {}),
           ...(cwd ? { cwd } : {}),
@@ -453,6 +459,7 @@ export function createClaudeAgent({ model, maxTurns = null, timeoutMs = DEFAULT_
         });
         toolNames = tools.specs.map((spec) => `mcp__debugcopilot__${spec.name}`);
       }
+      const followUpTurnLimit = budget?.maxRounds ?? maxTurns;
       const session = query({
         prompt: buildFollowUpPrompt(question, previous),
         options: {
@@ -461,11 +468,11 @@ export function createClaudeAgent({ model, maxTurns = null, timeoutMs = DEFAULT_
             ? { mcpServers: { debugcopilot: server }, strictMcpConfig: true, allowedTools: toolNames }
             : { mcpServers: {}, strictMcpConfig: true, allowedTools: [] }),
           permissionMode: 'dontAsk',
-          ...(Number.isFinite(budget?.maxRounds ?? maxTurns) && (budget?.maxRounds ?? maxTurns) > 0
-            ? { maxTurns: Math.floor(budget?.maxRounds ?? maxTurns) }
+          ...(Number.isFinite(followUpTurnLimit) && followUpTurnLimit > 0
+            ? { maxTurns: Math.floor(followUpTurnLimit) }
             : {}),
           ...(maxBudgetUsd ? { maxBudgetUsd } : {}),
-          systemPrompt: FOLLOWUP_SYSTEM_PROMPT,
+          systemPrompt: `${FOLLOWUP_SYSTEM_PROMPT}${turnLimitNote(followUpTurnLimit)}`,
           outputFormat: { type: 'json_schema', schema: RESULT_SCHEMA },
           ...(model ? { model } : {}),
           ...(cwd ? { cwd } : {}),
