@@ -797,21 +797,32 @@ function renderHistoryThread(view, result) {
   if (conversation.length === 0 && result.agent) {
     conversation.push({ role: 'assistant', agent: result.agent, text: result.agent.conclusion ?? '' });
   }
+  let lastAssistantIndex = -1;
+  conversation.forEach((message, index) => {
+    if (message?.role === 'assistant') lastAssistantIndex = index;
+  });
 
-  for (const message of conversation) {
-    if (!message) continue;
+  conversation.forEach((message, index) => {
+    if (!message) return;
     if (message.role === 'user') {
       const bubble = el('div', 'chat-msg user history-user');
       bubble.textContent = message.text ?? '';
       thread.append(bubble);
-      continue;
+      return;
     }
-    if (message.role !== 'assistant') continue;
+    if (message.role !== 'assistant') return;
     const bubble = el('div', 'chat-msg assistant history-assistant');
     if (message.at) bubble.append(el('div', 'chat-time muted small', new Date(message.at).toLocaleString()));
-    renderRunBody(bubble, result, message.agent ?? result.agent ?? {}, view, { readOnly: true, showHeader: false });
+    // The latest turn uses the run's current agent so apply/undo/verify state stays in sync.
+    const agentForMessage = index === lastAssistantIndex
+      ? (result.agent ?? message.agent ?? {})
+      : (message.agent ?? result.agent ?? {});
+    renderRunBody(bubble, result, agentForMessage, view, {
+      readOnly: index !== lastAssistantIndex,
+      showHeader: false,
+    });
     thread.append(bubble);
-  }
+  });
   container.append(thread);
   if (api.isDesktop) container.append(buildChatSection(view));
 }

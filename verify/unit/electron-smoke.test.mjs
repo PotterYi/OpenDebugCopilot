@@ -566,7 +566,7 @@ test('applies and reverts all fixes through IPC', {
   assert.equal((await readdir(path.join(runDir, 'backups'))).length, 2);
 });
 
-test('renders full fixes and chat in the history tab without action buttons', {
+test('renders full fixes and chat in the history tab with actions only on the latest turn', {
   skip: available ? false : 'Electron binary is not installed',
   timeout: 60_000,
 }, async (t) => {
@@ -654,6 +654,13 @@ test('renders full fixes and chat in the history tab without action buttons', {
         .some((node) => node.textContent.includes('先给方案'));
     }
 
+    const actionCount = (root) => [...(root?.querySelectorAll('button') ?? [])].filter((button) => (
+      /应用修改|撤销|运行验证|全部应用|全部撤销/.test(button.textContent)
+    )).length;
+    const assistants = [...document.querySelectorAll('#report .history-assistant')];
+    result.oldActionButtons = assistants.slice(0, -1).reduce((sum, node) => sum + actionCount(node), 0);
+    result.latestActionButtons = assistants.length > 0 ? actionCount(assistants[assistants.length - 1]) : 0;
+
     const remove = document.querySelector('#runs .run-delete');
     if (!remove) return { ...result, deleted: false, reason: 'delete button missing' };
     window.confirm = () => true;
@@ -690,8 +697,10 @@ test('renders full fixes and chat in the history tab without action buttons', {
   assert.equal(smoke.uiEvalResult.rendered, true);
   assert.equal(smoke.uiEvalResult.conclusion, '历史诊断结论');
   assert.equal(smoke.uiEvalResult.fixSummary, '历史修复建议');
-  assert.equal(smoke.uiEvalResult.batchButtons, 0);
-  assert.equal(smoke.uiEvalResult.actionButtons, 0);
+  assert.equal(smoke.uiEvalResult.batchButtons, 2);
+  assert.ok(smoke.uiEvalResult.actionButtons > 0);
+  assert.equal(smoke.uiEvalResult.oldActionButtons, 0);
+  assert.ok(smoke.uiEvalResult.latestActionButtons > 0);
   assert.equal(smoke.uiEvalResult.followupProgressPresent, true);
   assert.match(smoke.uiEvalResult.reportClass, /diagnose-card/);
   assert.doesNotMatch(smoke.uiEvalResult.reportClass, /muted/);
