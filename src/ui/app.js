@@ -188,8 +188,14 @@ function openProfileModal(mode, profileId = null) {
   $('profile-modal-title').textContent = mode === 'rename' ? '重命名工作区配置' : '保存工作区配置';
   profileNameInput.value = mode === 'rename' ? (profile?.name ?? '') : '';
   profileModal.hidden = false;
+  hideBrowserForModal();
   profileNameInput.focus();
   profileNameInput.select();
+}
+
+function closeProfileModal() {
+  profileModal.hidden = true;
+  restoreBrowserAfterModal();
 }
 
 async function submitProfileName() {
@@ -201,7 +207,7 @@ async function submitProfileName() {
   try {
     if (profileModalMode === 'rename') {
       await api.renameProfile(profileModalTargetId, name);
-      profileModal.hidden = true;
+      closeProfileModal();
       await loadConfig();
       setStatus(`配置已重命名为 ${name}`, 'ok');
     } else {
@@ -209,7 +215,7 @@ async function submitProfileName() {
         workspace: readForm().workspace,
         routing: { rules: collectRules() },
       });
-      profileModal.hidden = true;
+      closeProfileModal();
       await loadConfig();
       setStatus(`已保存配置 ${name}`, 'ok');
     }
@@ -1827,6 +1833,18 @@ window.addEventListener('mouseup', () => {
   syncBounds();
 });
 
+function hideBrowserForModal() {
+  if (api.isDesktop && currentTab === 'browser') {
+    api.browser('setBounds', { visible: false }).catch(() => {});
+  }
+}
+
+function restoreBrowserAfterModal() {
+  if (api.isDesktop && currentTab === 'browser') {
+    requestAnimationFrame(() => syncBounds());
+  }
+}
+
 function openModelModal() {
   const agent = configCache?.workspace?.agent ?? {};
   modelNameInput.value = agent.model ?? '';
@@ -1834,11 +1852,13 @@ function openModelModal() {
   modelMaxBudgetInput.value = agent.maxBudgetUsd ?? '';
   modelTimeoutInput.value = agent.timeoutMs ?? 180000;
   modelModal.hidden = false;
+  hideBrowserForModal();
   modelNameInput.focus();
 }
 
 function closeModelModal() {
   modelModal.hidden = true;
+  restoreBrowserAfterModal();
 }
 
 async function saveModelSettings() {
@@ -1878,7 +1898,7 @@ profileRenameBtn.addEventListener('click', () => openProfileModal('rename', prof
 profileDeleteBtn.addEventListener('click', deleteSelectedProfile);
 profileSelect.addEventListener('change', () => switchProfileById(profileSelect.value));
 $('profile-modal-save').addEventListener('click', submitProfileName);
-$('profile-modal-cancel').addEventListener('click', () => { profileModal.hidden = true; });
+$('profile-modal-cancel').addEventListener('click', closeProfileModal);
 profileNameInput.addEventListener('keydown', (event) => {
   if (event.key === 'Enter') {
     event.preventDefault();
@@ -1886,11 +1906,11 @@ profileNameInput.addEventListener('keydown', (event) => {
   }
 });
 profileModal.addEventListener('click', (event) => {
-  if (event.target === profileModal) profileModal.hidden = true;
+  if (event.target === profileModal) closeProfileModal();
 });
 window.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;
-  if (!profileModal.hidden) profileModal.hidden = true;
+  if (!profileModal.hidden) closeProfileModal();
   else if (!modelModal.hidden) closeModelModal();
 });
 

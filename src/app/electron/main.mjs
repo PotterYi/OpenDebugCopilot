@@ -888,6 +888,14 @@ async function runSmoke(window, host) {
           modelModalPresent: Boolean(document.getElementById('model-modal')),
           profileBarPresent: Boolean(document.getElementById('profile-select'))
             && Boolean(document.getElementById('profile-save-as')),
+          profileModalOpens: (() => {
+            document.getElementById('profile-save-as')?.click();
+            const modal = document.getElementById('profile-modal');
+            const dialog = modal?.querySelector('.modal');
+            const opened = modal?.hidden === false && (dialog?.getBoundingClientRect().width ?? 0) > 0;
+            document.getElementById('profile-modal-cancel')?.click();
+            return opened && modal?.hidden === true;
+          })(),
           logToolbar: (() => {
             document.querySelector('[data-tab="logs"]').click();
             const parser = document.getElementById('log-parser');
