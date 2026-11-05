@@ -1,4 +1,4 @@
-import { readdir, readFile } from 'node:fs/promises';
+import { readdir, readFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { AppError } from '../core/errors.mjs';
 import { createStore } from '../core/store.mjs';
@@ -88,6 +88,23 @@ export function createService({ root = process.cwd(), configDir, runsDir } = {})
     return { runId, result, report };
   }
 
+  async function deleteRun(runId) {
+    if (!RUN_ID_PATTERN.test(String(runId))) {
+      throw new AppError('RUN_ID_INVALID', `Invalid run id: ${runId}`, { exitCode: 2 });
+    }
+    const dir = path.join(runsRoot, runId);
+    try {
+      // Deletes result/report/meta/run log/backups and verification logs together.
+      await rm(dir, { recursive: true });
+    } catch (err) {
+      if (err && err.code === 'ENOENT') {
+        throw new AppError('RUN_NOT_FOUND', `Run not found: ${runId}`, { exitCode: 3, cause: err });
+      }
+      throw new AppError('RUN_DELETE_FAILED', `Cannot delete run ${runId}`, { cause: err });
+    }
+    return { runId, deleted: true };
+  }
+
   return {
     root,
     runsRoot,
@@ -97,5 +114,6 @@ export function createService({ root = process.cwd(), configDir, runsDir } = {})
     saveConfig,
     listRuns,
     getRun,
+    deleteRun,
   };
 }

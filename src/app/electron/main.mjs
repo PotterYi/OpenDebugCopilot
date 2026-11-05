@@ -178,6 +178,7 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
   handle('dc:runs', async (_event, payload = {}) => {
     if (payload.action === 'list') return { runs: await service.listRuns() };
     if (payload.action === 'get') return service.getRun(payload.runId);
+    if (payload.action === 'delete') return service.deleteRun(payload.runId);
     throw new Error(`dc:runs: unknown action ${payload.action}`);
   });
 

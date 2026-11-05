@@ -96,6 +96,21 @@ button:hover { filter: brightness(1.08); }
 }
 .run-list li:hover { background: var(--panel-2); }
 .run-list .meta { color: var(--muted); font-size: 12px; }
+.run-list .run-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.run-list .run-delete {
+  flex: none;
+  padding: 2px 7px;
+  font-size: 11px;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px;
+}
+.run-list .run-delete:hover {
+  color: var(--danger);
+  border-color: #5a2c2c;
+  background: #2a1717;
+}
 .report {
   flex: 1;
   min-height: 200px;

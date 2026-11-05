@@ -41,6 +41,10 @@ export const api = {
     if (dc?.invoke) return dc.invoke('dc:runs', { action: 'get', runId });
     return http(`/api/runs/${encodeURIComponent(runId)}`);
   },
+  async deleteRun(runId) {
+    if (dc?.invoke) return dc.invoke('dc:runs', { action: 'delete', runId });
+    return http(`/api/runs/${encodeURIComponent(runId)}`, { method: 'DELETE' });
+  },
   async browser(action, payload = {}) {
     if (!dc?.invoke) return { pending: true };
     return dc.invoke('dc:browser', { action, ...payload });

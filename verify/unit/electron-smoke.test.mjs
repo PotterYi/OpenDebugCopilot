@@ -619,7 +619,7 @@ test('renders full fixes and batch controls in the history tab', {
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
     const buttons = [...document.querySelectorAll('#report .fix-batch button')];
-    return {
+    const result = {
       rendered: Boolean(card),
       conclusion: document.querySelector('#report .conclusion')?.textContent ?? '',
       fixSummary: document.querySelector('#report .fix-summary')?.textContent ?? '',
@@ -627,6 +627,18 @@ test('renders full fixes and batch controls in the history tab', {
       applyAllDisabled: buttons[0]?.disabled ?? null,
       reportClass: document.getElementById('report').className,
     };
+    const remove = document.querySelector('#runs .run-delete');
+    if (!remove) return { ...result, deleted: false, reason: 'delete button missing' };
+    window.confirm = () => true;
+    remove.click();
+    const deleteDeadline = Date.now() + 5000;
+    while (Date.now() < deleteDeadline) {
+      if ((document.querySelector('#runs li')?.textContent ?? '').includes('暂无诊断记录')) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    result.deleted = (document.querySelector('#runs li')?.textContent ?? '').includes('暂无诊断记录');
+    result.reportCleared = (document.getElementById('report')?.textContent ?? '').includes('选择一条历史查看报告');
+    return result;
   })()`;
 
   const child = spawn(electronPath, [
@@ -655,4 +667,7 @@ test('renders full fixes and batch controls in the history tab', {
   assert.equal(smoke.uiEvalResult.applyAllDisabled, false);
   assert.match(smoke.uiEvalResult.reportClass, /diagnose-card/);
   assert.doesNotMatch(smoke.uiEvalResult.reportClass, /muted/);
+  assert.equal(smoke.uiEvalResult.deleted, true);
+  assert.equal(smoke.uiEvalResult.reportCleared, true);
+  await assert.rejects(readFile(path.join(runDir, 'result.json'), 'utf8'));
 });

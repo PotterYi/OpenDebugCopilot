@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { createService } from '../../src/app/service.mjs';
 import { startServer } from '../../src/app/server.mjs';
@@ -77,6 +77,13 @@ test('lists and returns run artifacts', async (t) => {
   const run = await fetch(`${server.url}/api/runs/20261102-120000-abcdef`).then((r) => r.json());
   assert.equal(run.report, '# report');
   assert.equal((await fetch(`${server.url}/api/runs/missing`)).status, 404);
+
+  const deleted = await fetch(`${server.url}/api/runs/20261102-120000-abcdef`, { method: 'DELETE' })
+    .then((r) => r.json());
+  assert.equal(deleted.deleted, true);
+  assert.equal((await fetch(`${server.url}/api/runs/20261102-120000-abcdef`)).status, 404);
+  await assert.rejects(readFile(path.join(runDir, 'result.json'), 'utf8'));
+  assert.equal((await fetch(`${server.url}/api/runs/..%2Fescape`, { method: 'DELETE' })).status, 400);
 });
 
 test('reports EADDRINUSE when the port is already taken', async (t) => {

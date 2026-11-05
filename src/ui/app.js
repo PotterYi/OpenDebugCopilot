@@ -164,12 +164,41 @@ async function loadRuns() {
     for (const run of runs) {
       const li = document.createElement('li');
       const title = document.createElement('span');
+      title.className = 'run-title';
       title.textContent = run.scenario || run.runId;
       const meta = document.createElement('span');
       meta.className = 'meta';
       const when = run.startedAt ? new Date(run.startedAt).toLocaleString() : '';
       meta.textContent = `${run.agent ?? ''} ${run.mode ?? ''} · ${when}`.trim();
-      li.append(title, meta);
+
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'run-delete';
+      remove.textContent = '删除';
+      remove.title = '删除该诊断及其备份';
+      remove.addEventListener('click', async (event) => {
+        event.stopPropagation();
+        const ok = window.confirm(`删除诊断 ${run.runId}？\n\n该诊断的结果、日志和备份文件都会删除，且不可恢复。`);
+        if (!ok) return;
+        try {
+          await api.deleteRun(run.runId);
+          const currentId = currentRunView?.response?.runId
+            ?? currentRunView?.response?.result?.meta?.runId;
+          if (currentId === run.runId) {
+            currentRunView = null;
+            reportEl.textContent = '选择一条历史查看报告';
+            reportEl.className = 'diagnose-card muted';
+          }
+          historyMessageEl.textContent = `已删除 ${run.runId}`;
+          historyMessageEl.className = 'message ok';
+          await loadRuns();
+        } catch (err) {
+          historyMessageEl.textContent = `删除失败：${err.message}`;
+          historyMessageEl.className = 'message error';
+        }
+      });
+
+      li.append(title, meta, remove);
       li.addEventListener('click', () => showRun(run.runId));
       runsEl.append(li);
     }

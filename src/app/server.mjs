@@ -110,6 +110,10 @@ export async function startServer({ service, uiDir, host = '127.0.0.1', port = 7
         sendJson(res, 200, await service.getRun(decodeURIComponent(runMatch[1])));
         return;
       }
+      if (runMatch && req.method === 'DELETE') {
+        sendJson(res, 200, await service.deleteRun(decodeURIComponent(runMatch[1])));
+        return;
+      }
       if (pathname.startsWith('/api/')) {
         sendJson(res, 404, { error: 'not_found' });
         return;
