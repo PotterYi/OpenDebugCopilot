@@ -30,7 +30,15 @@ function sendJson(res, status, payload) {
 
 function httpStatusFor(err) {
   if (!(err instanceof AppError)) return 500;
-  if (['CONFIG_INVALID', 'RUN_ID_INVALID', 'BODY_INVALID_JSON', 'BODY_TOO_LARGE', 'PROFILE_NAME_REQUIRED'].includes(err.code)) return 400;
+  if ([
+    'CONFIG_INVALID',
+    'RUN_ID_INVALID',
+    'BODY_INVALID_JSON',
+    'BODY_TOO_LARGE',
+    'PROFILE_NAME_REQUIRED',
+    'DATABASE_CONFIG_INVALID',
+    'DB_SECRET_UNAVAILABLE',
+  ].includes(err.code)) return 400;
   if (['RUN_NOT_FOUND', 'PROFILE_NOT_FOUND'].includes(err.code)) return 404;
   return 500;
 }
@@ -137,6 +145,23 @@ export async function startServer({ service, uiDir, host = '127.0.0.1', port = 7
           sendJson(res, 200, { config: await service.getConfig(), profiles: await service.listProfiles() });
           return;
         }
+      }
+      if (pathname === '/api/databases') {
+        if (req.method === 'GET') {
+          sendJson(res, 200, await service.getDatabaseConfig());
+          return;
+        }
+        if (req.method === 'PUT') {
+          sendJson(res, 200, await service.saveDatabaseConfig(await readJsonBody(req)));
+          return;
+        }
+        sendJson(res, 405, { error: 'method_not_allowed' });
+        return;
+      }
+      if (pathname === '/api/databases/test' && req.method === 'POST') {
+        const body = await readJsonBody(req);
+        sendJson(res, 200, await service.testDatabase(body?.connection ?? body));
+        return;
       }
       if (pathname === '/api/runs' && req.method === 'GET') {
         sendJson(res, 200, { runs: await service.listRuns() });

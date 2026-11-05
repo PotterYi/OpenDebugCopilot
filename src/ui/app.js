@@ -59,6 +59,23 @@ const modelNameInput = $('model-name');
 const modelMaxTurnsInput = $('model-max-turns');
 const modelMaxBudgetInput = $('model-max-budget');
 const modelTimeoutInput = $('model-timeout');
+const databaseListEl = $('database-list');
+const databaseMessageEl = $('database-message');
+const databaseStatusEl = $('database-status');
+const databaseModal = $('database-modal');
+const databaseEditor = $('database-editor');
+const databaseEditorTitle = $('database-editor-title');
+const databaseEditorActions = $('database-editor-actions');
+const databaseNameInput = $('database-name');
+const databaseHostInput = $('database-host');
+const databasePortInput = $('database-port');
+const databaseDbInput = $('database-name-db');
+const databaseUserInput = $('database-user');
+const databasePasswordInput = $('database-password');
+const databasePasswordEnvInput = $('database-password-env');
+const databaseAllowWriteInput = $('database-allow-write');
+const databaseEnabledInput = $('database-enabled');
+const databaseModalMessage = $('database-modal-message');
 
 let currentTab = 'browser';
 let configCache = null;
@@ -80,6 +97,8 @@ let selectedRunId = null;
 let profilesState = { activeId: null, profiles: [] };
 let profileModalMode = 'create';
 let profileModalTargetId = null;
+let databasesState = { activeId: null, connections: [] };
+let databaseEditingId = null;
 let diagnoseProgressSteps = [];
 let followUpProgressContext = null;
 const MAX_DEV_LOG_LINES = 300;
@@ -257,6 +276,224 @@ async function deleteSelectedProfile() {
   }
 }
 
+function databaseTarget(connection) {
+  const host = connection.host || '-';
+  const port = connection.port ?? 3306;
+  return `${host}:${port}${connection.database ? `/${connection.database}` : ''}`;
+}
+
+function renderDatabases() {
+  databaseListEl.textContent = '';
+  const connections = databasesState.connections ?? [];
+  if (connections.length === 0) {
+    databaseListEl.append(el('li', 'muted small', '尚未配置数据库连接'));
+    databaseStatusEl.textContent = '未配置';
+    return;
+  }
+  databaseStatusEl.textContent = `${connections.filter((item) => item.enabled !== false).length}/${connections.length} 启用`;
+  for (const connection of connections) {
+    const li = el('li', 'database-item');
+    if (connection.id === databasesState.activeId) li.classList.add('active');
+    const main = el('div', 'database-main');
+    const titleRow = el('span', 'database-name');
+    titleRow.textContent = connection.name || connection.id;
+    if (connection.id === databasesState.activeId) titleRow.append(el('span', 'badge ok', '当前'));
+    if (connection.allowWrite) titleRow.append(el('span', 'badge', '可写'));
+    if (connection.enabled === false) titleRow.append(el('span', 'badge', '已停用'));
+    main.append(titleRow, el('span', 'database-target', databaseTarget(connection)));
+    li.append(main);
+
+    if (connection.id !== databasesState.activeId) {
+      const activate = el('button', 'secondary', '设为当前');
+      activate.type = 'button';
+      activate.addEventListener('click', async (event) => {
+        event.stopPropagation();
+        await saveDatabasesConfig({ activeId: connection.id });
+      });
+      li.append(activate);
+    }
+    const edit = el('button', 'secondary', '编辑');
+    edit.type = 'button';
+    edit.addEventListener('click', (event) => {
+      event.stopPropagation();
+      openDatabaseEditor(connection);
+    });
+    const test = el('button', 'secondary', '测试');
+    test.type = 'button';
+    test.addEventListener('click', async (event) => {
+      event.stopPropagation();
+      test.textContent = '测试中…';
+      test.disabled = true;
+      try {
+        const result = await api.testDatabase(connection);
+        setDatabaseMessage(
+          result?.ok
+            ? `连接成功：${result.name || connection.name}（${result.latencyMs}ms）`
+            : `连接失败：${result?.error ?? '未知错误'}`,
+          result?.ok ? 'ok' : 'error',
+        );
+      } catch (error) {
+        setDatabaseMessage(`连接失败：${error.message}`, 'error');
+      } finally {
+        test.textContent = '测试';
+        test.disabled = false;
+      }
+    });
+    const remove = el('button', 'secondary', '删除');
+    remove.type = 'button';
+    remove.addEventListener('click', async (event) => {
+      event.stopPropagation();
+      if (!window.confirm(`删除数据库连接 ${connection.name || connection.id}？`)) return;
+      const connectionsNext = connections.filter((item) => item.id !== connection.id);
+      const activeId = databasesState.activeId === connection.id
+        ? (connectionsNext.find((item) => item.enabled !== false)?.id ?? connectionsNext[0]?.id ?? null)
+        : databasesState.activeId;
+      await saveDatabasesConfig({ activeId, connections: connectionsNext });
+    });
+    li.append(edit, test, remove);
+    databaseListEl.append(li);
+  }
+}
+
+function setDatabaseMessage(text, kind = '') {
+  databaseMessageEl.textContent = text;
+  databaseMessageEl.className = `message ${kind}`.trim();
+}
+
+async function saveDatabasesConfig(patch = {}) {
+  // Never send the public `hasPassword` flag back to the store.
+  const connections = (patch.connections ?? databasesState.connections).map((connection) => {
+    const { hasPassword: _hasPassword, ...rest } = connection;
+    return rest;
+  });
+  try {
+    const saved = await api.saveDatabases({
+      activeId: patch.activeId ?? databasesState.activeId,
+      connections,
+    });
+    databasesState = saved;
+    renderDatabases();
+    setDatabaseMessage('已保存', 'ok');
+    return true;
+  } catch (error) {
+    setDatabaseMessage(`保存失败：${error.message}`, 'error');
+    return false;
+  }
+}
+
+async function loadDatabases() {
+  try {
+    databasesState = await api.getDatabases();
+    renderDatabases();
+  } catch (error) {
+    databaseStatusEl.textContent = '读取失败';
+    setDatabaseMessage(`读取数据库配置失败：${error.message}`, 'error');
+  }
+}
+
+async function openDatabaseManager() {
+  closeDatabaseEditor();
+  databaseModalMessage.textContent = '';
+  databaseModalMessage.className = 'message';
+  databaseModal.hidden = false;
+  hideBrowserForModal();
+  await loadDatabases();
+}
+
+function openDatabaseEditor(connection = null) {
+  databaseEditingId = connection?.id ?? null;
+  databaseEditorTitle.textContent = connection ? '编辑数据库连接' : '添加数据库连接';
+  databaseNameInput.value = connection?.name ?? '';
+  databaseHostInput.value = connection?.host ?? '127.0.0.1';
+  databasePortInput.value = connection?.port ?? 3306;
+  databaseDbInput.value = connection?.database ?? '';
+  databaseUserInput.value = connection?.user ?? '';
+  databasePasswordInput.value = '';
+  databasePasswordInput.placeholder = connection?.hasPassword ? '已保存；留空表示不修改' : '留空表示无密码';
+  databasePasswordEnvInput.value = connection?.passwordEnv ?? '';
+  databaseAllowWriteInput.checked = Boolean(connection?.allowWrite);
+  databaseEnabledInput.checked = connection?.enabled !== false;
+  databaseModalMessage.textContent = '';
+  databaseModalMessage.className = 'message';
+  databaseEditor.hidden = false;
+  databaseEditorActions.hidden = false;
+  databaseNameInput.focus();
+}
+
+function closeDatabaseEditor() {
+  databaseEditor.hidden = true;
+  databaseEditorActions.hidden = true;
+  databaseEditingId = null;
+}
+
+function closeDatabaseModal() {
+  closeDatabaseEditor();
+  databaseModal.hidden = true;
+  restoreBrowserAfterModal();
+}
+
+function databaseFormPayload() {
+  const password = databasePasswordInput.value;
+  return {
+    ...(databaseEditingId ? { id: databaseEditingId } : {}),
+    name: databaseNameInput.value.trim(),
+    host: databaseHostInput.value.trim(),
+    port: Number(databasePortInput.value || 3306),
+    database: databaseDbInput.value.trim(),
+    user: databaseUserInput.value.trim(),
+    ...(password ? { password } : {}),
+    passwordEnv: databasePasswordEnvInput.value.trim(),
+    allowWrite: databaseAllowWriteInput.checked,
+    enabled: databaseEnabledInput.checked,
+  };
+}
+
+async function saveDatabaseModal() {
+  const payload = databaseFormPayload();
+  if (!payload.host) {
+    databaseModalMessage.textContent = '主机不能为空';
+    databaseModalMessage.className = 'message error';
+    return;
+  }
+  const connections = [...databasesState.connections];
+  const index = connections.findIndex((item) => item.id === databaseEditingId);
+  if (index >= 0) connections[index] = { ...connections[index], ...payload };
+  else connections.push(payload);
+  const ok = await saveDatabasesConfig({ connections });
+  if (ok) closeDatabaseEditor();
+  else {
+    databaseModalMessage.textContent = databaseMessageEl.textContent;
+    databaseModalMessage.className = 'message error';
+  }
+}
+
+async function testDatabaseModal() {
+  const payload = databaseFormPayload();
+  if (!payload.host) {
+    databaseModalMessage.textContent = '主机不能为空';
+    databaseModalMessage.className = 'message error';
+    return;
+  }
+  const button = $('database-test');
+  button.disabled = true;
+  button.textContent = '测试中…';
+  databaseModalMessage.textContent = '';
+  databaseModalMessage.className = 'message';
+  try {
+    const result = await api.testDatabase(payload);
+    databaseModalMessage.textContent = result?.ok
+      ? `连接成功（${result.latencyMs}ms）`
+      : `连接失败：${result?.error ?? '未知错误'}`;
+    databaseModalMessage.className = `message ${result?.ok ? 'ok' : 'error'}`;
+  } catch (error) {
+    databaseModalMessage.textContent = `连接失败：${error.message}`;
+    databaseModalMessage.className = 'message error';
+  } finally {
+    button.disabled = false;
+    button.textContent = '测试连接';
+  }
+}
+
 async function loadConfig() {
   try {
     const config = await api.getConfig();
@@ -339,10 +576,10 @@ async function loadRuns() {
       remove.title = '删除该诊断及其备份';
       remove.addEventListener('click', async (event) => {
         event.stopPropagation();
-        const ok = window.confirm(`删除诊断 ${run.runId}？\n\n该诊断的结果、日志和备份文件都会删除，且不可恢复。`);
+        const ok = window.confirm(`删除诊断 ${run.runId}？\n\n该诊断的结果、日志、备份和数据库查询结果都会删除，且不可恢复。`);
         if (!ok) return;
         try {
-          await api.deleteRun(run.runId);
+          const deleted = await api.deleteRun(run.runId);
           if (selectedRunId === run.runId) {
             selectedRunId = null;
             currentRunView = null;
@@ -350,7 +587,10 @@ async function loadRuns() {
             reportEl.textContent = '';
             reportEl.className = 'diagnose-card muted';
           }
-          historyMessageEl.textContent = `已删除 ${run.runId}`;
+          const queryNote = deleted?.databaseQueries
+            ? `（同时删除 ${deleted.databaseQueries} 条数据库查询结果）`
+            : '';
+          historyMessageEl.textContent = `已删除 ${run.runId}${queryNote}`;
           historyMessageEl.className = 'message ok';
           await loadRuns();
         } catch (err) {
@@ -1049,6 +1289,7 @@ function renderRunBody(container, result, agent, view, { readOnly = false, showH
       : 'n/a'],
     ['线程', String(result.threads?.total ?? 0)],
     ['工具调用', String(agent?.toolCalls?.length ?? 0)],
+    ['数据库查询', String(result.databaseQueries?.length ?? 0)],
     ['前端错误', String(result.frontend?.errors?.length ?? 0)],
     ['前端源码', String(result.frontend?.files?.length ?? 0)],
     ['耗时', `${result.meta?.durationMs ?? 0} ms`],
@@ -1058,6 +1299,26 @@ function renderRunBody(container, result, agent, view, { readOnly = false, showH
   }
   if (result.logs?.parserWarning) {
     container.append(el('p', 'error-text small', `日志解析告警：${result.logs.parserWarning}`));
+  }
+
+  const databaseQueries = Array.isArray(result.databaseQueries) ? result.databaseQueries : [];
+  if (databaseQueries.length > 0) {
+    const list = el('ul', 'evidence-list');
+    for (const query of databaseQueries) {
+      const target = query.connection?.name ?? query.connection?.id ?? '-';
+      const outcome = query.error
+        ? `失败：${query.message ?? query.code ?? 'unknown'}`
+        : (query.rowCount != null ? `${query.rowCount} 行` : (query.affectedRows != null ? `影响 ${query.affectedRows} 行` : 'ok'));
+      const item = el('li', null, `${query.error ? '❌' : '✅'} ${query.name} · ${target} · ${outcome}`);
+      if (query.sql) {
+        const sql = String(query.sql);
+        item.append(el('code', 'muted small', ` ${sql.length > 200 ? `${sql.slice(0, 200)}…` : sql}`));
+      }
+      if (query.file) item.append(el('span', 'muted small', ` (${query.file})`));
+      list.append(item);
+    }
+    container.append(section(`数据库查询 (${databaseQueries.length})`, list));
+    container.append(el('p', 'muted small', '查询结果随诊断记录保存；删除该诊断会一并删除。'));
   }
 
   const refs = Array.isArray(agent?.evidenceRefs) ? agent.evidenceRefs : [];
@@ -1931,13 +2192,24 @@ profileNameInput.addEventListener('keydown', (event) => {
 profileModal.addEventListener('click', (event) => {
   if (event.target === profileModal) closeProfileModal();
 });
+
+$('database-add').addEventListener('click', () => openDatabaseEditor(null));
+$('database-save').addEventListener('click', saveDatabaseModal);
+$('database-cancel').addEventListener('click', closeDatabaseEditor);
+$('database-close').addEventListener('click', closeDatabaseModal);
+$('database-test').addEventListener('click', testDatabaseModal);
+databaseModal.addEventListener('click', (event) => {
+  if (event.target === databaseModal) closeDatabaseModal();
+});
 window.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;
-  if (!profileModal.hidden) closeProfileModal();
+  if (!databaseModal.hidden) closeDatabaseModal();
+  else if (!profileModal.hidden) closeProfileModal();
   else if (!modelModal.hidden) closeModelModal();
 });
 
 api.onModelSettings(openModelModal);
+api.onDatabaseSettings(openDatabaseManager);
 
 const advancedToggle = $('toggle-advanced');
 const advancedConfig = $('advanced-config');

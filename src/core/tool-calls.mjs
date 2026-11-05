@@ -101,6 +101,18 @@ function summarizeCall(call) {
     };
   }
 
+  if (name === 'query_db' || name === 'write_db') {
+    return {
+      ...base,
+      connection: result?.connection ?? null,
+      rowCount: result?.rowCount ?? null,
+      affectedRows: result?.affectedRows ?? null,
+      durationMs: result?.durationMs ?? null,
+      truncated: Boolean(result?.truncated),
+      columns: (result?.columns ?? []).slice(0, 30),
+    };
+  }
+
   return base;
 }
 

@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 const CHANNELS = new Set([
   'dc:config',
+  'dc:databases',
   'dc:browser',
   'dc:capture',
   'dc:logs',
@@ -19,6 +20,7 @@ const EVENTS = new Set([
   'dc:diagnose:progress',
   'dc:followup:progress',
   'dc:devserver:event',
+  'dc:database:open',
   'dc:model:open',
 ]);
 

@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from '../core/config.mjs';
+import { createDatabaseStore } from '../core/database-store.mjs';
 import { loadScenario, resolveScenarioPaths } from '../core/scenario.mjs';
 import { selectDriver } from '../driver/index.mjs';
 import { UsageError, toErrorPayload } from '../core/errors.mjs';
@@ -313,11 +314,21 @@ export async function main(argv = process.argv.slice(2), { root = ROOT } = {}) {
           maxBudgetUsd: parsed.budgetUsd,
         });
 
+    // CLI has no safeStorage: encrypted passwords cannot be decrypted here.
+    // Connections using passwordEnv still work; the rest are skipped by preflight.
+    const databaseConfig = await createDatabaseStore({
+      configDir: path.join(root, 'configs'),
+    }).getRuntimeConfig();
+
     const { result, runDir } = await runDiagnosis(scenario, {
       runsDir: parsed.runsDir ? path.resolve(parsed.runsDir) : path.resolve(root, config.runsDir ?? 'runs'),
       question: parsed.question,
       recheck: parsed.recheck,
       agent,
+      // Non-interactive CLI: expose read-only queries only. Writes need the
+      // desktop confirmation dialog.
+      databases: databaseConfig.connections.map((connection) => ({ ...connection, allowWrite: false })),
+      activeDatabaseId: databaseConfig.activeId,
     });
 
     if (parsed.json) {

@@ -72,6 +72,68 @@ body {
 }
 .profile-bar select option { background: var(--panel-2); color: var(--text); }
 .profile-bar button { padding: 4px 8px; font-size: 11px; }
+.modal.database-modal {
+  width: min(820px, calc(100vw - 32px));
+  max-height: min(82vh, 760px);
+  overflow: auto;
+}
+.database-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.database-editor h3 { margin: 0; font-size: 13px; font-weight: 600; }
+.database-flags {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+.modal label.inline { flex-direction: row; align-items: center; }
+.database-actions {
+  justify-content: space-between;
+  align-items: center;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.database-editor-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.database-actions #database-close { margin-left: auto; }
+.database-list {
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.database-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+  font-size: 12px;
+}
+.database-item .database-main { flex: 1 1 auto; min-width: 0; }
+.database-item .database-name { display: block; font-weight: 600; }
+.database-item .database-target { display: block; color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.database-item .badge { font-size: 10px; }
+.database-item button {
+  flex: 0 0 auto;
+  min-width: 56px;
+  padding: 4px 10px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.database-item.active { border-color: var(--accent); }
 .form { display: flex; flex-direction: column; gap: 10px; }
 .advanced-toggle { text-align: left; }
 .advanced-config {

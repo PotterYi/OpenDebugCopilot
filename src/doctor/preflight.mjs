@@ -2,6 +2,7 @@ import { access, stat } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import path from 'node:path';
 import { resolveScenarioPaths } from '../core/scenario.mjs';
+import { checkDatabases } from '../evidence/db.mjs';
 
 async function isReadable(target) {
   try {
@@ -20,6 +21,35 @@ async function isDirectory(target) {
   }
 }
 
+async function addDatabaseChecks(add, databases = []) {
+  const enabled = (databases ?? []).filter((connection) => connection.enabled !== false);
+  if (enabled.length === 0) {
+    add('database', 'warn', true, '未配置或未启用数据库连接');
+    return [];
+  }
+  const results = await checkDatabases(enabled);
+  const byId = new Map(results.map((result) => [result.id, result]));
+  for (const connection of enabled) {
+    const result = byId.get(connection.id);
+    add(
+      `database:${connection.name || connection.id}`,
+      'warn',
+      Boolean(result?.ok),
+      result?.ok
+        ? `${connection.host}/${connection.database || '(no db)'} (${result.latencyMs}ms)`
+        : (result?.error ?? 'unreachable'),
+    );
+  }
+  const reachable = enabled.filter((connection) => byId.get(connection.id)?.ok);
+  add(
+    'database',
+    'warn',
+    reachable.length > 0,
+    reachable.length > 0 ? `${reachable.length} 个可用` : '没有可达数据库，本次不提供数据库工具',
+  );
+  return reachable;
+}
+
 /**
  * Preflight checks that do not touch the target process.
  * Missing declared paths are errors; missing optional sections are warnings.
@@ -27,7 +57,7 @@ async function isDirectory(target) {
  * @param {Readonly<Record<string, any>>} scenario
  * @returns {Promise<{ ok: boolean, checks: Array<{ name: string, severity: 'error' | 'warn', ok: boolean, detail?: string }> }>}
  */
-export async function runPreflight(scenario) {
+export async function runPreflight(scenario, { databases = [] } = {}) {
   const checks = [];
   const add = (name, severity, ok, detail) => checks.push({ name, severity, ok, detail });
 
@@ -62,8 +92,9 @@ export async function runPreflight(scenario) {
     add('source-root', 'error', await isDirectory(paths.sourceRoot), paths.sourceRoot);
   }
 
+  const reachableDatabases = await addDatabaseChecks(add, databases);
   const ok = checks.every((check) => check.ok || check.severity === 'warn');
-  return { ok, checks };
+  return { ok, checks, databases: reachableDatabases };
 }
 
 /**
@@ -72,7 +103,7 @@ export async function runPreflight(scenario) {
  * @param {{ logfiles?: string[], sourceRoot?: string | null }} [input]
  * @returns {Promise<{ ok: boolean, checks: Array<{ name: string, severity: 'error' | 'warn', ok: boolean, detail?: string }> }>}
  */
-export async function runCapturePreflight({ logfiles = [], sourceRoot = null } = {}) {
+export async function runCapturePreflight({ logfiles = [], sourceRoot = null, databases = [] } = {}) {
   const checks = [];
   const add = (name, severity, ok, detail) => checks.push({ name, severity, ok, detail });
 
@@ -90,6 +121,7 @@ export async function runCapturePreflight({ logfiles = [], sourceRoot = null } =
     add('source-root', 'error', await isDirectory(path.resolve(sourceRoot)), sourceRoot);
   }
 
+  const reachableDatabases = await addDatabaseChecks(add, databases);
   const ok = checks.every((check) => check.ok || check.severity === 'warn');
-  return { ok, checks };
+  return { ok, checks, databases: reachableDatabases };
 }

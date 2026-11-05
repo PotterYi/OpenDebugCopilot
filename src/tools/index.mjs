@@ -4,12 +4,13 @@ import { AppError } from '../core/errors.mjs';
 import { resolveScenarioPaths } from '../core/scenario.mjs';
 import { readLogs, listThreads, searchAll } from '../evidence/logs.mjs';
 import { readSource, searchSource } from '../evidence/source.mjs';
+import { queryDatabase, writeDatabase } from '../evidence/db.mjs';
 
 const DEFAULT_MAX_RESULT_BYTES = 32 * 1024;
 const DEFAULT_READ_LINES = 200;
 
 /** Tool definitions exposed to the agent (MCP-shaped). */
-export function toolSpecs() {
+export function toolSpecs({ databases = [] } = {}) {
   return [
     {
       name: 'get_logs',
@@ -90,6 +91,37 @@ export function toolSpecs() {
         additionalProperties: false,
       },
     },
+    ...(databases.length > 0
+      ? [{
+          name: 'query_db',
+          description: 'Run a read-only SQL query against a configured test database. Supports SELECT, SHOW (schema), DESCRIBE and EXPLAIN. Omit connection to use the active one.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              connection: { type: 'string' },
+              sql: { type: 'string' },
+              limit: { type: 'integer', minimum: 1, maximum: 1000 },
+            },
+            required: ['sql'],
+            additionalProperties: false,
+          },
+        }]
+      : []),
+    ...(databases.some((connection) => connection.allowWrite)
+      ? [{
+          name: 'write_db',
+          description: 'Execute one approved INSERT/UPDATE/DELETE statement against a configured test database. The user must confirm every write.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              connection: { type: 'string' },
+              sql: { type: 'string' },
+            },
+            required: ['sql'],
+            additionalProperties: false,
+          },
+        }]
+      : []),
   ];
 }
 
@@ -104,6 +136,10 @@ export function toolSpecs() {
  *   sourceRoot?: string | null,
  *   frontendSourceRoot?: string | null,
  *   extraSourceRoots?: Array<{ id: string, root: string }>,
+ *   databases?: Array<any>,
+ *   activeDatabaseId?: string | null,
+ *   approveWrite?: (input: { connection: any, sql: string }) => Promise<boolean>,
+ *   databaseConnect?: Function,
  *   window?: { beforeMs: number, afterMs: number },
  *   limitBytes?: number,
  *   onCall?: (event: { id: number, stage: 'start'|'done', name: string, error?: boolean, durationMs?: number }) => void
@@ -117,6 +153,10 @@ export function createTools({
   sourceRoot,
   frontendSourceRoot,
   extraSourceRoots = [],
+  databases = [],
+  activeDatabaseId = null,
+  approveWrite = null,
+  databaseConnect = undefined,
   window,
   limitBytes = DEFAULT_MAX_RESULT_BYTES,
   onCall = null,
@@ -126,6 +166,21 @@ export function createTools({
   const root = sourceRoot ?? paths.sourceRoot;
   const frontendRoot = frontendSourceRoot ?? scenario.frontendSourceRoot ?? null;
   const extraRoots = Array.isArray(extraSourceRoots) ? extraSourceRoots : [];
+  const databaseConnections = Array.isArray(databases) ? databases : [];
+  const pickDatabase = (selector) => {
+    if (databaseConnections.length === 0) {
+      throw new AppError('DB_NOT_CONFIGURED', 'no reachable database connection is configured', { exitCode: 3 });
+    }
+    if (!selector) {
+      return databaseConnections.find((connection) => connection.id === activeDatabaseId)
+        ?? databaseConnections[0];
+    }
+    const text = String(selector);
+    const match = databaseConnections.find((connection) => connection.id === text)
+      ?? databaseConnections.find((connection) => connection.name === text);
+    if (!match) throw new AppError('DB_CONNECTION_NOT_FOUND', `database connection not found: ${selector}`, { exitCode: 2 });
+    return match;
+  };
   const pickRoot = (kind, extraRootId) => {
     if (kind === 'frontend') {
       if (!frontendRoot) throw new AppError('FRONTEND_SOURCE_ROOT_REQUIRED', 'frontend source root is not configured', { exitCode: 3 });
@@ -146,7 +201,13 @@ export function createTools({
   };
   const timeWindow = window ?? scenario.window;
   const spillDir = path.join(runDir, 'evidence');
+  // Database query results are a first-class run artifact, not an in-memory
+  // cache: every result lands under <run>/db-queries so deleting the run
+  // removes the queries atomically with the diagnosis record.
+  const dbQueryDir = path.join(runDir, 'db-queries');
+  const dbQueries = [];
   let seq = 0;
+  let dbSeq = 0;
 
   async function spill(name, value) {
     const text = JSON.stringify(value, null, 2);
@@ -162,6 +223,42 @@ export function createTools({
       bytes,
       preview: text.slice(0, 1000),
     };
+  }
+
+  /**
+   * Persist one database query/write result under the run directory.
+   * Returns the metadata recorded in result.json; the full payload stays on disk.
+   */
+  async function persistDatabaseResult(name, args, result, { error = false } = {}) {
+    dbSeq += 1;
+    const at = Date.now();
+    const id = `dbq-${String(dbSeq).padStart(3, '0')}`;
+    const entry = {
+      id,
+      name,
+      at,
+      connection: result?.connection ?? null,
+      sql: result?.sql ?? String(args?.sql ?? ''),
+      error: Boolean(error),
+      code: result?.code ?? null,
+      message: result?.message ?? null,
+      durationMs: result?.durationMs ?? null,
+      rowCount: result?.rowCount ?? null,
+      affectedRows: result?.affectedRows ?? null,
+      truncated: Boolean(result?.truncated),
+      columns: Array.isArray(result?.columns) ? result.columns : [],
+      file: null,
+    };
+    try {
+      await mkdir(dbQueryDir, { recursive: true });
+      const file = path.join(dbQueryDir, `${id}-${at.toString(36)}.json`);
+      await writeFile(file, JSON.stringify({ ...entry, result }, null, 2), 'utf8');
+      entry.file = path.relative(runDir, file).split(path.sep).join('/');
+    } catch {
+      // Persisting evidence must never fail the tool call itself.
+    }
+    dbQueries.push(entry);
+    return entry;
   }
 
   /** @type {Array<{ name: string, args: any, result: any, durationMs: number, error?: boolean }>} */
@@ -279,7 +376,62 @@ export function createTools({
         truncated: to < lines.length,
       };
     }, args),
+
+    query_db: (args = {}) => safe('query_db', async () => {
+      const connection = pickDatabase(args.connection);
+      try {
+        const result = await queryDatabase({
+          connection,
+          sql: args.sql,
+          limit: args.limit,
+          connect: databaseConnect,
+        });
+        await persistDatabaseResult('query_db', args, result);
+        return spill('query_db', result);
+      } catch (error) {
+        await persistDatabaseResult('query_db', args, {
+          error: true,
+          code: error?.code ?? null,
+          message: String(error?.message ?? error),
+        }, { error: true });
+        throw error;
+      }
+    }, args),
+
+    write_db: (args = {}) => safe('write_db', async () => {
+      const connection = pickDatabase(args.connection);
+      if (!connection.allowWrite) {
+        throw new AppError('DB_WRITE_DISABLED', 'write is disabled for this database connection', { exitCode: 3 });
+      }
+      if (typeof approveWrite !== 'function') {
+        throw new AppError('DB_WRITE_APPROVAL_REQUIRED', 'write requires explicit user approval', { exitCode: 3 });
+      }
+      try {
+        const result = await writeDatabase({
+          connection,
+          sql: args.sql,
+          approve: approveWrite,
+          connect: databaseConnect,
+        });
+        await persistDatabaseResult('write_db', args, result);
+        return spill('write_db', result);
+      } catch (error) {
+        await persistDatabaseResult('write_db', args, {
+          error: true,
+          code: error?.code ?? null,
+          message: String(error?.message ?? error),
+        }, { error: true });
+        throw error;
+      }
+    }, args),
   };
 
-  return { tools, specs: toolSpecs(), spillDir, calls };
+  return {
+    tools,
+    specs: toolSpecs({ databases: databaseConnections }),
+    spillDir,
+    dbQueryDir,
+    dbQueries,
+    calls,
+  };
 }

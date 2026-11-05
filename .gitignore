@@ -4,4 +4,5 @@ runs/
 dist/
 configs/workspace.json
 configs/routing.json
+configs/databases.json
 logs/

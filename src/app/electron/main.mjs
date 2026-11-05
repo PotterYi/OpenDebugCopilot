@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, safeStorage, shell } from 'electron';
 import path from 'node:path';
 import { access, appendFile, mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
@@ -161,6 +161,41 @@ function confirmFixDialog(parent, { title, message, detail }) {
   return pending.then((choice) => choice.response === 0);
 }
 
+/**
+ * Encrypt database passwords with Electron safeStorage. If the platform cannot
+ * encrypt, creation returns null and the store rejects plaintext passwords.
+ */
+function createSecretCodec() {
+  return {
+    scheme: 'safeStorage',
+    encrypt(value) {
+      try {
+        if (!safeStorage.isEncryptionAvailable()) return null;
+        return safeStorage.encryptString(String(value)).toString('base64');
+      } catch {
+        return null;
+      }
+    },
+    decrypt(data) {
+      return safeStorage.decryptString(Buffer.from(String(data), 'base64'));
+    },
+  };
+}
+
+/** Per-write confirmation for db tools; never auto-approve outside smoke runs. */
+function createWriteApprover(event) {
+  const parent = BrowserWindow.fromWebContents(event.sender) ?? mainWindow;
+  return async ({ connection, sql }) => {
+    if (smoke) return true;
+    const target = `${connection?.host ?? '-'}${connection?.database ? `/${connection.database}` : ''}`;
+    return confirmFixDialog(parent, {
+      title: '确认执行数据库写入',
+      message: `即将在 ${connection?.name ?? connection?.id ?? '测试库'} 执行写操作`,
+      detail: `${target}\n\n${sql}\n\n该操作会直接修改测试数据库。`,
+    });
+  };
+}
+
 function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
   const handle = (channel, fn) => ipcMain.handle(channel, async (event, payload) => {
     try {
@@ -187,6 +222,19 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
       return saved;
     }
     throw new Error(`dc:config: unknown action ${payload.action}`);
+  });
+
+  handle('dc:databases', async (_event, payload = {}) => {
+    switch (payload.action) {
+      case 'get':
+        return service.getDatabaseConfig();
+      case 'save':
+        return service.saveDatabaseConfig(payload.config);
+      case 'test':
+        return service.testDatabase(payload.connection);
+      default:
+        throw new Error(`dc:databases: unknown action ${payload.action}`);
+    }
   });
 
   handle('dc:profiles', async (_event, payload = {}) => {
@@ -633,6 +681,12 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
     const sendProgress = (progress) => {
       if (!event.sender.isDestroyed()) event.sender.send('dc:diagnose:progress', progress);
     };
+    let databaseConfig = { activeId: null, connections: [] };
+    try {
+      databaseConfig = await service.getDiagnosisDatabases();
+    } catch (error) {
+      log.warn('[db] database config unreadable; diagnosis continues without db tools:', error?.message ?? error);
+    }
     try {
       return await runCaptureDiagnosis(observation, {
         workspace,
@@ -643,6 +697,9 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
         agent,
         frontendErrors,
         allowExtraSources: payload.allowExtraSources === true,
+        databases: databaseConfig.connections,
+        activeDatabaseId: databaseConfig.activeId,
+        approveWrite: createWriteApprover(event),
         onProgress: sendProgress,
       });
     } catch (error) {
@@ -687,7 +744,22 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
           read_source: '读取源码',
           search_source: '搜索源码',
           read: '读取工具结果',
+          query_db: '查询数据库',
+          write_db: '写入数据库',
         };
+        let databaseConfig = { activeId: null, connections: [] };
+        try {
+          databaseConfig = await service.getDiagnosisDatabases();
+        } catch (error) {
+          log.warn('[db] database config unreadable; follow-up continues without db tools:', error?.message ?? error);
+        }
+        // Keep the same database scope as the original run when it is known.
+        const allowedDatabaseIds = Array.isArray(logContext.databases)
+          ? new Set(logContext.databases.map((connection) => connection.id))
+          : null;
+        const followDatabases = allowedDatabaseIds
+          ? databaseConfig.connections.filter((connection) => allowedDatabaseIds.has(connection.id))
+          : databaseConfig.connections;
         const followWindow = logContext.window ?? result.window;
         const scenario = {
           logfiles: logContext.logfiles ?? [],
@@ -707,6 +779,9 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
           sourceRoot: logContext.sourceRoot,
           frontendSourceRoot: logContext.frontendSourceRoot,
           extraSourceRoots: logContext.extraSourceRoots,
+          databases: followDatabases,
+          activeDatabaseId: logContext.activeDatabaseId ?? databaseConfig.activeId,
+          approveWrite: createWriteApprover(event),
           window: followWindow,
           onCall: (call) => sendProgress({
             id: `tool-${call.id}`,
@@ -734,6 +809,12 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
       sendProgress({ id: 'preview', label: '生成修复预览', status: 'done' });
     if (!Array.isArray(followAgent.evidenceRefs) || followAgent.evidenceRefs.length === 0) {
       followAgent.evidenceRefs = result.agent?.evidenceRefs ?? [{ type: 'request', ref: 'request' }];
+    }
+    if (followTools?.dbQueries?.length) {
+      result.databaseQueries = [
+        ...(Array.isArray(result.databaseQueries) ? result.databaseQueries : []),
+        ...followTools.dbQueries.map((query) => ({ ...query, source: 'followup' })),
+      ];
     }
 
     const at = Date.now();
@@ -1043,6 +1124,43 @@ async function runSmoke(window, host) {
       })()`);
     }
 
+    // The database entry must sit in the application menu, immediately before
+    // "模型", and open the settings modal.
+    const menuLabels = Menu.getApplicationMenu()?.items?.map((item) => item.label) ?? [];
+    const databaseMenuIndex = menuLabels.indexOf('数据库');
+    const modelMenuIndex = menuLabels.indexOf('模型');
+    const databaseMenuItem = Menu.getApplicationMenu()?.items
+      ?.find((item) => item.label === '数据库')?.submenu?.items
+      ?.find((item) => item.label === '数据库设置…');
+    databaseMenuItem?.click();
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    const databaseUi = await window.webContents.executeJavaScript(`(() => {
+      document.getElementById('database-add')?.click();
+      const allow = document.getElementById('database-allow-write');
+      const enabled = document.getElementById('database-enabled');
+      const allowRect = allow?.closest('label')?.getBoundingClientRect();
+      const enabledRect = enabled?.closest('label')?.getBoundingClientRect();
+      const test = document.getElementById('database-test')?.getBoundingClientRect();
+      const save = document.getElementById('database-save')?.getBoundingClientRect();
+      const cancel = document.getElementById('database-cancel')?.getBoundingClientRect();
+      const close = document.getElementById('database-close')?.getBoundingClientRect();
+      return {
+        open: document.getElementById('database-modal')?.hidden === false,
+        editorOpen: document.getElementById('database-editor')?.hidden === false,
+        flagsSameRow: Boolean(allowRect && enabledRect && Math.abs(allowRect.top - enabledRect.top) < 2),
+        actionsSameRow: Boolean(test && save && cancel && close && Math.abs(test.top - close.top) < 2),
+        actionsLeftToRight: Boolean(
+          test && save && cancel && close
+          && test.left < save.left && save.left < cancel.left && cancel.left < close.left
+        ),
+        edgeButtons: Boolean(
+          test && close
+          && test.left - document.getElementById('database-modal').querySelector('.modal').getBoundingClientRect().left < 40
+          && document.getElementById('database-modal').querySelector('.modal').getBoundingClientRect().right - close.right < 40
+        ),
+      };
+    })()`).catch(() => null);
+
     clearTimeout(timeout);
     const sample = host.list({ limit: 1 })[0] ?? null;
     const details = host.list({ limit: 50 }).map((item) => host.detail(item.id)).filter(Boolean);
@@ -1058,6 +1176,10 @@ async function runSmoke(window, host) {
       consoleDiagnose,
       pageTitle,
       menuHasLog: Boolean(Menu.getApplicationMenu()?.items?.some((item) => item.label === '日志')),
+      menuHasDatabase: databaseMenuIndex >= 0,
+      databaseMenuLeftOfModel: databaseMenuIndex >= 0 && modelMenuIndex >= 0 && databaseMenuIndex < modelMenuIndex,
+      databaseModalOpen: Boolean(databaseUi?.open),
+      databaseUi,
       url: host.status().url,
       evalResult,
       uiEvalResult,
@@ -1121,6 +1243,19 @@ function installApplicationMenu() {
     { role: 'editMenu' },
     { role: 'viewMenu' },
     { role: 'windowMenu' },
+    {
+      label: '数据库',
+      submenu: [
+        {
+          label: '数据库设置…',
+          click: () => {
+            if (mainWindow && !mainWindow.isDestroyed()) {
+              mainWindow.webContents.send('dc:database:open');
+            }
+          },
+        },
+      ],
+    },
     {
       label: '模型',
       submenu: [
@@ -1186,7 +1321,12 @@ async function bootstrap() {
     await mkdir(effectiveConfigDir, { recursive: true });
     await mkdir(effectiveRunsDir, { recursive: true });
   }
-  const service = createService({ root: ROOT, runsDir: effectiveRunsDir, configDir: effectiveConfigDir });
+  const service = createService({
+    root: ROOT,
+    runsDir: effectiveRunsDir,
+    configDir: effectiveConfigDir,
+    secretCodec: createSecretCodec(),
+  });
   const initial = await service.getConfig();
   let host = null;
   let router = null;

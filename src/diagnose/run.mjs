@@ -186,6 +186,10 @@ async function diagnoseWithFired({
   pollIntervalMs,
   preflight,
   startedAt,
+  databases = [],
+  activeDatabaseId = null,
+  approveWrite = null,
+  databaseConnect = undefined,
   onProgress = () => {},
 }) {
   const progress = (id, label, status = 'done', detail = null) => {
@@ -202,6 +206,8 @@ async function diagnoseWithFired({
     read_source: '读取源码',
     search_source: '搜索源码',
     read: '读取工具结果',
+    query_db: '查询数据库',
+    write_db: '写入数据库',
   };
 
   const extraSourceRoots = Array.isArray(scenario.extraSourceRoots) ? scenario.extraSourceRoots : [];
@@ -276,6 +282,10 @@ async function diagnoseWithFired({
     sourceRoot: paths.sourceRoot,
     frontendSourceRoot: frontendFixRoot,
     extraSourceRoots,
+    databases,
+    activeDatabaseId,
+    approveWrite,
+    databaseConnect,
     window: timeWindow,
     onCall: (call) => {
       const label = TOOL_LABELS[call.name] ?? call.name;
@@ -431,6 +441,17 @@ async function diagnoseWithFired({
   await runLog.info(`gates=${gates.ok} recheck=${recheckInfo ? recheckInfo.verdict : 'off'}`);
   progress('gates', '执行自检', 'done');
 
+  // Public connection labels only: passwords and resolved secrets must never
+  // be written into a run artifact.
+  const databaseLabels = databases.map((connection) => ({
+    id: connection.id,
+    name: connection.name,
+    host: connection.host,
+    port: connection.port,
+    database: connection.database ?? '',
+    allowWrite: Boolean(connection.allowWrite),
+  }));
+
   const result = {
     meta: {
       runId,
@@ -463,6 +484,8 @@ async function diagnoseWithFired({
         sourceRoot: paths.sourceRoot ?? null,
         frontendSourceRoot: frontendFixRoot,
         extraSourceRoots,
+        databases: databaseLabels,
+        activeDatabaseId,
       },
     },
     target,
@@ -479,6 +502,13 @@ async function diagnoseWithFired({
     source: evidence.source,
     frontend: evidence.frontend,
     extraSources: evidence.extraSources,
+    databases: {
+      activeId: activeDatabaseId,
+      connections: databaseLabels,
+    },
+    // Query metadata points at <run>/db-queries/*.json. Removing the run
+    // directory is therefore enough to remove every stored result.
+    databaseQueries: toolsBundle.dbQueries,
     agent: agentResult,
     gates,
     recheck: recheckInfo,
@@ -487,9 +517,14 @@ async function diagnoseWithFired({
   const report = buildReport(result);
   await writeFile(path.join(runDir, 'result.json'), JSON.stringify(result, null, 2), 'utf8');
   await writeFile(path.join(runDir, 'report.md'), renderMarkdown(report), 'utf8');
+  // The preflight snapshot may hold decrypted connection objects; persist only
+  // public labels so meta.json never contains database secrets.
+  const safePreflight = preflight
+    ? { ...preflight, databases: databaseLabels }
+    : preflight;
   await writeFile(
     path.join(runDir, 'meta.json'),
-    JSON.stringify({ ...result.meta, preflight }, null, 2),
+    JSON.stringify({ ...result.meta, preflight: safePreflight }, null, 2),
     'utf8',
   );
   await runLog.info(`done durationMs=${Date.now() - startedAt} result=${runDir}`);
@@ -510,11 +545,15 @@ export async function runDiagnosis(scenario, options = {}) {
     driverContext = {},
     window,
     preflight: preflightOverride,
+    databases = [],
+    activeDatabaseId = null,
+    approveWrite = null,
+    databaseConnect,
     onProgress = () => {},
   } = options;
 
   const startedAt = Date.now();
-  const preflight = preflightOverride ?? (await runPreflight(scenario));
+  const preflight = preflightOverride ?? (await runPreflight(scenario, { databases }));
   if (!preflight.ok) {
     const failed = preflight.checks.filter((check) => !check.ok && check.severity === 'error');
     throw new AppError(
@@ -523,6 +562,9 @@ export async function runDiagnosis(scenario, options = {}) {
       { exitCode: 3, details: { checks: preflight.checks } },
     );
   }
+  // Only connections that answered SELECT 1 are exposed to the agent. An
+  // unreachable test database must not turn into a stream of tool failures.
+  const reachableDatabases = preflight.databases ?? databases;
 
   const runDir = path.resolve(runsDir, runId);
   await mkdir(runDir, { recursive: true });
@@ -545,6 +587,10 @@ export async function runDiagnosis(scenario, options = {}) {
     pollIntervalMs,
     preflight,
     startedAt,
+    databases: reachableDatabases,
+    activeDatabaseId,
+    approveWrite,
+    databaseConnect,
     onProgress,
   });
 
@@ -579,6 +625,10 @@ export async function runCaptureDiagnosis(observation, options = {}) {
     window,
     preflight: preflightOverride,
     allowExtraSources = false,
+    databases = [],
+    activeDatabaseId = null,
+    approveWrite = null,
+    databaseConnect,
     onProgress = () => {},
   } = options;
 
@@ -635,7 +685,7 @@ export async function runCaptureDiagnosis(observation, options = {}) {
     dir: root,
   };
 
-  const preflight = preflightOverride ?? (await runCapturePreflight({ logfiles, sourceRoot }));
+  const preflight = preflightOverride ?? (await runCapturePreflight({ logfiles, sourceRoot, databases }));
   if (!preflight.ok) {
     const failed = preflight.checks.filter((check) => !check.ok && check.severity === 'error');
     throw new AppError(
@@ -644,6 +694,7 @@ export async function runCaptureDiagnosis(observation, options = {}) {
       { exitCode: 3, details: { checks: preflight.checks } },
     );
   }
+  const reachableDatabases = preflight.databases ?? databases;
 
   const runDir = path.resolve(runsDir, runId);
   await mkdir(runDir, { recursive: true });
@@ -671,6 +722,10 @@ export async function runCaptureDiagnosis(observation, options = {}) {
     pollIntervalMs,
     preflight,
     startedAt,
+    databases: reachableDatabases,
+    activeDatabaseId,
+    approveWrite,
+    databaseConnect,
     onProgress,
   });
 }

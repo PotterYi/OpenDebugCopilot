@@ -33,6 +33,18 @@ export const api = {
     if (dc?.invoke) return dc.invoke('dc:config', { action: 'save', ...patch });
     return http('/api/config', { method: 'PUT', body: JSON.stringify(patch) });
   },
+  async getDatabases() {
+    if (dc?.invoke) return dc.invoke('dc:databases', { action: 'get' });
+    return http('/api/databases');
+  },
+  async saveDatabases(config) {
+    if (dc?.invoke) return dc.invoke('dc:databases', { action: 'save', config });
+    return http('/api/databases', { method: 'PUT', body: JSON.stringify(config) });
+  },
+  async testDatabase(connection) {
+    if (dc?.invoke) return dc.invoke('dc:databases', { action: 'test', connection });
+    return http('/api/databases/test', { method: 'POST', body: JSON.stringify({ connection }) });
+  },
   async listRuns() {
     if (dc?.invoke) return (await dc.invoke('dc:runs', { action: 'list' })).runs;
     return (await http('/api/runs')).runs;
@@ -120,5 +132,9 @@ export const api = {
   onModelSettings(handler) {
     if (!dc?.on) return () => {};
     return dc.on('dc:model:open', handler);
+  },
+  onDatabaseSettings(handler) {
+    if (!dc?.on) return () => {};
+    return dc.on('dc:database:open', handler);
   },
 };

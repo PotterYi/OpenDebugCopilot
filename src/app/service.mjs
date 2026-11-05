@@ -2,17 +2,27 @@ import { readdir, readFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { AppError } from '../core/errors.mjs';
 import { createStore } from '../core/store.mjs';
+import { createDatabaseStore } from '../core/database-store.mjs';
+import { checkDatabases } from '../evidence/db.mjs';
 import { getLogFile } from '../core/logger.mjs';
 
 const RUN_ID_PATTERN = /^[A-Za-z0-9._-]+$/;
+const DB_QUERY_DIR = 'db-queries';
 
 /**
  * Shared service layer used by both the HTTP API and Electron IPC.
  *
- * @param {{ root?: string, configDir?: string, runsDir?: string }} [options]
+ * @param {{
+ *   root?: string,
+ *   configDir?: string,
+ *   runsDir?: string,
+ *   secretCodec?: { scheme?: string, encrypt?: (value: string) => string | null, decrypt?: (data: string) => string } | null
+ * }} [options]
  */
-export function createService({ root = process.cwd(), configDir, runsDir } = {}) {
-  const store = createStore({ configDir: configDir ?? path.join(root, 'configs') });
+export function createService({ root = process.cwd(), configDir, runsDir, secretCodec = null } = {}) {
+  const effectiveConfigDir = configDir ?? path.join(root, 'configs');
+  const store = createStore({ configDir: effectiveConfigDir });
+  const databaseStore = createDatabaseStore({ configDir: effectiveConfigDir, secretCodec });
   const runsRoot = path.resolve(runsDir ?? path.join(root, 'runs'));
 
   async function getConfig() {
@@ -93,8 +103,17 @@ export function createService({ root = process.cwd(), configDir, runsDir } = {})
       throw new AppError('RUN_ID_INVALID', `Invalid run id: ${runId}`, { exitCode: 2 });
     }
     const dir = path.join(runsRoot, runId);
+    // Database query results live under <run>/db-queries. Count them first so
+    // the response proves the cascade happened; rm -r then removes the
+    // diagnosis record and every query result in one operation.
+    let databaseQueries = 0;
     try {
-      // Deletes result/report/meta/run log/backups and verification logs together.
+      databaseQueries = (await readdir(path.join(dir, DB_QUERY_DIR))).length;
+    } catch {
+      // No query results (or the run is already gone).
+    }
+    try {
+      // Deletes result/report/meta/run log/backups/verification logs/db-queries together.
       await rm(dir, { recursive: true });
     } catch (err) {
       if (err && err.code === 'ENOENT') {
@@ -102,7 +121,7 @@ export function createService({ root = process.cwd(), configDir, runsDir } = {})
       }
       throw new AppError('RUN_DELETE_FAILED', `Cannot delete run ${runId}`, { cause: err });
     }
-    return { runId, deleted: true };
+    return { runId, deleted: true, databaseQueries };
   }
 
   async function listProfiles() {
@@ -129,11 +148,40 @@ export function createService({ root = process.cwd(), configDir, runsDir } = {})
     return getConfig();
   }
 
+  async function getDatabaseConfig() {
+    return databaseStore.getPublicConfig();
+  }
+
+  async function saveDatabaseConfig(input) {
+    return databaseStore.save(input);
+  }
+
+  /** Enabled connections with decrypted credentials; never exposed through HTTP/IPC. */
+  async function getRuntimeDatabases() {
+    return databaseStore.getRuntimeConfig();
+  }
+
+  /**
+   * Resolve one connection for diagnosis. Credentials stay in this function's
+   * return value and are only handed to the in-process mysql client.
+   */
+  async function getDiagnosisDatabases() {
+    const config = await databaseStore.getRuntimeConfig();
+    return { activeId: config.activeId, connections: config.connections };
+  }
+
+  async function testDatabase(input) {
+    const connection = await databaseStore.resolveForTest(input);
+    const [result] = await checkDatabases([connection]);
+    return result;
+  }
+
   return {
     root,
     runsRoot,
-    configDir: path.resolve(configDir ?? path.join(root, 'configs')),
+    configDir: path.resolve(effectiveConfigDir),
     store,
+    databaseStore,
     getConfig,
     saveConfig,
     listRuns,
@@ -144,5 +192,10 @@ export function createService({ root = process.cwd(), configDir, runsDir } = {})
     switchProfile,
     renameProfile,
     deleteProfile,
+    getDatabaseConfig,
+    saveDatabaseConfig,
+    getRuntimeDatabases,
+    getDiagnosisDatabases,
+    testDatabase,
   };
 }

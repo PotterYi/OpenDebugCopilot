@@ -182,6 +182,14 @@ test('electron shell boots, captures, routes and diagnoses', {
   assert.match(stdout, /"logSourcePresent":true/);
   assert.match(stdout, /"openLogButtonRemoved":true/);
   assert.match(stdout, /"menuHasLog":true/);
+  assert.match(stdout, /"menuHasDatabase":true/);
+  assert.match(stdout, /"databaseMenuLeftOfModel":true/);
+  assert.match(stdout, /"databaseModalOpen":true/);
+  assert.equal(smokeResult.databaseUi?.editorOpen, true);
+  assert.equal(smokeResult.databaseUi?.flagsSameRow, true);
+  assert.equal(smokeResult.databaseUi?.actionsSameRow, true);
+  assert.equal(smokeResult.databaseUi?.actionsLeftToRight, true);
+  assert.equal(smokeResult.databaseUi?.edgeButtons, true);
   assert.match(stdout, /"captureOk":true/);
   assert.match(stdout, /"captured":[1-9]/);
   assert.match(stdout, /"pageTitle":"ok"/);

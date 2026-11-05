@@ -232,6 +232,58 @@
     </section>
   </main>
 
+  <div id="database-modal" class="modal-backdrop" hidden>
+    <div class="modal database-modal" role="dialog" aria-modal="true" aria-labelledby="database-modal-title">
+      <h2 id="database-modal-title">数据库设置</h2>
+      <div class="panel-head">
+        <span class="muted small">AI 可用 query_db 只读查询；写操作每次确认。查询结果随诊断记录删除。</span>
+        <span id="database-status" class="muted small"></span>
+      </div>
+      <ul id="database-list" class="database-list"></ul>
+      <button id="database-add" type="button" class="secondary">添加数据库连接</button>
+      <p id="database-message" class="message"></p>
+      <div id="database-editor" class="database-editor" hidden>
+        <h3 id="database-editor-title">添加数据库连接</h3>
+        <label>名称
+          <input id="database-name" placeholder="例如：本地测试库" />
+        </label>
+        <label>主机
+          <input id="database-host" placeholder="127.0.0.1" />
+        </label>
+        <div class="row">
+          <label>端口
+            <input id="database-port" type="number" min="1" max="65535" placeholder="3306" />
+          </label>
+          <label>库名
+            <input id="database-name-db" placeholder="可选" />
+          </label>
+        </div>
+        <label>用户名
+          <input id="database-user" placeholder="root" />
+        </label>
+        <label>密码
+          <input id="database-password" type="password" placeholder="留空表示不修改" />
+        </label>
+        <label>或密码环境变量
+          <input id="database-password-env" placeholder="如 DC_DB_PASSWORD" />
+        </label>
+        <div class="database-flags">
+          <label class="inline"><input id="database-allow-write" type="checkbox" /> 允许 AI 写操作（每次仍需确认）</label>
+          <label class="inline"><input id="database-enabled" type="checkbox" checked /> 启用</label>
+        </div>
+        <p id="database-modal-message" class="message"></p>
+      </div>
+      <div class="modal-actions database-actions">
+        <div id="database-editor-actions" class="database-editor-actions" hidden>
+          <button id="database-test" type="button" class="secondary">测试连接</button>
+          <button id="database-save" type="button">保存</button>
+          <button id="database-cancel" type="button" class="secondary">取消</button>
+        </div>
+        <button id="database-close" type="button" class="secondary">关闭</button>
+      </div>
+    </div>
+  </div>
+
   <div id="profile-modal" class="modal-backdrop" hidden>
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="profile-modal-title">
       <h2 id="profile-modal-title">保存工作区配置</h2>
