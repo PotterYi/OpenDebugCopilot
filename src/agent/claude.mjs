@@ -1,5 +1,6 @@
 import { AppError } from '../core/errors.mjs';
 import { normalizeFixList } from '../core/fixes.mjs';
+import { summarizeToolCalls } from '../core/tool-calls.mjs';
 
 const DEFAULT_TIMEOUT_MS = 180_000;
 const MAX_TOOL_TEXT = 20_000;
@@ -160,6 +161,7 @@ function buildFollowUpPrompt(question, previous = {}) {
     originalQuestion: previous.meta?.question ?? '',
     conclusion: agent.conclusion ?? '',
     fixes,
+    toolCalls: summarizeToolCalls(agent.toolCalls),
     evidenceRefs: agent.evidenceRefs ?? [],
     needsMoreInfo: agent.needsMoreInfo ?? [],
     request: {
