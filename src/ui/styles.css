@@ -104,6 +104,7 @@ button:hover { filter: brightness(1.08); }
   font-size: 13px;
 }
 .run-list li:hover { background: var(--panel-2); }
+.run-list li.selected { background: var(--panel-2); outline: 1px solid var(--accent); border-radius: 6px; }
 .run-list .meta { color: var(--muted); font-size: 12px; }
 .run-list .run-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .run-list .run-delete {

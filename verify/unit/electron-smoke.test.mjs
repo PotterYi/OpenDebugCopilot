@@ -671,7 +671,7 @@ test('renders full fixes and chat in the history tab with actions only on the la
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
     result.deleted = (document.querySelector('#runs li')?.textContent ?? '').includes('暂无诊断记录');
-    result.reportCleared = (document.getElementById('report')?.textContent ?? '').includes('选择一条历史查看报告');
+    result.reportCleared = document.getElementById('report')?.hidden === true;
     return result;
   })()`;
 
@@ -710,4 +710,107 @@ test('renders full fixes and chat in the history tab with actions only on the la
   assert.equal(smoke.uiEvalResult.deleted, true);
   assert.equal(smoke.uiEvalResult.reportCleared, true);
   await assert.rejects(readFile(path.join(runDir, 'result.json'), 'utf8'));
+});
+
+test('history runs behave as an accordion', {
+  skip: available ? false : 'Electron binary is not installed',
+  timeout: 60_000,
+}, async (t) => {
+  const DIR = tempDir('electron-history-accordion');
+  await rm(DIR, { recursive: true, force: true });
+  await mkdir(path.join(DIR, 'configs'), { recursive: true });
+  t.after(async () => { await rm(DIR, { recursive: true, force: true }); });
+  const now = Date.now();
+  for (const [runId, scenario, conclusion, offset] of [
+    ['run-a', 'A', 'A结论', 0],
+    ['run-b', 'B', 'B结论', -1000],
+  ]) {
+    const dir = path.join(DIR, 'runs', runId);
+    await mkdir(dir, { recursive: true });
+    await writeFile(path.join(dir, 'meta.json'), JSON.stringify({
+      runId, scenario, driver: 'capture', agent: 'mock', mode: 'mock',
+      startedAt: now + offset, endedAt: now + offset + 10, durationMs: 10, question: '',
+    }), 'utf8');
+    await writeFile(path.join(dir, 'result.json'), JSON.stringify({
+      meta: { runId, scenario, agent: 'mock', mode: 'mock', durationMs: 10 },
+      request: { method: 'GET', url: 'http://localhost:8080/api/ping' },
+      response: { status: 200 },
+      logs: { count: 0 },
+      threads: { total: 0 },
+      agent: {
+        conclusion,
+        evidenceRefs: [{ type: 'request', ref: 'request' }],
+        fixes: [],
+        toolCalls: [],
+        needsMoreInfo: [],
+      },
+    }, null, 2), 'utf8');
+  }
+
+  const uiScript = `(async () => {
+    const waitFor = async (fn, timeout = 6000) => {
+      const deadline = Date.now() + timeout;
+      while (Date.now() < deadline) {
+        if (fn()) return true;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      return false;
+    };
+    document.querySelector('[data-tab="history"]').click();
+    await waitFor(() => document.querySelectorAll('#runs li[data-run-id]').length >= 2);
+    const report = document.getElementById('report');
+    const initial = {
+      reportHidden: report.hidden,
+      visibleRuns: document.querySelectorAll('#runs li[data-run-id]:not([hidden])').length,
+    };
+    const first = () => document.querySelector('#runs li[data-run-id]');
+    first().click();
+    await waitFor(() => report.hidden === false && report.textContent.includes('A结论'));
+    const opened = {
+      reportHidden: report.hidden,
+      visibleRuns: document.querySelectorAll('#runs li[data-run-id]:not([hidden])').length,
+      selected: document.querySelector('#runs li.selected')?.textContent.includes('A') === true,
+    };
+    first().click();
+    await waitFor(() => report.hidden === true);
+    const closed = {
+      reportHidden: report.hidden,
+      visibleRuns: document.querySelectorAll('#runs li[data-run-id]:not([hidden])').length,
+    };
+    const second = [...document.querySelectorAll('#runs li[data-run-id]')].find((li) => li.textContent.includes('B'));
+    second.click();
+    await waitFor(() => report.hidden === false && report.textContent.includes('B结论'));
+    const secondOpen = {
+      reportHidden: report.hidden,
+      visibleRuns: document.querySelectorAll('#runs li[data-run-id]:not([hidden])').length,
+      selected: document.querySelector('#runs li.selected')?.textContent.includes('B') === true,
+    };
+    return { initial, opened, closed, secondOpen };
+  })()`;
+
+  const child = spawn(electronPath, [
+    MAIN, '--smoke', '--port', '0',
+    '--config-dir', path.join(DIR, 'configs'),
+    '--runs-dir', path.join(DIR, 'runs'),
+    '--smoke-ui-eval', Buffer.from(uiScript).toString('base64'),
+  ], { env: { ...process.env } });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (chunk) => { stdout += chunk; });
+  child.stderr.on('data', (chunk) => { stderr += chunk; });
+  const code = await new Promise((resolve) => {
+    const timer = setTimeout(() => { child.kill(); resolve(-1); }, 50_000);
+    child.on('close', (exitCode) => { clearTimeout(timer); resolve(exitCode); });
+  });
+
+  assert.equal(code, 0, `electron exited ${code}\nstdout:\n${stdout}\nstderr:\n${stderr}`);
+  assert.match(stdout, /SMOKE_OK/);
+  const match = stdout.match(/SMOKE_RESULT (\{.*\})/);
+  const smoke = JSON.parse(match[1]);
+  assert.deepEqual(smoke.uiEvalResult, {
+    initial: { reportHidden: true, visibleRuns: 2 },
+    opened: { reportHidden: false, visibleRuns: 1, selected: true },
+    closed: { reportHidden: true, visibleRuns: 2 },
+    secondOpen: { reportHidden: false, visibleRuns: 1, selected: true },
+  });
 });

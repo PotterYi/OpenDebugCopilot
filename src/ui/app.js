@@ -70,6 +70,7 @@ let requestFilter = 'all';
 let devServerState = null;
 let devServerLogLines = [];
 let currentRunView = null;
+let selectedRunId = null;
 let diagnoseProgressSteps = [];
 let followUpProgressContext = null;
 const MAX_DEV_LOG_LINES = 300;
@@ -164,11 +165,31 @@ async function loadConfig() {
   }
 }
 
+function applyHistorySelection() {
+  for (const li of runsEl.querySelectorAll('li[data-run-id]')) {
+    const selected = li.dataset.runId === selectedRunId;
+    li.hidden = Boolean(selectedRunId) && !selected;
+    li.classList.toggle('selected', selected);
+  }
+  reportEl.hidden = !selectedRunId;
+}
+
+function closeRun() {
+  selectedRunId = null;
+  currentRunView = null;
+  reportEl.hidden = true;
+  reportEl.textContent = '';
+  reportEl.className = 'diagnose-card muted';
+  applyHistorySelection();
+}
+
 async function loadRuns() {
   runsEl.textContent = '';
   try {
     const runs = await api.listRuns();
     if (!runs.length) {
+      selectedRunId = null;
+      reportEl.hidden = true;
       const li = document.createElement('li');
       li.className = 'muted';
       li.textContent = '暂无诊断记录';
@@ -177,6 +198,7 @@ async function loadRuns() {
     }
     for (const run of runs) {
       const li = document.createElement('li');
+      li.dataset.runId = run.runId;
       const title = document.createElement('span');
       title.className = 'run-title';
       title.textContent = run.scenario || run.runId;
@@ -196,11 +218,11 @@ async function loadRuns() {
         if (!ok) return;
         try {
           await api.deleteRun(run.runId);
-          const currentId = currentRunView?.response?.runId
-            ?? currentRunView?.response?.result?.meta?.runId;
-          if (currentId === run.runId) {
+          if (selectedRunId === run.runId) {
+            selectedRunId = null;
             currentRunView = null;
-            reportEl.textContent = '选择一条历史查看报告';
+            reportEl.hidden = true;
+            reportEl.textContent = '';
             reportEl.className = 'diagnose-card muted';
           }
           historyMessageEl.textContent = `已删除 ${run.runId}`;
@@ -213,9 +235,17 @@ async function loadRuns() {
       });
 
       li.append(title, meta, remove);
-      li.addEventListener('click', () => showRun(run.runId));
+      li.addEventListener('click', () => {
+        if (selectedRunId === run.runId) closeRun();
+        else showRun(run.runId);
+      });
       runsEl.append(li);
     }
+    if (selectedRunId && ![...runsEl.querySelectorAll('li[data-run-id]')]
+      .some((li) => li.dataset.runId === selectedRunId)) {
+      selectedRunId = null;
+    }
+    applyHistorySelection();
   } catch (err) {
     historyMessageEl.textContent = `加载历史失败：${err.message}`;
     historyMessageEl.className = 'message error';
@@ -223,6 +253,9 @@ async function loadRuns() {
 }
 
 async function showRun(runId) {
+  selectedRunId = runId;
+  applyHistorySelection();
+  reportEl.hidden = false;
   historyMessageEl.textContent = '加载中…';
   historyMessageEl.className = 'muted';
   reportEl.textContent = '';
