@@ -66,6 +66,7 @@ let devServerState = null;
 let devServerLogLines = [];
 let currentRunView = null;
 let diagnoseProgressSteps = [];
+let followUpProgressContext = null;
 const MAX_DEV_LOG_LINES = 300;
 const DEV_STATUS_LABELS = {
   stopped: '未启动',
@@ -564,7 +565,7 @@ async function runFixBatch(action, view) {
   }
 }
 
-function renderFixCard(fix, view, fixIndex) {
+function renderFixCard(fix, view, fixIndex, { readOnly = false } = {}) {
   if (typeof fix === 'string') return el('li', 'fix-card', fix);
   const runId = view.response?.runId ?? view.response?.result?.meta?.runId;
   const card = el('li', 'fix-card');
@@ -597,7 +598,7 @@ function renderFixCard(fix, view, fixIndex) {
       }
     });
     bar.append(copy);
-    if (api.isDesktop && fix.kind === 'edit') {
+    if (!readOnly && api.isDesktop && fix.kind === 'edit') {
       if (applied) {
         const verifyCmd = configCache?.workspace?.verifyCommand;
         if (verifyCmd) {
@@ -693,16 +694,36 @@ async function runFollowUp(view, input, button) {
   input.disabled = true;
   button.disabled = true;
   showMessage(view, '继续诊断中…');
+  const progressEl = view.container.querySelector('.followup-progress');
+  if (progressEl) {
+    followUpProgressContext = { container: progressEl, steps: [] };
+    upsertProgressStep(followUpProgressContext.steps, {
+      id: 'client-start',
+      label: '开始继续诊断',
+      status: 'start',
+    });
+    renderProgressSteps(progressEl, followUpProgressContext.steps);
+  }
   try {
     const result = await api.followUp({ runId, question, mock: false });
     if (result?.result) view.response.result = result.result;
+    followUpProgressContext = null;
     renderRunInto(view);
     showMessage(view, '已根据追问更新诊断', 'message ok');
     requestAnimationFrame(() => {
-      const messages = view.container.querySelector('.chat-messages');
-      if (messages) messages.scrollTop = messages.scrollHeight;
+      view.container.scrollTop = view.container.scrollHeight;
     });
   } catch (error) {
+    if (followUpProgressContext) {
+      upsertProgressStep(followUpProgressContext.steps, {
+        id: 'error',
+        label: '继续诊断失败',
+        status: 'error',
+        detail: error.message,
+      });
+      renderProgressSteps(followUpProgressContext.container, followUpProgressContext.steps);
+      followUpProgressContext = null;
+    }
     showMessage(view, `继续诊断失败：${error.message}`, 'message error');
     input.disabled = false;
     button.disabled = false;
@@ -712,18 +733,9 @@ async function runFollowUp(view, input, button) {
 function buildChatSection(view) {
   const block = el('section', 'card-section chat-panel');
   block.append(el('div', 'card-title', '继续诊断'));
-  const messages = el('div', 'chat-messages');
-  const conversation = conversationFor(view.response.result ?? {});
-  if (conversation.length === 0) {
-    messages.append(el('p', 'muted small', '还没有对话内容'));
-  }
-  for (const message of conversation) {
-    if (!message || (message.role !== 'user' && message.role !== 'assistant')) continue;
-    const bubble = el('div', `chat-msg ${message.role}`);
-    bubble.textContent = message.text ?? message.agent?.conclusion ?? '';
-    messages.append(bubble);
-  }
-  block.append(messages);
+  const progress = el('div', 'followup-progress diagnose-progress');
+  progress.hidden = true;
+  block.append(progress);
 
   const row = el('div', 'chat-input-row');
   const input = document.createElement('input');
@@ -747,20 +759,68 @@ function renderRunInto(view) {
   const response = view.response;
   const result = response.result ?? {};
   const container = view.container;
-  const correlation = result.logs?.correlation;
   container.hidden = false;
   container.classList.remove('muted');
   container.textContent = '';
 
-  const head = el('div', 'card-head');
-  head.append(
-    el('strong', null, `Run ${response.runId ?? result.meta?.runId ?? '-'}`),
-    el('span', `badge ${result.gates?.ok ? 'ok' : 'error'}`, result.gates?.ok ? 'Gates ok' : 'Gates failed'),
-    el('span', 'badge', `${result.meta?.agent ?? '-'} / ${result.meta?.mode ?? '-'}`),
-  );
-  container.append(head);
+  if (view.mode === 'history') {
+    renderHistoryThread(view, result);
+    return;
+  }
 
-  container.append(section('结论', el('p', 'conclusion', result.agent?.conclusion ?? '(无结论)')));
+  renderRunBody(container, result, result.agent ?? {}, view, { readOnly: false, showHeader: true });
+
+  const reportButton = el('button', 'secondary', '查看完整报告');
+  reportButton.type = 'button';
+  reportButton.addEventListener('click', () => {
+    setTab('history');
+    showRun(response.runId ?? result.meta?.runId);
+  });
+  container.append(reportButton);
+}
+
+/** History is a chat thread: each assistant turn keeps its full diagnosis. */
+function renderHistoryThread(view, result) {
+  const container = view.container;
+  container.classList.add('history-thread-card');
+  const thread = el('div', 'history-thread');
+  const conversation = conversationFor(result);
+  if (conversation.length === 0 && result.agent) {
+    conversation.push({ role: 'assistant', agent: result.agent, text: result.agent.conclusion ?? '' });
+  }
+
+  for (const message of conversation) {
+    if (!message) continue;
+    if (message.role === 'user') {
+      const bubble = el('div', 'chat-msg user history-user');
+      bubble.textContent = message.text ?? '';
+      thread.append(bubble);
+      continue;
+    }
+    if (message.role !== 'assistant') continue;
+    const bubble = el('div', 'chat-msg assistant history-assistant');
+    if (message.at) bubble.append(el('div', 'chat-time muted small', new Date(message.at).toLocaleString()));
+    renderRunBody(bubble, result, message.agent ?? result.agent ?? {}, view, { readOnly: true, showHeader: false });
+    thread.append(bubble);
+  }
+  container.append(thread);
+  if (api.isDesktop) container.append(buildChatSection(view));
+}
+
+function renderRunBody(container, result, agent, view, { readOnly = false, showHeader = true } = {}) {
+  const runId = view.response?.runId ?? result.meta?.runId;
+  const correlation = result.logs?.correlation;
+  if (showHeader) {
+    const head = el('div', 'card-head');
+    head.append(
+      el('strong', null, `Run ${runId ?? '-'}`),
+      el('span', `badge ${result.gates?.ok ? 'ok' : 'error'}`, result.gates?.ok ? 'Gates ok' : 'Gates failed'),
+      el('span', 'badge', `${result.meta?.agent ?? '-'} / ${result.meta?.mode ?? '-'}`),
+    );
+    container.append(head);
+  }
+
+  container.append(section('结论', el('p', 'conclusion', agent?.conclusion ?? '(无结论)')));
 
   if (result.request || result.response) {
     container.append(section('请求 / 响应', kv([
@@ -775,13 +835,13 @@ function renderRunInto(view) {
     ['关联方式', correlation ? `${correlation.strategy}${correlation.matchedId ? ` (${correlation.matchedId})` : ''}` : 'n/a'],
     ['日志', `${result.logs?.count ?? 0} 条`],
     ['线程', String(result.threads?.total ?? 0)],
-    ['工具调用', String(result.agent?.toolCalls?.length ?? 0)],
+    ['工具调用', String(agent?.toolCalls?.length ?? 0)],
     ['前端错误', String(result.frontend?.errors?.length ?? 0)],
     ['前端源码', String(result.frontend?.files?.length ?? 0)],
     ['耗时', `${result.meta?.durationMs ?? 0} ms`],
   ])));
 
-  const refs = Array.isArray(result.agent?.evidenceRefs) ? result.agent.evidenceRefs : [];
+  const refs = Array.isArray(agent?.evidenceRefs) ? agent.evidenceRefs : [];
   if (refs.length) {
     const list = el('ul', 'evidence-list');
     for (const ref of refs) {
@@ -806,12 +866,12 @@ function renderRunInto(view) {
     ])));
   }
 
-  const fixes = result.agent?.fixes;
+  const fixes = agent?.fixes;
   if (Array.isArray(fixes) && fixes.length > 0) {
     const block = el('section', 'card-section');
     const headRow = el('div', 'fix-section-head');
     headRow.append(el('div', 'card-title', `修复建议 (${fixes.length})`));
-    if (api.isDesktop) {
+    if (!readOnly && api.isDesktop) {
       const applicable = fixes.filter((fix) => (
         typeof fix === 'object'
         && fix.kind === 'edit'
@@ -834,28 +894,16 @@ function renderRunInto(view) {
     block.append(headRow);
 
     const list = el('ul', 'fix-list');
-    fixes.forEach((fix, index) => list.append(renderFixCard(fix, view, index)));
+    fixes.forEach((fix, index) => list.append(renderFixCard(fix, view, index, { readOnly })));
     block.append(list);
     container.append(block);
   }
 
-  const needsMoreInfo = result.agent?.needsMoreInfo;
+  const needsMoreInfo = agent?.needsMoreInfo;
   if (Array.isArray(needsMoreInfo) && needsMoreInfo.length > 0) {
     const list = el('ul', 'advice-list');
     for (const item of needsMoreInfo) list.append(el('li', null, item));
     container.append(section('待补充信息', list));
-  }
-
-  if (view.mode === 'live') {
-    const reportButton = el('button', 'secondary', '查看完整报告');
-    reportButton.type = 'button';
-    reportButton.addEventListener('click', () => {
-      setTab('history');
-      showRun(response.runId ?? result.meta?.runId);
-    });
-    container.append(reportButton);
-  } else if (api.isDesktop) {
-    container.append(buildChatSection(view));
   }
 }
 
@@ -1231,14 +1279,14 @@ function renderConsoleList() {
   }
 }
 
-function renderDiagnoseProgress() {
-  diagnoseProgressEl.textContent = '';
-  if (diagnoseProgressSteps.length === 0) {
-    diagnoseProgressEl.hidden = true;
+function renderProgressSteps(container, steps) {
+  container.textContent = '';
+  if (steps.length === 0) {
+    container.hidden = true;
     return;
   }
-  diagnoseProgressEl.hidden = false;
-  for (const step of diagnoseProgressSteps) {
+  container.hidden = false;
+  for (const step of steps) {
     const row = el('div', `diagnose-step ${step.status ?? 'start'}`);
     const icon = step.status === 'start' ? '◌' : step.status === 'error' ? '✕' : '✓';
     row.append(
@@ -1250,24 +1298,30 @@ function renderDiagnoseProgress() {
       detail.title = step.detail;
       row.append(detail);
     }
-    diagnoseProgressEl.append(row);
+    container.append(row);
   }
-  diagnoseProgressEl.scrollTop = diagnoseProgressEl.scrollHeight;
+  container.scrollTop = container.scrollHeight;
 }
 
-function upsertDiagnoseProgress(event) {
+function upsertProgressStep(steps, event) {
   if (!event) return;
   const id = event.id ?? event.label;
   if (!id) return;
-  const existing = diagnoseProgressSteps.find((step) => step.id === id);
+  const existing = steps.find((step) => step.id === id);
   if (existing) {
     Object.assign(existing, event, { id });
   } else {
-    diagnoseProgressSteps.push({ ...event, id });
-    if (diagnoseProgressSteps.length > 40) {
-      diagnoseProgressSteps = diagnoseProgressSteps.slice(-40);
-    }
+    steps.push({ ...event, id });
+    if (steps.length > 40) steps.splice(0, steps.length - 40);
   }
+}
+
+function renderDiagnoseProgress() {
+  renderProgressSteps(diagnoseProgressEl, diagnoseProgressSteps);
+}
+
+function upsertDiagnoseProgress(event) {
+  upsertProgressStep(diagnoseProgressSteps, event);
   renderDiagnoseProgress();
 }
 
@@ -1668,6 +1722,12 @@ for (const tab of document.querySelectorAll('.tab')) {
 
 api.onDiagnoseProgress((progress) => {
   upsertDiagnoseProgress(progress);
+});
+
+api.onFollowUpProgress((progress) => {
+  if (!followUpProgressContext) return;
+  upsertProgressStep(followUpProgressContext.steps, progress);
+  renderProgressSteps(followUpProgressContext.container, followUpProgressContext.steps);
 });
 
 api.onDevServer((event) => {

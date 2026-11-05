@@ -566,7 +566,7 @@ test('applies and reverts all fixes through IPC', {
   assert.equal((await readdir(path.join(runDir, 'backups'))).length, 2);
 });
 
-test('renders full fixes and batch controls in the history tab', {
+test('renders full fixes and chat in the history tab without action buttons', {
   skip: available ? false : 'Electron binary is not installed',
   timeout: 60_000,
 }, async (t) => {
@@ -624,13 +624,15 @@ test('renders full fixes and batch controls in the history tab', {
       if (card) break;
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
-    const buttons = [...document.querySelectorAll('#report .fix-batch button')];
     const result = {
       rendered: Boolean(card),
       conclusion: document.querySelector('#report .conclusion')?.textContent ?? '',
       fixSummary: document.querySelector('#report .fix-summary')?.textContent ?? '',
-      batchButtons: buttons.length,
-      applyAllDisabled: buttons[0]?.disabled ?? null,
+      batchButtons: document.querySelectorAll('#report .fix-batch button').length,
+      actionButtons: [...document.querySelectorAll('#report button')].filter((button) => (
+        /应用修改|撤销|运行验证|全部应用|全部撤销/.test(button.textContent)
+      )).length,
+      followupProgressPresent: Boolean(document.querySelector('#report .followup-progress')),
       reportClass: document.getElementById('report').className,
     };
 
@@ -641,11 +643,12 @@ test('renders full fixes and batch controls in the history tab', {
       chatButton.click();
       const chatDeadline = Date.now() + 8000;
       while (Date.now() < chatDeadline) {
-        const conclusion = document.querySelector('#report .conclusion')?.textContent ?? '';
-        if (conclusion.includes('继续诊断') && document.querySelectorAll('#report .chat-msg').length >= 3) break;
+        const conclusions = [...document.querySelectorAll('#report .conclusion')].map((node) => node.textContent);
+        if (conclusions.some((text) => text.includes('继续诊断')) && document.querySelectorAll('#report .chat-msg').length >= 3) break;
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
-      result.chatUpdated = (document.querySelector('#report .conclusion')?.textContent ?? '').includes('继续诊断');
+      result.chatUpdated = [...document.querySelectorAll('#report .conclusion')]
+        .some((node) => node.textContent.includes('继续诊断'));
       result.chatMessages = document.querySelectorAll('#report .chat-msg').length;
       result.chatHasUserText = [...document.querySelectorAll('#report .chat-msg.user')]
         .some((node) => node.textContent.includes('先给方案'));
@@ -687,8 +690,9 @@ test('renders full fixes and batch controls in the history tab', {
   assert.equal(smoke.uiEvalResult.rendered, true);
   assert.equal(smoke.uiEvalResult.conclusion, '历史诊断结论');
   assert.equal(smoke.uiEvalResult.fixSummary, '历史修复建议');
-  assert.equal(smoke.uiEvalResult.batchButtons, 2);
-  assert.equal(smoke.uiEvalResult.applyAllDisabled, false);
+  assert.equal(smoke.uiEvalResult.batchButtons, 0);
+  assert.equal(smoke.uiEvalResult.actionButtons, 0);
+  assert.equal(smoke.uiEvalResult.followupProgressPresent, true);
   assert.match(smoke.uiEvalResult.reportClass, /diagnose-card/);
   assert.doesNotMatch(smoke.uiEvalResult.reportClass, /muted/);
   assert.equal(smoke.uiEvalResult.chatUpdated, true);

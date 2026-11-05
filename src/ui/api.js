@@ -93,4 +93,8 @@ export const api = {
     if (!dc?.on) return () => {};
     return dc.on('dc:diagnose:progress', handler);
   },
+  onFollowUpProgress(handler) {
+    if (!dc?.on) return () => {};
+    return dc.on('dc:followup:progress', handler);
+  },
 };

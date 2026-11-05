@@ -611,27 +611,37 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
     }
   });
 
-  handle('dc:followup', async (_event, payload = {}) => {
-    const question = String(payload.question ?? '').trim();
-    if (!question) throw new Error('请输入继续诊断的内容');
-    const { runId, result } = await service.getRun(String(payload.runId ?? ''));
-    if (result.agent?.fixes?.some((fix) => fix?.applied && !fix.applied.revertedAt)) {
-      throw new Error('请先撤销已应用的修改，再继续诊断');
-    }
-
-    const workspace = (await service.getConfig()).workspace;
-    const agent = payload.mock === true || smoke
-      ? createMockAgent()
-      : createClaudeAgent({
-          cwd: workspace.sourceRoot ? path.resolve(ROOT, workspace.sourceRoot) : undefined,
-        });
-    if (typeof agent.followUp !== 'function') throw new Error('当前 Agent 不支持继续诊断');
-
-    const follow = await agent.followUp({ question, previous: result, budget: { maxRounds: 4 } });
-    const followAgent = {
-      ...follow,
-      fixes: await buildFixPreviews(follow.fixes, result.meta?.fixRoots ?? {}),
+  handle('dc:followup', async (event, payload = {}) => {
+    const sendProgress = (progress) => {
+      if (!event.sender.isDestroyed()) event.sender.send('dc:followup:progress', progress);
     };
+    sendProgress({ id: 'prepare', label: '整理上一轮诊断', status: 'start' });
+    try {
+      const question = String(payload.question ?? '').trim();
+      if (!question) throw new Error('请输入继续诊断的内容');
+      const { runId, result } = await service.getRun(String(payload.runId ?? ''));
+      if (result.agent?.fixes?.some((fix) => fix?.applied && !fix.applied.revertedAt)) {
+        throw new Error('请先撤销已应用的修改，再继续诊断');
+      }
+      sendProgress({ id: 'prepare', label: '整理上一轮诊断', status: 'done' });
+
+      const workspace = (await service.getConfig()).workspace;
+      const agent = payload.mock === true || smoke
+        ? createMockAgent()
+        : createClaudeAgent({
+            cwd: workspace.sourceRoot ? path.resolve(ROOT, workspace.sourceRoot) : undefined,
+          });
+      if (typeof agent.followUp !== 'function') throw new Error('当前 Agent 不支持继续诊断');
+
+      sendProgress({ id: 'agent', label: 'AI 正在继续分析', status: 'start' });
+      const follow = await agent.followUp({ question, previous: result, budget: { maxRounds: 4 } });
+      sendProgress({ id: 'agent', label: 'AI 已给出本轮回复', status: 'done' });
+      sendProgress({ id: 'preview', label: '生成修复预览', status: 'start' });
+      const followAgent = {
+        ...follow,
+        fixes: await buildFixPreviews(follow.fixes, result.meta?.fixRoots ?? {}),
+      };
+      sendProgress({ id: 'preview', label: '生成修复预览', status: 'done' });
     if (!Array.isArray(followAgent.evidenceRefs) || followAgent.evidenceRefs.length === 0) {
       followAgent.evidenceRefs = result.agent?.evidenceRefs ?? [{ type: 'request', ref: 'request' }];
     }
@@ -669,7 +679,17 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
       'utf8',
     ).catch(() => {});
     log.info('[followup]', runId, question.slice(0, 80));
+    sendProgress({ id: 'done', label: '继续诊断完成', status: 'done' });
     return { runId, result };
+    } catch (error) {
+      sendProgress({
+        id: 'error',
+        label: '继续诊断失败',
+        status: 'error',
+        detail: error?.message ?? String(error),
+      });
+      throw error;
+    }
   });
 }
 

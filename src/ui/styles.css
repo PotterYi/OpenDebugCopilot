@@ -391,6 +391,11 @@ button:hover { filter: brightness(1.08); }
 .diff-context { color: #c9d1d9; }
 .verify-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .chat-panel { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border); }
+.history-thread { display: flex; flex-direction: column; gap: 10px; }
+.chat-msg.history-user { align-self: flex-end; max-width: 82%; }
+.chat-msg.history-assistant { align-self: stretch; max-width: 100%; width: 100%; padding: 10px; }
+.chat-time { margin-bottom: 4px; }
+.followup-progress { margin: 0 0 8px; max-height: 120px; }
 .chat-messages {
   display: flex;
   flex-direction: column;

@@ -16,6 +16,7 @@ const CHANNELS = new Set([
 const EVENTS = new Set([
   'dc:capture:event',
   'dc:diagnose:progress',
+  'dc:followup:progress',
   'dc:devserver:event',
 ]);
 
