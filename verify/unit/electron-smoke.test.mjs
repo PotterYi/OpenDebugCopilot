@@ -473,3 +473,186 @@ test('applies, verifies and reverts a structured fix through IPC', {
   assert.ok(files.some((name) => name.startsWith('verification-') && name.endsWith('.log')));
   assert.match(await readFile(path.join(runDir, 'fixes.log'), 'utf8'), /apply .*verify ok=true .*undo /s);
 });
+
+test('applies and reverts all fixes through IPC', {
+  skip: available ? false : 'Electron binary is not installed',
+  timeout: 60_000,
+}, async (t) => {
+  const DIR = tempDir('electron-fix-batch');
+  const runId = 'run-batch';
+  const runDir = path.join(DIR, 'runs', runId);
+  const backend = path.join(DIR, 'backend');
+  const files = [
+    { file: 'com/demo/A.java', original: 'class A {\n    int x = 1;\n}\n', search: '    int x = 1;', replace: '    int x = 2;' },
+    { file: 'com/demo/B.java', original: 'class B {\n    int y = 1;\n}\n', search: '    int y = 1;', replace: '    int y = 2;' },
+  ];
+
+  await rm(DIR, { recursive: true, force: true });
+  await mkdir(path.join(DIR, 'configs'), { recursive: true });
+  await mkdir(path.join(runDir, 'backups'), { recursive: true });
+  for (const entry of files) {
+    const absolute = path.join(backend, entry.file);
+    await mkdir(path.dirname(absolute), { recursive: true });
+    await writeFile(absolute, entry.original, 'utf8');
+  }
+  t.after(async () => { await rm(DIR, { recursive: true, force: true }); });
+
+  await writeFile(path.join(runDir, 'result.json'), JSON.stringify({
+    meta: { runId, fixRoots: { sourceRoot: backend, frontendSourceRoot: null } },
+    agent: {
+      conclusion: 'batch test',
+      evidenceRefs: [],
+      fixes: files.map((entry) => ({
+        summary: `change ${entry.file}`,
+        kind: 'edit',
+        root: 'backend',
+        file: entry.file,
+        search: entry.search,
+        replace: entry.replace,
+        risk: 'low',
+        preview: { status: 'ready', line: 2, patch: '' },
+      })),
+    },
+  }, null, 2), 'utf8');
+
+  const uiScript = `(async () => {
+    const applied = await window.dc.invoke('dc:fixes', { action: 'apply-all', runId: '${runId}' });
+    const undone = await window.dc.invoke('dc:fixes', { action: 'undo-all', runId: '${runId}' });
+    return {
+      applied: applied.ok === true,
+      appliedCount: applied.applied ?? 0,
+      undone: undone.ok === true,
+      revertedCount: undone.reverted ?? 0,
+    };
+  })()`;
+
+  const child = spawn(electronPath, [
+    MAIN, '--smoke', '--port', '0',
+    '--config-dir', path.join(DIR, 'configs'),
+    '--runs-dir', path.join(DIR, 'runs'),
+    '--smoke-ui-eval', Buffer.from(uiScript).toString('base64'),
+  ], { env: { ...process.env } });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (chunk) => { stdout += chunk; });
+  child.stderr.on('data', (chunk) => { stderr += chunk; });
+  const code = await new Promise((resolve) => {
+    const timer = setTimeout(() => { child.kill(); resolve(-1); }, 50_000);
+    child.on('close', (exitCode) => { clearTimeout(timer); resolve(exitCode); });
+  });
+
+  assert.equal(code, 0, `electron exited ${code}\nstdout:\n${stdout}\nstderr:\n${stderr}`);
+  assert.match(stdout, /SMOKE_OK/);
+  const match = stdout.match(/SMOKE_RESULT (\{.*\})/);
+  const smoke = JSON.parse(match[1]);
+  assert.deepEqual(smoke.uiEvalResult, {
+    applied: true,
+    appliedCount: 2,
+    undone: true,
+    revertedCount: 2,
+  });
+
+  for (const entry of files) {
+    assert.equal(await readFile(path.join(backend, entry.file), 'utf8'), entry.original);
+  }
+  const persisted = JSON.parse(await readFile(path.join(runDir, 'result.json'), 'utf8'));
+  assert.equal(persisted.agent.fixes.filter((fix) => fix.applied?.revertedAt).length, 2);
+  assert.equal((await readdir(path.join(runDir, 'backups'))).length, 2);
+});
+
+test('renders full fixes and batch controls in the history tab', {
+  skip: available ? false : 'Electron binary is not installed',
+  timeout: 60_000,
+}, async (t) => {
+  const DIR = tempDir('electron-history-view');
+  const runId = 'run-history';
+  const runDir = path.join(DIR, 'runs', runId);
+  await rm(DIR, { recursive: true, force: true });
+  await mkdir(path.join(DIR, 'configs'), { recursive: true });
+  await mkdir(runDir, { recursive: true });
+  t.after(async () => { await rm(DIR, { recursive: true, force: true }); });
+
+  const now = Date.now();
+  await writeFile(path.join(runDir, 'meta.json'), JSON.stringify({
+    runId, scenario: 'history-test', driver: 'capture', agent: 'mock', mode: 'mock',
+    startedAt: now, endedAt: now + 10, durationMs: 10, question: 'history render',
+  }), 'utf8');
+  await writeFile(path.join(runDir, 'result.json'), JSON.stringify({
+    meta: { runId, scenario: 'history-test', driver: 'capture', agent: 'mock', mode: 'mock', durationMs: 10, fixRoots: { sourceRoot: null, frontendSourceRoot: null } },
+    request: { method: 'POST', url: 'http://localhost:8080/api/order' },
+    response: { status: 500, durationMs: 12 },
+    logs: { count: 1 },
+    threads: { total: 1 },
+    agent: {
+      conclusion: '历史诊断结论',
+      evidenceRefs: [{ type: 'request', ref: 'request' }],
+      toolCalls: [],
+      needsMoreInfo: [],
+      fixes: [{
+        summary: '历史修复建议',
+        kind: 'edit',
+        root: 'backend',
+        file: 'com/demo/A.java',
+        search: 'x',
+        replace: 'y',
+        risk: 'low',
+        preview: { status: 'ready', line: 1, patch: '--- a/com/demo/A.java\n+++ b/com/demo/A.java' },
+      }],
+    },
+  }, null, 2), 'utf8');
+
+  const uiScript = `(async () => {
+    document.querySelector('[data-tab="history"]').click();
+    const deadline = Date.now() + 8000;
+    let item = null;
+    while (Date.now() < deadline) {
+      item = document.querySelector('#runs li');
+      if (item) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    if (!item) return { rendered: false, reason: 'no run item' };
+    item.click();
+    let card = null;
+    while (Date.now() < deadline) {
+      card = document.querySelector('#report .fix-card');
+      if (card) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const buttons = [...document.querySelectorAll('#report .fix-batch button')];
+    return {
+      rendered: Boolean(card),
+      conclusion: document.querySelector('#report .conclusion')?.textContent ?? '',
+      fixSummary: document.querySelector('#report .fix-summary')?.textContent ?? '',
+      batchButtons: buttons.length,
+      applyAllDisabled: buttons[0]?.disabled ?? null,
+      reportClass: document.getElementById('report').className,
+    };
+  })()`;
+
+  const child = spawn(electronPath, [
+    MAIN, '--smoke', '--port', '0',
+    '--config-dir', path.join(DIR, 'configs'),
+    '--runs-dir', path.join(DIR, 'runs'),
+    '--smoke-ui-eval', Buffer.from(uiScript).toString('base64'),
+  ], { env: { ...process.env } });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (chunk) => { stdout += chunk; });
+  child.stderr.on('data', (chunk) => { stderr += chunk; });
+  const code = await new Promise((resolve) => {
+    const timer = setTimeout(() => { child.kill(); resolve(-1); }, 50_000);
+    child.on('close', (exitCode) => { clearTimeout(timer); resolve(exitCode); });
+  });
+
+  assert.equal(code, 0, `electron exited ${code}\nstdout:\n${stdout}\nstderr:\n${stderr}`);
+  assert.match(stdout, /SMOKE_OK/);
+  const match = stdout.match(/SMOKE_RESULT (\{.*\})/);
+  const smoke = JSON.parse(match[1]);
+  assert.equal(smoke.uiEvalResult.rendered, true);
+  assert.equal(smoke.uiEvalResult.conclusion, '历史诊断结论');
+  assert.equal(smoke.uiEvalResult.fixSummary, '历史修复建议');
+  assert.equal(smoke.uiEvalResult.batchButtons, 2);
+  assert.equal(smoke.uiEvalResult.applyAllDisabled, false);
+  assert.match(smoke.uiEvalResult.reportClass, /diagnose-card/);
+  assert.doesNotMatch(smoke.uiEvalResult.reportClass, /muted/);
+});

@@ -9,6 +9,7 @@ const form = $('config-form');
 const messageEl = $('config-message');
 const runsEl = $('runs');
 const reportEl = $('report');
+const historyMessageEl = $('history-message');
 const requestsEl = $('requests');
 const requestFilterBar = $('request-filter');
 const devServerStatusEl = $('devserver-status');
@@ -62,7 +63,7 @@ const captureState = new Map();
 let requestFilter = 'all';
 let devServerState = null;
 let devServerLogLines = [];
-let currentDiagnosis = null;
+let currentRunView = null;
 const MAX_DEV_LOG_LINES = 300;
 const DEV_STATUS_LABELS = {
   stopped: '未启动',
@@ -173,17 +174,31 @@ async function loadRuns() {
       runsEl.append(li);
     }
   } catch (err) {
-    reportEl.textContent = `加载历史失败：${err.message}`;
+    historyMessageEl.textContent = `加载历史失败：${err.message}`;
+    historyMessageEl.className = 'message error';
   }
 }
 
 async function showRun(runId) {
-  reportEl.textContent = '加载中…';
+  historyMessageEl.textContent = '加载中…';
+  historyMessageEl.className = 'muted';
+  reportEl.textContent = '';
+  reportEl.className = 'diagnose-card muted';
   try {
     const run = await api.getRun(runId);
-    reportEl.textContent = run.report || JSON.stringify(run.result, null, 2);
+    const view = {
+      response: run,
+      container: reportEl,
+      messageEl: historyMessageEl,
+      mode: 'history',
+    };
+    currentRunView = view;
+    renderRunInto(view);
+    historyMessageEl.textContent = '';
+    historyMessageEl.className = 'message';
   } catch (err) {
-    reportEl.textContent = `加载失败：${err.message}`;
+    historyMessageEl.textContent = `加载失败：${err.message}`;
+    historyMessageEl.className = 'message error';
   }
 }
 
@@ -427,61 +442,98 @@ function buildBodySection(request) {
   return block;
 }
 
-async function runVerification(fixIndex) {
-  const response = currentDiagnosis;
+function showMessage(view, text, kind = 'muted') {
+  if (!view.messageEl) return;
+  view.messageEl.textContent = text;
+  view.messageEl.className = `message ${kind}`.trim();
+}
+
+async function runVerification(fixIndex, view) {
+  const response = view.response;
   const runId = response?.runId ?? response?.result?.meta?.runId;
   if (!runId) return;
-  diagnoseMessage.textContent = '正在运行验证命令…';
-  diagnoseMessage.className = 'muted';
+  showMessage(view, '正在运行验证命令…');
   try {
     const verification = await api.verify('run', { runId, fixIndex, restart: true });
     if (verification?.cancelled) {
-      diagnoseMessage.textContent = '已取消验证';
-      diagnoseMessage.className = 'muted';
+      showMessage(view, '已取消验证');
       return;
     }
     const fix = response.result?.agent?.fixes?.[fixIndex];
     if (fix) fix.applied = { ...(fix.applied ?? {}), verification };
-    renderDiagnosis(response);
-    diagnoseMessage.textContent = verification.ok
-      ? `验证通过（${verification.durationMs}ms）${verification.restarted ? '，前端已重启' : ''}`
-      : `验证失败${verification.timedOut ? '（超时）' : `（退出码 ${verification.exitCode}）`}`;
-    diagnoseMessage.className = verification.ok ? 'message ok' : 'message error';
+    renderRunInto(view);
+    showMessage(
+      view,
+      verification.ok
+        ? `验证通过（${verification.durationMs}ms）${verification.restarted ? '，前端已重启' : ''}`
+        : `验证失败${verification.timedOut ? '（超时）' : `（退出码 ${verification.exitCode}）`}`,
+      verification.ok ? 'message ok' : 'message error',
+    );
   } catch (error) {
-    diagnoseMessage.textContent = `验证失败：${error.message}`;
-    diagnoseMessage.className = 'message error';
+    showMessage(view, `验证失败：${error.message}`, 'message error');
   }
 }
 
-async function runFixAction(action, fixIndex) {
-  const response = currentDiagnosis;
+async function runFixAction(action, fixIndex, view) {
+  const response = view.response;
   const runId = response?.runId ?? response?.result?.meta?.runId;
   if (!runId) return;
-  diagnoseMessage.textContent = action === 'apply' ? '正在应用修改…' : '正在撤销修改…';
-  diagnoseMessage.className = 'muted';
+  showMessage(view, action === 'apply' ? '正在应用修改…' : '正在撤销修改…');
   try {
     const result = await api.fixes(action, { runId, fixIndex });
     if (result?.cancelled) {
-      diagnoseMessage.textContent = '已取消';
-      diagnoseMessage.className = 'muted';
+      showMessage(view, '已取消');
       return;
     }
     if (result?.fix && Array.isArray(response.result?.agent?.fixes)) {
       response.result.agent.fixes[fixIndex] = result.fix;
     }
-    renderDiagnosis(response);
-    diagnoseMessage.textContent = action === 'apply'
-      ? '修改已应用（已备份，可撤销）'
-      : '修改已撤销';
-    diagnoseMessage.className = 'message ok';
+    renderRunInto(view);
+    showMessage(
+      view,
+      action === 'apply' ? '修改已应用（已备份，可撤销）' : '修改已撤销',
+      'message ok',
+    );
   } catch (error) {
-    diagnoseMessage.textContent = `${action === 'apply' ? '应用' : '撤销'}失败：${error.message}`;
-    diagnoseMessage.className = 'message error';
+    showMessage(view, `${action === 'apply' ? '应用' : '撤销'}失败：${error.message}`, 'message error');
   }
 }
 
-function renderFixCard(fix, runId, fixIndex) {
+async function runFixBatch(action, view) {
+  const response = view.response;
+  const runId = response?.runId ?? response?.result?.meta?.runId;
+  if (!runId) return;
+  showMessage(view, action === 'apply-all' ? '正在应用全部修改…' : '正在撤销全部修改…');
+  try {
+    const result = await api.fixes(action, { runId });
+    if (result?.cancelled) {
+      showMessage(view, '已取消');
+      return;
+    }
+    if (Array.isArray(result?.fixes)) response.result.agent.fixes = result.fixes;
+    renderRunInto(view);
+    const count = action === 'apply-all' ? result.applied ?? 0 : result.reverted ?? 0;
+    if (result.ok === false) {
+      showMessage(
+        view,
+        `已处理 ${count} 条，后续失败：${result.error ?? '未知错误'}`,
+        'message error',
+      );
+    } else {
+      showMessage(
+        view,
+        action === 'apply-all' ? `已应用 ${count} 条修改` : `已撤销 ${count} 条修改`,
+        'message ok',
+      );
+    }
+  } catch (error) {
+    showMessage(view, `${action === 'apply-all' ? '全部应用' : '全部撤销'}失败：${error.message}`, 'message error');
+  }
+}
+
+function renderFixCard(fix, view, fixIndex) {
   if (typeof fix === 'string') return el('li', 'fix-card', fix);
+  const runId = view.response?.runId ?? view.response?.result?.meta?.runId;
   const card = el('li', 'fix-card');
   const applied = Boolean(fix.applied) && !fix.applied.revertedAt;
   const reverted = Boolean(fix.applied?.revertedAt);
@@ -520,19 +572,19 @@ function renderFixCard(fix, runId, fixIndex) {
           verify.type = 'button';
           verify.title = verifyCmd;
           verify.disabled = !runId;
-          verify.addEventListener('click', () => runVerification(fixIndex));
+          verify.addEventListener('click', () => runVerification(fixIndex, view));
           bar.append(verify);
         }
         const undo = el('button', 'secondary', '撤销');
         undo.type = 'button';
         undo.disabled = !runId;
-        undo.addEventListener('click', () => runFixAction('undo', fixIndex));
+        undo.addEventListener('click', () => runFixAction('undo', fixIndex, view));
         bar.append(undo);
       } else {
         const apply = el('button', null, '应用修改');
         apply.type = 'button';
         apply.disabled = !runId;
-        apply.addEventListener('click', () => runFixAction('apply', fixIndex));
+        apply.addEventListener('click', () => runFixAction('apply', fixIndex, view));
         bar.append(apply);
       }
     }
@@ -576,20 +628,45 @@ function renderFixCard(fix, runId, fixIndex) {
 }
 
 function renderDiagnosis(response) {
-  currentDiagnosis = response;
+  const view = {
+    response,
+    container: diagnoseResult,
+    messageEl: diagnoseMessage,
+    mode: 'live',
+  };
+  currentRunView = view;
+  renderRunInto(view);
+}
+
+function renderRunInto(view) {
+  const response = view.response;
   const result = response.result ?? {};
+  const container = view.container;
   const correlation = result.logs?.correlation;
-  diagnoseResult.hidden = false;
-  diagnoseResult.textContent = '';
+  container.hidden = false;
+  container.classList.remove('muted');
+  container.textContent = '';
+
   const head = el('div', 'card-head');
   head.append(
     el('strong', null, `Run ${response.runId ?? result.meta?.runId ?? '-'}`),
     el('span', `badge ${result.gates?.ok ? 'ok' : 'error'}`, result.gates?.ok ? 'Gates ok' : 'Gates failed'),
     el('span', 'badge', `${result.meta?.agent ?? '-'} / ${result.meta?.mode ?? '-'}`),
   );
-  diagnoseResult.append(head);
-  diagnoseResult.append(section('结论', el('p', 'conclusion', result.agent?.conclusion ?? '(无结论)')));
-  diagnoseResult.append(section('上下文', kv([
+  container.append(head);
+
+  container.append(section('结论', el('p', 'conclusion', result.agent?.conclusion ?? '(无结论)')));
+
+  if (result.request || result.response) {
+    container.append(section('请求 / 响应', kv([
+      ['方法', result.request?.method ?? '-'],
+      ['路径', result.request?.url ? requestPath(result.request.url) : '-'],
+      ['状态', result.response?.status ?? '-'],
+      ['耗时', result.response?.durationMs != null ? `${result.response.durationMs} ms` : '-'],
+    ])));
+  }
+
+  container.append(section('上下文', kv([
     ['关联方式', correlation ? `${correlation.strategy}${correlation.matchedId ? ` (${correlation.matchedId})` : ''}` : 'n/a'],
     ['日志', `${result.logs?.count ?? 0} 条`],
     ['线程', String(result.threads?.total ?? 0)],
@@ -607,30 +684,72 @@ function renderDiagnosis(response) {
       if (ref.note) item.append(el('span', 'muted', ` — ${ref.note}`));
       list.append(item);
     }
-    diagnoseResult.append(section('证据链', list));
+    container.append(section('证据链', list));
+  }
+
+  const checks = result.gates?.checks;
+  if (Array.isArray(checks) && checks.length > 0) {
+    const list = el('ul', 'advice-list');
+    for (const check of checks) list.append(el('li', null, `${check.ok ? '✅' : '❌'} ${check.name}`));
+    container.append(section('自检', list));
+  }
+  if (result.recheck) {
+    container.append(section('复检', kv([
+      ['结论', result.recheck.verdict ?? '-'],
+      ['轮次', result.recheck.runs ?? '-'],
+      ['说明', result.recheck.note ?? '-'],
+    ])));
   }
 
   const fixes = result.agent?.fixes;
   if (Array.isArray(fixes) && fixes.length > 0) {
+    const block = el('section', 'card-section');
+    const headRow = el('div', 'fix-section-head');
+    headRow.append(el('div', 'card-title', `修复建议 (${fixes.length})`));
+    if (api.isDesktop) {
+      const applicable = fixes.filter((fix) => (
+        typeof fix === 'object'
+        && fix.kind === 'edit'
+        && fix.preview?.status === 'ready'
+        && !(fix.applied && !fix.applied.revertedAt)
+      )).length;
+      const appliedCount = fixes.filter((fix) => fix?.applied && !fix.applied.revertedAt).length;
+      const batch = el('div', 'fix-batch');
+      const applyAll = el('button', null, `全部应用${applicable ? ` (${applicable})` : ''}`);
+      applyAll.type = 'button';
+      applyAll.disabled = applicable === 0;
+      applyAll.addEventListener('click', () => runFixBatch('apply-all', view));
+      const undoAll = el('button', 'secondary', `全部撤销${appliedCount ? ` (${appliedCount})` : ''}`);
+      undoAll.type = 'button';
+      undoAll.disabled = appliedCount === 0;
+      undoAll.addEventListener('click', () => runFixBatch('undo-all', view));
+      batch.append(applyAll, undoAll);
+      headRow.append(batch);
+    }
+    block.append(headRow);
+
     const list = el('ul', 'fix-list');
-    const runId = response.runId ?? result.meta?.runId;
-    fixes.forEach((fix, index) => list.append(renderFixCard(fix, runId, index)));
-    diagnoseResult.append(section('修复建议', list));
+    fixes.forEach((fix, index) => list.append(renderFixCard(fix, view, index)));
+    block.append(list);
+    container.append(block);
   }
+
   const needsMoreInfo = result.agent?.needsMoreInfo;
   if (Array.isArray(needsMoreInfo) && needsMoreInfo.length > 0) {
     const list = el('ul', 'advice-list');
     for (const item of needsMoreInfo) list.append(el('li', null, item));
-    diagnoseResult.append(section('待补充信息', list));
+    container.append(section('待补充信息', list));
   }
 
-  const reportButton = el('button', 'secondary', '查看完整报告');
-  reportButton.type = 'button';
-  reportButton.addEventListener('click', () => {
-    setTab('history');
-    showRun(response.runId);
-  });
-  diagnoseResult.append(reportButton);
+  if (view.mode === 'live') {
+    const reportButton = el('button', 'secondary', '查看完整报告');
+    reportButton.type = 'button';
+    reportButton.addEventListener('click', () => {
+      setTab('history');
+      showRun(response.runId ?? result.meta?.runId);
+    });
+    container.append(reportButton);
+  }
 }
 
 async function showRequest(id) {
@@ -1300,7 +1419,7 @@ form.addEventListener('submit', async (event) => {
     if (saved.meta?.configDir) configPath.textContent = `配置目录：${saved.meta.configDir}`;
     setMessage(saved.meta?.configDir ? `已保存到 ${saved.meta.configDir}` : '已保存', 'ok');
     refreshDevServer().catch(() => {});
-    if (currentDiagnosis) renderDiagnosis(currentDiagnosis);
+    if (currentRunView) renderRunInto(currentRunView);
   } catch (err) {
     setMessage(`保存失败：${err.message}`, 'error');
   }

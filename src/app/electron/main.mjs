@@ -109,18 +109,24 @@ async function writeJsonAtomic(file, value) {
   }
 }
 
-async function loadRunFix(service, runId, fixIndex) {
+async function loadRunFixes(service, runId) {
   const { result } = await service.getRun(runId);
   const fixes = result?.agent?.fixes;
-  if (!Array.isArray(fixes) || !fixes[fixIndex]) throw new Error('修复建议不存在');
+  if (!Array.isArray(fixes)) throw new Error('该诊断没有修复建议');
   const roots = result?.meta?.fixRoots;
   if (!roots) throw new Error('该诊断缺少源码目录信息，无法应用修改');
   return {
     result,
-    fix: fixes[fixIndex],
+    fixes,
     roots,
     runDir: path.join(service.runsRoot, runId),
   };
+}
+
+async function loadRunFix(service, runId, fixIndex) {
+  const context = await loadRunFixes(service, runId);
+  if (!context.fixes[fixIndex]) throw new Error('修复建议不存在');
+  return { ...context, fix: context.fixes[fixIndex] };
 }
 
 function confirmFixDialog(parent, { title, message, detail }) {
@@ -176,10 +182,102 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
   });
 
   handle('dc:fixes', async (event, payload = {}) => {
+    const parent = BrowserWindow.fromWebContents(event.sender) ?? mainWindow;
+
+    if (payload.action === 'apply-all' || payload.action === 'undo-all') {
+      const { result, fixes, roots, runDir } = await loadRunFixes(service, payload.runId);
+      if (payload.action === 'apply-all') {
+        const targets = fixes
+          .map((fix, index) => ({ fix, index }))
+          .filter(({ fix }) => fix?.kind === 'edit'
+            && fix.preview?.status === 'ready'
+            && !(fix.applied && !fix.applied.revertedAt));
+        if (targets.length === 0) return { ok: true, applied: 0, fixes };
+        if (!smoke) {
+          const files = targets.slice(0, 8).map(({ fix }) => `- ${fix.file}`).join('\n');
+          const ok = await confirmFixDialog(parent, {
+            title: '全部应用修改',
+            message: `将修改 ${targets.length} 个文件`,
+            detail: `${files}${targets.length > 8 ? `\n… 另有 ${targets.length - 8} 个` : ''}\n\n每个文件都会先备份，可整体撤销。`,
+          });
+          if (!ok) return { cancelled: true, fixes };
+        }
+        let applied = 0;
+        let error = null;
+        for (const { fix, index } of targets) {
+          try {
+            const backupAbs = path.join(runDir, 'backups', `fix-${index}-${Date.now()}.orig`);
+            const done = await applyFix({ fix, roots, backupPath: backupAbs });
+            fix.applied = {
+              at: Date.now(),
+              // Stable order for same-millisecond batch entries (undo runs in reverse).
+              order: applied,
+              backup: path.relative(runDir, backupAbs).split(path.sep).join('/'),
+              root: done.root,
+              file: done.file,
+              line: done.line,
+            };
+            applied += 1;
+          } catch (applyError) {
+            error = `${fix?.file ?? 'fix'}：${applyError.message}`;
+            break;
+          }
+        }
+        await writeJsonAtomic(path.join(runDir, 'result.json'), result);
+        await appendFile(
+          path.join(runDir, 'fixes.log'),
+          `${new Date().toISOString()} apply-all applied=${applied} error=${error ?? ''}\n`,
+          'utf8',
+        ).catch(() => {});
+        log.info('[fix] apply-all', applied, error ?? 'ok');
+        return error ? { ok: false, applied, error, fixes } : { ok: true, applied, fixes };
+      }
+
+      const targets = fixes
+        .map((fix, index) => ({ fix, index }))
+        .filter(({ fix }) => fix?.applied && !fix.applied.revertedAt)
+        .sort((a, b) => (
+          ((b.fix.applied.at ?? 0) * 1000) + (b.fix.applied.order ?? 0)
+          - (((a.fix.applied.at ?? 0) * 1000) + (a.fix.applied.order ?? 0))
+        ));
+      if (targets.length === 0) return { ok: true, reverted: 0, fixes };
+      if (!smoke) {
+        const files = targets.slice(0, 8).map(({ fix }) => `- ${fix.file}`).join('\n');
+        const ok = await confirmFixDialog(parent, {
+          title: '全部撤销修改',
+          message: `将还原 ${targets.length} 个文件`,
+          detail: `${files}${targets.length > 8 ? `\n… 另有 ${targets.length - 8} 个` : ''}\n\n将用诊断时的备份覆盖当前文件。`,
+        });
+        if (!ok) return { cancelled: true, fixes };
+      }
+      let reverted = 0;
+      let error = null;
+      const runRoot = path.resolve(runDir);
+      for (const { fix } of targets) {
+        try {
+          const backupAbs = path.resolve(runDir, fix.applied.backup ?? '');
+          if (!backupAbs.startsWith(`${runRoot}${path.sep}`)) throw new Error('备份路径无效');
+          await revertFix({ fix, roots, backupPath: backupAbs });
+          fix.applied = { ...fix.applied, revertedAt: Date.now() };
+          reverted += 1;
+        } catch (undoError) {
+          error = `${fix?.file ?? 'fix'}：${undoError.message}`;
+          break;
+        }
+      }
+      await writeJsonAtomic(path.join(runDir, 'result.json'), result);
+      await appendFile(
+        path.join(runDir, 'fixes.log'),
+        `${new Date().toISOString()} undo-all reverted=${reverted} error=${error ?? ''}\n`,
+        'utf8',
+      ).catch(() => {});
+      log.info('[fix] undo-all', reverted, error ?? 'ok');
+      return error ? { ok: false, reverted, error, fixes } : { ok: true, reverted, fixes };
+    }
+
     const fixIndex = Number(payload.fixIndex);
     if (!Number.isInteger(fixIndex) || fixIndex < 0) throw new Error('fixIndex 无效');
     const { result, fix, roots, runDir } = await loadRunFix(service, payload.runId, fixIndex);
-    const parent = BrowserWindow.fromWebContents(event.sender) ?? mainWindow;
 
     if (payload.action === 'apply') {
       if (fix.preview?.status !== 'ready') throw new Error('该建议没有可应用的 diff 预览');
