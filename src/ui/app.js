@@ -1402,6 +1402,16 @@ function resetDiagnoseProgress() {
   diagnoseProgressEl.hidden = true;
 }
 
+function finalizeDiagnoseProgress(status, label, detail = null) {
+  // The client-side placeholder must never keep spinning after the run settles.
+  diagnoseProgressSteps = diagnoseProgressSteps.filter((step) => step.id !== 'client-start');
+  const id = status === 'error' ? 'error' : 'done';
+  if (!diagnoseProgressSteps.some((step) => step.id === id)) {
+    upsertProgressStep(diagnoseProgressSteps, { id, label, status, detail });
+  }
+  renderDiagnoseProgress();
+}
+
 async function runDiagnosisPayload(payload, label) {
   diagnoseMessage.textContent = `${label}诊断中…`;
   diagnoseMessage.className = 'muted';
@@ -1418,17 +1428,13 @@ async function runDiagnosisPayload(payload, label) {
       mock: false,
       recheck: 1,
     });
-    if (!diagnoseProgressSteps.some((step) => step.id === 'done')) {
-      upsertDiagnoseProgress({ id: 'client-done', label: '诊断完成', status: 'done' });
-    }
+    finalizeDiagnoseProgress('done', '诊断完成');
     renderDiagnosis(response);
     diagnoseMessage.textContent = '诊断完成';
     diagnoseMessage.className = 'message ok';
     await loadRuns();
   } catch (err) {
-    if (!diagnoseProgressSteps.some((step) => step.id === 'error')) {
-      upsertDiagnoseProgress({ id: 'client-error', label: '诊断失败', status: 'error', detail: err.message });
-    }
+    finalizeDiagnoseProgress('error', '诊断失败', err.message);
     diagnoseMessage.textContent = `诊断失败：${err.message}`;
     diagnoseMessage.className = 'message error';
   } finally {

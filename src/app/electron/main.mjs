@@ -961,6 +961,7 @@ async function runSmoke(window, host) {
         diagnoseUi = await window.webContents.executeJavaScript(`({
           progressVisible: document.getElementById('diagnose-progress')?.hidden === false,
           progressSteps: document.querySelectorAll('#diagnose-progress .diagnose-step').length,
+          spinning: document.querySelectorAll('#diagnose-progress .diagnose-step.start').length,
           lastLabel: [...document.querySelectorAll('#diagnose-progress .diagnose-step-label')].pop()?.textContent ?? '',
         })`).catch(() => null);
       }
