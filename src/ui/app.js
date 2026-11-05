@@ -1593,7 +1593,7 @@ browserUrlInput.addEventListener('keydown', (event) => {
 });
 $('browser-reload').addEventListener('click', () => api.browser('reload').catch(() => {}));
 $('browser-devtools').addEventListener('click', () => api.browser('devtools').catch(() => {}));
-$('clear-requests').addEventListener('click', async () => {
+async function clearCapturedData() {
   try {
     await api.capture('clear');
     await api.capture('console-clear').catch(() => {});
@@ -1605,7 +1605,9 @@ $('clear-requests').addEventListener('click', async () => {
   } catch (err) {
     hintEl.textContent = `清空失败：${err.message}`;
   }
-});
+}
+$('clear-requests').addEventListener('click', clearCapturedData);
+$('browser-clear').addEventListener('click', clearCapturedData);
 $('only-errors').addEventListener('change', renderRequests);
 devServerStartBtn.addEventListener('click', () => devServerAction('start'));
 devServerRestartBtn.addEventListener('click', () => devServerAction('restart'));

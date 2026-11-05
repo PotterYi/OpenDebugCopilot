@@ -757,6 +757,7 @@ async function runSmoke(window, host) {
           pipeParserOption: [...document.querySelectorAll('#log-parser option')].some((option) => option.value === 'pipe'),
           consolePanel: Boolean(document.getElementById('console-list')),
           requestFilterPresent: document.querySelectorAll('#request-filter button[data-filter]').length === 3,
+          browserClearPresent: Boolean(document.getElementById('browser-clear')),
           devServerControlsPresent: Boolean(document.getElementById('devserver-start'))
             && Boolean(document.getElementById('devserver-restart'))
             && Boolean(document.getElementById('devserver-stop')),

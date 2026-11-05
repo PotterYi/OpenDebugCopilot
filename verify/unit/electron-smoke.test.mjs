@@ -164,6 +164,7 @@ test('electron shell boots, captures, routes and diagnoses', {
   assert.match(stdout, /"pipeParserOption":true/);
   assert.match(stdout, /"consolePanel":true/);
   assert.match(stdout, /"requestFilterPresent":true/);
+  assert.match(stdout, /"browserClearPresent":true/);
   assert.match(stdout, /"devServerControlsPresent":true/);
   assert.match(stdout, /"singleDiagnoseButton":true/);
   assert.match(stdout, /"questionIsTextarea":true/);
