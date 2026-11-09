@@ -50,6 +50,7 @@ export function buildReport(result) {
     symptom: scrubText(result.meta?.question?.trim() ? result.meta.question : '(未提供描述)'),
     durationMs: result.meta?.durationMs ?? 0,
     conclusion: scrubText(agent.conclusion ?? ''),
+    databaseNotice: result.databases?.notice ? scrubText(result.databases.notice) : null,
     fixes: normalizeFixList(agent.fixes).map((fix) => scrubText(formatFix(fix))),
     needsMoreInfo: (agent.needsMoreInfo ?? []).map((item) => scrubText(item)),
     request: {
@@ -130,6 +131,7 @@ export function renderMarkdown(report) {
     '## 结论',
     '',
     report.conclusion || '(无结论)',
+    ...(report.databaseNotice ? ['', `> ⚠ ${report.databaseNotice}`] : []),
   ];
 
   if (report.fixes.length > 0) {

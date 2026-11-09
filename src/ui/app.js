@@ -1098,8 +1098,10 @@ async function runFollowUp(view, input, button) {
   const runId = response?.runId ?? response?.result?.meta?.runId;
   const question = input.value.trim();
   if (!runId || !question) return;
+  const label = button.textContent;
   input.disabled = true;
   button.disabled = true;
+  button.textContent = '继续诊断中…';
   showMessage(view, '继续诊断中…');
   const progressEl = view.container.querySelector('.followup-progress');
   if (progressEl) {
@@ -1134,15 +1136,13 @@ async function runFollowUp(view, input, button) {
     showMessage(view, `继续诊断失败：${error.message}`, 'message error');
     input.disabled = false;
     button.disabled = false;
+    button.textContent = label;
   }
 }
 
 function buildChatSection(view) {
   const block = el('section', 'card-section chat-panel');
   block.append(el('div', 'card-title', '继续诊断'));
-  const progress = el('div', 'followup-progress diagnose-progress');
-  progress.hidden = true;
-  block.append(progress);
 
   const row = el('div', 'chat-input-row');
   const input = document.createElement('input');
@@ -1158,7 +1158,10 @@ function buildChatSection(view) {
     }
   });
   row.append(input, send);
-  block.append(row);
+  const progress = el('div', 'followup-progress diagnose-progress');
+  progress.hidden = true;
+  // Thinking steps belong under the composer so the input stays visually first.
+  block.append(row, progress);
   return block;
 }
 
@@ -1271,6 +1274,9 @@ function renderRunBody(container, result, agent, view, { readOnly = false, showH
   }
 
   container.append(section('结论', el('p', 'conclusion', agent?.conclusion ?? '(无结论)')));
+  if (result.databases?.notice && agent === result.agent) {
+    container.append(el('p', 'error-text small', `⚠ ${result.databases.notice}`));
+  }
 
   if (result.request || result.response) {
     container.append(section('请求 / 响应', kv([

@@ -13,6 +13,7 @@ import {
 import { createDatabaseStore } from '../../src/core/database-store.mjs';
 import { createTools } from '../../src/tools/index.mjs';
 import { createService } from '../../src/app/service.mjs';
+import { createMockAgent } from '../../src/agent/mock.mjs';
 import { tempDir } from './tmp.mjs';
 
 const TMP = tempDir('db-test');
@@ -244,4 +245,79 @@ test('capture diagnosis threads databases into tools and persists query metadata
   const deleted = await service.deleteRun(result.meta.runId);
   assert.equal(deleted.databaseQueries, 1);
   await assert.rejects(access(queryFile), /ENOENT/);
+});
+
+test('queryDatabase wraps connection failures as DB_QUERY_FAILED', async () => {
+  await assert.rejects(
+    queryDatabase({
+      connection,
+      sql: 'select 1',
+      connect: async () => { throw new Error('connection lost'); },
+    }),
+    (error) => error?.code === 'DB_QUERY_FAILED' && /connection lost/.test(error.message),
+  );
+});
+
+test('unreachable database degrades to source/log diagnosis instead of failing', async (t) => {
+  t.after(async () => { await rm(TMP, { recursive: true, force: true }); });
+  const { runCaptureDiagnosis } = await import('../../src/diagnose/run.mjs');
+  const { result } = await runCaptureDiagnosis({
+    request: { method: 'GET', url: 'http://localhost/api/orders', headers: {}, body: null, startedAt: Date.now() },
+    response: { status: 500, statusText: 'Error', ok: false, headers: {}, body: '{}', durationMs: 1 },
+    firedAt: Date.now(),
+  }, {
+    workspace: { logfiles: [], window: { beforeMs: 1000, afterMs: 1000 } },
+    root: TMP,
+    runsDir: path.join(TMP, 'runs'),
+    agent: createMockAgent(),
+    databases: [{ ...connection, password: 'secret' }],
+    activeDatabaseId: 'db-1',
+    // Simulates preflight: the connection is configured but SELECT 1 failed.
+    preflight: { ok: true, checks: [], databases: [] },
+  });
+
+  assert.match(result.databases.notice, /数据库查询不可用/);
+  assert.equal(result.databases.connections.length, 0);
+  assert.ok(result.agent.conclusion.length > 0);
+  assert.equal(result.agent.incomplete, undefined);
+});
+
+test('a failed query mid-run keeps the diagnosis alive and records a notice', async (t) => {
+  t.after(async () => { await rm(TMP, { recursive: true, force: true }); });
+  const { runCaptureDiagnosis } = await import('../../src/diagnose/run.mjs');
+  const runtimeConnection = { ...connection, password: 'secret' };
+  const agent = {
+    id: 'db-failure-agent',
+    async diagnose({ tools }) {
+      const failed = await tools.tools.query_db({ sql: 'select id from orders' });
+      assert.equal(failed.error, true);
+      assert.equal(failed.code, 'DB_QUERY_FAILED');
+      return {
+        conclusion: '数据库不可用，已改为根据源码与日志判断',
+        evidenceRefs: [{ type: 'request', ref: 'request' }],
+        confidence: 0.6,
+        needsMoreInfo: [],
+        fixes: [],
+      };
+    },
+  };
+  const { result } = await runCaptureDiagnosis({
+    request: { method: 'GET', url: 'http://localhost/api/orders', headers: {}, body: null, startedAt: Date.now() },
+    response: { status: 500, statusText: 'Error', ok: false, headers: {}, body: '{}', durationMs: 1 },
+    firedAt: Date.now(),
+  }, {
+    workspace: { logfiles: [], window: { beforeMs: 1000, afterMs: 1000 } },
+    root: TMP,
+    runsDir: path.join(TMP, 'runs'),
+    agent,
+    databases: [runtimeConnection],
+    activeDatabaseId: 'db-1',
+    preflight: { ok: true, checks: [], databases: [runtimeConnection] },
+    databaseConnect: async () => { throw new Error('database offline'); },
+  });
+
+  assert.match(result.databases.notice, /数据库查询不可用/);
+  assert.equal(result.databaseQueries.length, 1);
+  assert.equal(result.databaseQueries[0].error, true);
+  assert.match(result.agent.conclusion, /源码与日志/);
 });

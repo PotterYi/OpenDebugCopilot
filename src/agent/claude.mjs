@@ -18,7 +18,8 @@ const SYSTEM_PROMPT = `你是 DebugCopilot 的后端问题定位助手。你的�
 8. 代码修改必须提供可唯一定位的 search（文件中的精确原文，出现次数必须为 1）和 replace；无法给出精确修改时，只写 summary，不要编造 search/replace。
 9. 不要直接修改文件；本阶段只生成修复建议和 diff 预览，由用户确认。
 10. 证据包的 extraSources 里可能列出已配置但未授权的其他后端源码根；不要假设其内容。若判断需要这些代码，写入 needsMoreInfo，提示用户勾选「同时扫描其他后端源码」后重新诊断。
-11. 已授权时，读取/搜索其他后端源码使用 root=extra 和 extraRoot=<id>；修改建议同时带 root=extra 与 extraRoot=<id>。`;
+11. 已授权时，读取/搜索其他后端源码使用 root=extra 和 extraRoot=<id>；修改建议同时带 root=extra 与 extraRoot=<id>。
+12. 数据库工具不可用或返回 DB_* 错误时，不要中断诊断：继续使用日志和源码工具分析，并在 conclusion 或 needsMoreInfo 中明确说明「数据库查询不可用，本次结论仅基于源码与日志分析」。`;
 
 const FOLLOWUP_SYSTEM_PROMPT = `你是 DebugCopilot 的诊断助手，正在和用户继续讨论一条已有诊断。
 
@@ -27,8 +28,9 @@ const FOLLOWUP_SYSTEM_PROMPT = `你是 DebugCopilot 的诊断助手，正在和�
 2. 用户可能在评估方案，要求先给修复方案、解释风险，或对当前方案不满意并要求调整。
 3. 输出 JSON Schema：conclusion 是本轮回复；fixes 是本轮建议，会覆盖上一轮展示。
 4. 如果用户只想先看方案，不要给 search/replace 具体代码；要求具体修改时再给可唯一定位的 search/replace。
-5. 可以使用 debugcopilot 提供的只读工具补充日志、线程或源码证据；不要假设未读取的内容。
-6. 不要直接修改文件。使用中文回答。`;
+5. 可以使用 debugcopilot 提供的只读工具补充日志、线程、源码或数据库证据；不要假设未读取的内容。
+6. 数据库工具不可用或返回 DB_* 错误时，不要中断：继续用日志与源码分析，并明确说明「数据库查询不可用，本次结论仅基于源码与日志分析」。
+7. 不要直接修改文件。使用中文回答。`;
 
 function turnLimitNote(turnLimit) {
   return Number.isFinite(turnLimit) && turnLimit > 0
@@ -251,6 +253,80 @@ function parseStructured(text) {
 }
 
 /**
+ * Zod shapes for the in-process MCP tools. Keep this in sync with toolSpecs();
+ * a missing shape makes SDK tool registration fail before the first model turn.
+ *
+ * @param {any} z zod namespace
+ */
+export function buildToolShapes(z) {
+  return {
+    get_logs: {
+      marker: z.string().optional(),
+      keyword: z.string().optional(),
+      thread: z.string().optional(),
+      level: z.string().optional(),
+      minLevel: z.string().optional(),
+      limit: z.number().int().min(1).max(500).optional(),
+    },
+    list_threads: {},
+    search_log: {
+      keyword: z.string(),
+      limit: z.number().int().min(1).max(500).optional(),
+    },
+    read_source: {
+      target: z.string(),
+      root: z.enum(['backend', 'frontend', 'extra']).optional(),
+      extraRoot: z.string().optional(),
+      startLine: z.number().int().min(1).optional(),
+      endLine: z.number().int().min(1).optional(),
+    },
+    search_source: {
+      keyword: z.string(),
+      root: z.enum(['backend', 'frontend', 'extra']).optional(),
+      extraRoot: z.string().optional(),
+      limit: z.number().int().min(1).max(200).optional(),
+    },
+    read: {
+      file: z.string(),
+      startLine: z.number().int().min(1).optional(),
+      endLine: z.number().int().min(1).optional(),
+    },
+    query_db: {
+      connection: z.string().optional(),
+      sql: z.string(),
+      limit: z.number().int().min(1).max(1000).optional(),
+    },
+    write_db: {
+      connection: z.string().optional(),
+      sql: z.string(),
+    },
+  };
+}
+
+/**
+ * Build only the SDK tools that have a schema. A future tool without a shape
+ * is skipped (and reported to stderr) instead of aborting the diagnosis.
+ */
+function buildSdkTools(toolFn, specs, shapes, tools) {
+  const supported = specs.filter((spec) => {
+    if (shapes[spec.name]) return true;
+    console.error(`[agent] tool ${spec.name} has no schema and is skipped`);
+    return false;
+  });
+  const sdkTools = supported.map((spec) => toolFn(spec.name, spec.description, shapes[spec.name], async (args) => {
+    const result = await tools.tools[spec.name](args);
+    return {
+      content: [{ type: 'text', text: toolResultText(result) }],
+      isError: Boolean(result?.error),
+    };
+  }));
+  return {
+    sdkTools,
+    names: supported.map((spec) => `mcp__debugcopilot__${spec.name}`),
+  };
+}
+
+/**
  * Live diagnoser backed by the Claude Agent SDK.
  * In-process MCP tools are read-only; built-in Claude Code tools are disabled.
  *
@@ -264,49 +340,10 @@ export function createClaudeAgent({ model, maxTurns = null, timeoutMs = DEFAULT_
       const { query, tool, createSdkMcpServer } = await import('@anthropic-ai/claude-agent-sdk');
       const { z } = await import('zod');
 
-      const shapes = {
-        get_logs: {
-          marker: z.string().optional(),
-          keyword: z.string().optional(),
-          thread: z.string().optional(),
-          level: z.string().optional(),
-          minLevel: z.string().optional(),
-          limit: z.number().int().min(1).max(500).optional(),
-        },
-        list_threads: {},
-        search_log: {
-          keyword: z.string(),
-          limit: z.number().int().min(1).max(500).optional(),
-        },
-        read_source: {
-          target: z.string(),
-          root: z.enum(['backend', 'frontend', 'extra']).optional(),
-          extraRoot: z.string().optional(),
-          startLine: z.number().int().min(1).optional(),
-          endLine: z.number().int().min(1).optional(),
-        },
-        search_source: {
-          keyword: z.string(),
-          root: z.enum(['backend', 'frontend', 'extra']).optional(),
-          extraRoot: z.string().optional(),
-          limit: z.number().int().min(1).max(200).optional(),
-        },
-        read: {
-          file: z.string(),
-          startLine: z.number().int().min(1).optional(),
-          endLine: z.number().int().min(1).optional(),
-        },
-      };
-
-      const sdkTools = tools.specs.map((spec) =>
-        tool(spec.name, spec.description, shapes[spec.name], async (args) => {
-          const result = await tools.tools[spec.name](args);
-          return {
-            content: [{ type: 'text', text: toolResultText(result) }],
-            isError: Boolean(result?.error),
-          };
-        }),
-      );
+      const shapes = buildToolShapes(z);
+      const built = buildSdkTools(tool, tools.specs, shapes, tools);
+      const sdkTools = built.sdkTools;
+      const toolNames = built.names;
 
       const server = createSdkMcpServer({
         name: 'debugcopilot',
@@ -314,7 +351,6 @@ export function createClaudeAgent({ model, maxTurns = null, timeoutMs = DEFAULT_
         tools: sdkTools,
         alwaysLoad: true,
       });
-      const toolNames = tools.specs.map((spec) => `mcp__debugcopilot__${spec.name}`);
 
       const turnLimit = budget?.maxRounds ?? maxTurns;
       const session = query({
@@ -409,55 +445,16 @@ export function createClaudeAgent({ model, maxTurns = null, timeoutMs = DEFAULT_
       if (tools?.specs?.length) {
         const { tool, createSdkMcpServer } = await import('@anthropic-ai/claude-agent-sdk');
         const { z } = await import('zod');
-        const shapes = {
-          get_logs: {
-            marker: z.string().optional(),
-            keyword: z.string().optional(),
-            thread: z.string().optional(),
-            level: z.string().optional(),
-            minLevel: z.string().optional(),
-            limit: z.number().int().min(1).max(500).optional(),
-          },
-          list_threads: {},
-          search_log: {
-            keyword: z.string(),
-            limit: z.number().int().min(1).max(500).optional(),
-          },
-          read_source: {
-            target: z.string(),
-            root: z.enum(['backend', 'frontend', 'extra']).optional(),
-            extraRoot: z.string().optional(),
-            startLine: z.number().int().min(1).optional(),
-            endLine: z.number().int().min(1).optional(),
-          },
-          search_source: {
-            keyword: z.string(),
-            root: z.enum(['backend', 'frontend', 'extra']).optional(),
-            extraRoot: z.string().optional(),
-            limit: z.number().int().min(1).max(200).optional(),
-          },
-          read: {
-            file: z.string(),
-            startLine: z.number().int().min(1).optional(),
-            endLine: z.number().int().min(1).optional(),
-          },
-        };
-        sdkTools = tools.specs.map((spec) =>
-          tool(spec.name, spec.description, shapes[spec.name], async (args) => {
-            const result = await tools.tools[spec.name](args);
-            return {
-              content: [{ type: 'text', text: toolResultText(result) }],
-              isError: Boolean(result?.error),
-            };
-          }),
-        );
+        const shapes = buildToolShapes(z);
+        const built = buildSdkTools(tool, tools.specs, shapes, tools);
+        sdkTools = built.sdkTools;
+        toolNames = built.names;
         server = createSdkMcpServer({
           name: 'debugcopilot',
           version: '0.1.0',
           tools: sdkTools,
           alwaysLoad: true,
         });
-        toolNames = tools.specs.map((spec) => `mcp__debugcopilot__${spec.name}`);
       }
       const followUpTurnLimit = budget?.maxRounds ?? maxTurns;
       const session = query({

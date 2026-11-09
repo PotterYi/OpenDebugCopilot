@@ -816,6 +816,27 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
         ...followTools.dbQueries.map((query) => ({ ...query, source: 'followup' })),
       ];
     }
+    let databaseNotice = logContext?.databaseNotice ?? result.databases?.notice ?? null;
+    const failedFollowQueries = (followTools?.dbQueries ?? []).filter((query) => query.error);
+    if (failedFollowQueries.length > 0) {
+      const reason = failedFollowQueries[0].message || failedFollowQueries[0].code || '未知错误';
+      databaseNotice = followTools.dbQueries.some((query) => !query.error)
+        ? `部分数据库查询失败（${reason}），未成功的部分已改用源码与日志分析。`
+        : '数据库查询不可用，本次诊断仅通过源码与日志分析获得结论。';
+      sendProgress({
+        id: 'database',
+        label: '数据库查询失败，已降级',
+        status: 'error',
+        detail: databaseNotice,
+        at: Date.now(),
+      });
+    }
+    result.databases = {
+      ...(result.databases ?? {}),
+      activeId: result.databases?.activeId ?? logContext?.activeDatabaseId ?? null,
+      connections: result.databases?.connections ?? logContext?.databases ?? [],
+      notice: databaseNotice,
+    };
 
     const at = Date.now();
     const conversation = Array.isArray(result.conversation) && result.conversation.length

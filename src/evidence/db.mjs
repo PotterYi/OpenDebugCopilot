@@ -191,6 +191,9 @@ export async function queryDatabase({
       truncated: allRows.length > boundedLimit,
       durationMs: Date.now() - started,
     };
+  } catch (error) {
+    if (error instanceof AppError) throw error;
+    throw dbError(sanitizeError(error), 'DB_QUERY_FAILED');
   } finally {
     await closeClient(client);
   }
@@ -240,7 +243,8 @@ export async function writeDatabase({
     };
   } catch (error) {
     await client?.rollback?.().catch?.(() => {});
-    throw error;
+    if (error instanceof AppError) throw error;
+    throw dbError(sanitizeError(error), 'DB_WRITE_FAILED');
   } finally {
     await closeClient(client);
   }

@@ -749,6 +749,9 @@ test('history runs behave as an accordion', {
       response: { status: 200 },
       logs: { count: 0 },
       threads: { total: 0 },
+      databases: runId === 'run-b'
+        ? { connections: [], notice: '数据库查询不可用，本次诊断仅通过源码与日志分析获得结论。' }
+        : { connections: [], notice: null },
       agent: {
         conclusion,
         evidenceRefs: [{ type: 'request', ref: 'request' }],
@@ -778,10 +781,43 @@ test('history runs behave as an accordion', {
     const first = () => document.querySelector('#runs li[data-run-id]');
     first().click();
     await waitFor(() => report.hidden === false && report.textContent.includes('A结论'));
+    const chat = report.querySelector('.chat-panel');
+    const chatChildren = chat ? [...chat.children] : [];
+    const row = chat?.querySelector('.chat-input-row');
+    const progress = chat?.querySelector('.followup-progress');
+    const chatOrder = Boolean(
+      row && progress
+      && chatChildren.indexOf(row) >= 0
+      && chatChildren.indexOf(row) < chatChildren.indexOf(progress)
+    );
+    const input = chat?.querySelector('.chat-input');
+    const send = row?.querySelector('button');
+    let running = null;
+    let finished = null;
+    if (input && send) {
+      input.value = '补充信息';
+      send.click();
+      running = {
+        disabled: send.disabled,
+        inputDisabled: input.disabled,
+        label: send.textContent,
+      };
+      await waitFor(() => report.textContent.includes('继续诊断：补充信息'));
+      const chatAfter = report.querySelector('.chat-panel');
+      const sendAfter = chatAfter?.querySelector('.chat-input-row button');
+      finished = {
+        enabled: Boolean(sendAfter && !sendAfter.disabled),
+        label: sendAfter?.textContent ?? '',
+        text: report.textContent.includes('继续诊断：补充信息'),
+      };
+    }
     const opened = {
       reportHidden: report.hidden,
       visibleRuns: document.querySelectorAll('#runs li[data-run-id]:not([hidden])').length,
       selected: document.querySelector('#runs li.selected')?.textContent.includes('A') === true,
+      chatOrder,
+      running,
+      finished,
     };
     first().click();
     await waitFor(() => report.hidden === true);
@@ -796,6 +832,7 @@ test('history runs behave as an accordion', {
       reportHidden: report.hidden,
       visibleRuns: document.querySelectorAll('#runs li[data-run-id]:not([hidden])').length,
       selected: document.querySelector('#runs li.selected')?.textContent.includes('B') === true,
+      databaseNoticeShown: report.textContent.includes('数据库查询不可用'),
     };
     return { initial, opened, closed, secondOpen };
   })()`;
@@ -821,9 +858,16 @@ test('history runs behave as an accordion', {
   const smoke = JSON.parse(match[1]);
   assert.deepEqual(smoke.uiEvalResult, {
     initial: { reportHidden: true, visibleRuns: 2 },
-    opened: { reportHidden: false, visibleRuns: 1, selected: true },
+    opened: {
+      reportHidden: false,
+      visibleRuns: 1,
+      selected: true,
+      chatOrder: true,
+      running: { disabled: true, inputDisabled: true, label: '继续诊断中…' },
+      finished: { enabled: true, label: '继续诊断', text: true },
+    },
     closed: { reportHidden: true, visibleRuns: 2 },
-    secondOpen: { reportHidden: false, visibleRuns: 1, selected: true },
+    secondOpen: { reportHidden: false, visibleRuns: 1, selected: true, databaseNoticeShown: true },
   });
 });
 

@@ -28,6 +28,25 @@ function requestPathOf(url) {
     return null;
   }
 }
+
+/**
+ * Database degradation notice. A missing or unreachable database must never
+ * abort a diagnosis; it only changes which evidence was available.
+ */
+function buildDatabaseNotice(configured = [], reachable = []) {
+  const configuredList = Array.isArray(configured) ? configured : [];
+  const reachableList = Array.isArray(reachable) ? reachable : [];
+  if (configuredList.length === 0) return null;
+  if (reachableList.length === 0) {
+    return '数据库查询不可用，本次诊断仅通过源码与日志分析获得结论。';
+  }
+  const reachableIds = new Set(reachableList.map((connection) => connection.id));
+  const unavailable = configuredList.filter((connection) => !reachableIds.has(connection.id));
+  if (unavailable.length === 0) return null;
+  const names = unavailable.map((connection) => connection.name || connection.id).join('、');
+  return `部分数据库不可用（${names}），相关结论仅基于源码与日志分析。`;
+}
+
 const DEFAULT_MARKER_TIMEOUT_MS = 2000;
 const DEFAULT_POLL_INTERVAL_MS = 250;
 const MAX_BODY_CHARS = 8000;
@@ -190,6 +209,7 @@ async function diagnoseWithFired({
   activeDatabaseId = null,
   approveWrite = null,
   databaseConnect = undefined,
+  databaseNotice = null,
   onProgress = () => {},
 }) {
   const progress = (id, label, status = 'done', detail = null) => {
@@ -273,6 +293,9 @@ async function diagnoseWithFired({
   });
   progress('source', '读取后端/前端源码', 'done');
   progress('prepare', '整理请求与证据', 'done');
+  if (databaseNotice) {
+    progress('database', '数据库不可用，改用源码与日志分析', 'error', databaseNotice);
+  }
 
   const toolsBundle = createTools({
     scenario,
@@ -441,6 +464,18 @@ async function diagnoseWithFired({
   await runLog.info(`gates=${gates.ok} recheck=${recheckInfo ? recheckInfo.verdict : 'off'}`);
   progress('gates', '执行自检', 'done');
 
+  // A query that fails mid-run only degrades the evidence, never the diagnosis.
+  const failedDbQueries = toolsBundle.dbQueries.filter((query) => query.error);
+  let finalDatabaseNotice = databaseNotice;
+  if (failedDbQueries.length > 0) {
+    const anySucceeded = toolsBundle.dbQueries.some((query) => !query.error);
+    const reason = failedDbQueries[0].message || failedDbQueries[0].code || '未知错误';
+    finalDatabaseNotice = anySucceeded
+      ? `部分数据库查询失败（${reason}），未成功的部分已改用源码与日志分析。`
+      : '数据库查询不可用，本次诊断仅通过源码与日志分析获得结论。';
+    progress('database', '数据库查询失败，已降级', 'error', finalDatabaseNotice);
+  }
+
   // Public connection labels only: passwords and resolved secrets must never
   // be written into a run artifact.
   const databaseLabels = databases.map((connection) => ({
@@ -486,6 +521,7 @@ async function diagnoseWithFired({
         extraSourceRoots,
         databases: databaseLabels,
         activeDatabaseId,
+        databaseNotice: finalDatabaseNotice,
       },
     },
     target,
@@ -505,6 +541,7 @@ async function diagnoseWithFired({
     databases: {
       activeId: activeDatabaseId,
       connections: databaseLabels,
+      notice: finalDatabaseNotice,
     },
     // Query metadata points at <run>/db-queries/*.json. Removing the run
     // directory is therefore enough to remove every stored result.
@@ -565,6 +602,7 @@ export async function runDiagnosis(scenario, options = {}) {
   // Only connections that answered SELECT 1 are exposed to the agent. An
   // unreachable test database must not turn into a stream of tool failures.
   const reachableDatabases = preflight.databases ?? databases;
+  const databaseNotice = buildDatabaseNotice(databases, reachableDatabases);
 
   const runDir = path.resolve(runsDir, runId);
   await mkdir(runDir, { recursive: true });
@@ -591,6 +629,7 @@ export async function runDiagnosis(scenario, options = {}) {
     activeDatabaseId,
     approveWrite,
     databaseConnect,
+    databaseNotice,
     onProgress,
   });
 
@@ -695,6 +734,7 @@ export async function runCaptureDiagnosis(observation, options = {}) {
     );
   }
   const reachableDatabases = preflight.databases ?? databases;
+  const databaseNotice = buildDatabaseNotice(databases, reachableDatabases);
 
   const runDir = path.resolve(runsDir, runId);
   await mkdir(runDir, { recursive: true });
@@ -726,6 +766,7 @@ export async function runCaptureDiagnosis(observation, options = {}) {
     activeDatabaseId,
     approveWrite,
     databaseConnect,
+    databaseNotice,
     onProgress,
   });
 }

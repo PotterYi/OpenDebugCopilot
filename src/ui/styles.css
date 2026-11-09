@@ -166,6 +166,12 @@ button {
 }
 button.secondary { background: var(--panel-2); border: 1px solid var(--border); }
 button:hover { filter: brightness(1.08); }
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  filter: grayscale(0.55);
+}
+button:disabled:hover { filter: grayscale(0.55); }
 .message { min-height: 18px; font-size: 12px; color: var(--muted); }
 .message.ok { color: #5bd693; }
 .message.error { color: var(--danger); }
@@ -484,7 +490,7 @@ button:hover { filter: brightness(1.08); }
 .chat-msg.history-user { align-self: flex-end; max-width: 82%; }
 .chat-msg.history-assistant { align-self: stretch; max-width: 100%; width: 100%; padding: 10px; }
 .chat-time { margin-bottom: 4px; }
-.followup-progress { margin: 0 0 8px; max-height: 120px; }
+.followup-progress { margin: 8px 0 0; max-height: 120px; }
 .chat-messages {
   display: flex;
   flex-direction: column;
@@ -515,6 +521,7 @@ button:hover { filter: brightness(1.08); }
   padding: 7px 10px;
   font: inherit;
 }
+.chat-input:disabled { opacity: 0.6; cursor: not-allowed; }
 .verify-log {
   margin: 6px 0 0;
   max-height: 160px;
