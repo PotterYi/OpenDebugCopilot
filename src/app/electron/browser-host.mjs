@@ -277,12 +277,17 @@ export class BrowserHost {
     return this.consoleEvents.slice(-limit);
   }
 
-  clearConsole() {
-    this.consoleEvents = [];
-    this.consoleSeq = 0;
+  clearConsole({ exceptIds = [] } = {}) {
+    const keep = new Set((exceptIds ?? []).map(String));
+    if (keep.size === 0) {
+      this.consoleEvents = [];
+      this.consoleSeq = 0;
+    } else {
+      this.consoleEvents = this.consoleEvents.filter((event) => keep.has(String(event.id)));
+    }
     this.headersByPath = new Map();
     this.headersByUrl = new Map();
-    this.emit({ type: 'console-clear' });
+    this.emit({ type: 'console-clear', keepIds: [...keep] });
   }
 
   handleCdp(method, params) {
@@ -527,15 +532,45 @@ export class BrowserHost {
     return record ? { ...record } : null;
   }
 
-  clear() {
-    this.records.clear();
-    this.byRequestId.clear();
-    this.order = [];
-    this.consoleEvents = [];
-    this.consoleSeq = 0;
+  /**
+   * Clear captured data while keeping the records that are still being
+   * diagnosed. Kept request/console ids survive a partial clear.
+   */
+  clear({ exceptIds = [], exceptConsoleIds = [] } = {}) {
+    const keepRequests = new Set((exceptIds ?? []).map(String));
+    const keepConsoles = new Set((exceptConsoleIds ?? []).map(String));
+
+    if (keepRequests.size === 0) {
+      this.records.clear();
+      this.byRequestId.clear();
+      this.order = [];
+    } else {
+      for (const id of [...this.records.keys()]) {
+        if (!keepRequests.has(String(id))) this.records.delete(id);
+      }
+      this.order = this.order.filter((id) => this.records.has(id));
+      this.byRequestId = new Map();
+      for (const record of this.records.values()) {
+        if (record.requestId) this.byRequestId.set(record.requestId, record);
+      }
+    }
+
+    if (keepConsoles.size === 0) {
+      this.consoleEvents = [];
+      this.consoleSeq = 0;
+    } else {
+      this.consoleEvents = this.consoleEvents.filter((event) => keepConsoles.has(String(event.id)));
+      const maxKept = this.consoleEvents.reduce((max, event) => Math.max(max, Number(event.id) || 0), 0);
+      this.consoleSeq = Math.max(this.consoleSeq, maxKept);
+    }
+
     this.headersByPath = new Map();
     this.headersByUrl = new Map();
-    this.emit({ type: 'clear' });
+    this.emit({
+      type: 'clear',
+      keepRequestIds: [...keepRequests],
+      keepConsoleIds: [...keepConsoles],
+    });
   }
 
   status() {

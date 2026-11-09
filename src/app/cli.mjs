@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from '../core/config.mjs';
 import { createDatabaseStore } from '../core/database-store.mjs';
+import { createStore } from '../core/store.mjs';
 import { loadScenario, resolveScenarioPaths } from '../core/scenario.mjs';
 import { selectDriver } from '../driver/index.mjs';
 import { UsageError, toErrorPayload } from '../core/errors.mjs';
@@ -319,6 +320,7 @@ export async function main(argv = process.argv.slice(2), { root = ROOT } = {}) {
     const databaseConfig = await createDatabaseStore({
       configDir: path.join(root, 'configs'),
     }).getRuntimeConfig();
+    const workspace = await createStore({ configDir: path.join(root, 'configs') }).getWorkspace();
 
     const { result, runDir } = await runDiagnosis(scenario, {
       runsDir: parsed.runsDir ? path.resolve(parsed.runsDir) : path.resolve(root, config.runsDir ?? 'runs'),
@@ -329,6 +331,8 @@ export async function main(argv = process.argv.slice(2), { root = ROOT } = {}) {
       // desktop confirmation dialog.
       databases: databaseConfig.connections.map((connection) => ({ ...connection, allowWrite: false })),
       activeDatabaseId: databaseConfig.activeId,
+      verifyCommand: workspace.verifyCommand ?? '',
+      workspace,
     });
 
     if (parsed.json) {

@@ -190,13 +190,22 @@ test('electron shell boots, captures, routes and diagnoses', {
   assert.equal(smokeResult.databaseUi?.actionsSameRow, true);
   assert.equal(smokeResult.databaseUi?.actionsLeftToRight, true);
   assert.equal(smokeResult.databaseUi?.edgeButtons, true);
+  assert.deepEqual(smokeResult.modelUi?.defaults, { model: '', maxTurns: '60', timeoutSeconds: '600' });
+  assert.equal(smokeResult.modelUi?.customShown, true);
+  assert.equal(smokeResult.modelUi?.customHidden, true);
+  assert.equal(smokeResult.modelUi?.saved?.model, 'claude-sonnet-5');
+  assert.equal(smokeResult.modelUi?.saved?.maxTurns, 60);
+  assert.equal(smokeResult.modelUi?.saved?.timeoutMs, 900000);
   assert.match(stdout, /"captureOk":true/);
   assert.match(stdout, /"captured":[1-9]/);
   assert.match(stdout, /"pageTitle":"ok"/);
   assert.match(stdout, /"isLoading":false/);
   assert.match(stdout, /"captureBody":true/);
   assert.match(stdout, /"diagnose":\{"ok":true/);
-  assert.match(stdout, /"diagnoseUi":\{"progressVisible":true,"progressSteps":[1-9]\d*,"spinning":0/);
+  // Direct IPC diagnosis bypasses the client state machine, so the shared
+  // progress panel stays idle; the UI-driven flow is covered by the
+  // multi-request diagnosis smoke test below.
+  assert.match(stdout, /"diagnoseUi":\{"progressVisible":false,"progressSteps":0,"spinning":0/);
   assert.match(stdout, /"gates":true/);
   assert.match(stdout, /"frontendErrors":[1-9]/);
   assert.match(stdout, /"consoleDiagnose":\{"ok":true/);
@@ -733,6 +742,7 @@ test('history runs behave as an accordion', {
   await mkdir(path.join(DIR, 'configs'), { recursive: true });
   t.after(async () => { await rm(DIR, { recursive: true, force: true }); });
   const now = Date.now();
+  const longQuestion = '登录后用户列表一直报错，刷新页面偶发 500，需要查看后端日志与源码定位原因；这条描述故意写得很长，用于验证历史清单里的省略号截断效果。';
   for (const [runId, scenario, conclusion, offset] of [
     ['run-a', 'A', 'A结论', 0],
     ['run-b', 'B', 'B结论', -1000],
@@ -741,7 +751,8 @@ test('history runs behave as an accordion', {
     await mkdir(dir, { recursive: true });
     await writeFile(path.join(dir, 'meta.json'), JSON.stringify({
       runId, scenario, driver: 'capture', agent: 'mock', mode: 'mock',
-      startedAt: now + offset, endedAt: now + offset + 10, durationMs: 10, question: '',
+      startedAt: now + offset, endedAt: now + offset + 10, durationMs: 10,
+      question: runId === 'run-b' ? longQuestion : '',
     }), 'utf8');
     await writeFile(path.join(dir, 'result.json'), JSON.stringify({
       meta: { runId, scenario, agent: 'mock', mode: 'mock', durationMs: 10 },
@@ -755,9 +766,22 @@ test('history runs behave as an accordion', {
       agent: {
         conclusion,
         evidenceRefs: [{ type: 'request', ref: 'request' }],
-        fixes: [],
+        fixes: runId === 'run-b'
+          ? [{
+              summary: '已应用的修改',
+              kind: 'edit',
+              root: 'backend',
+              file: 'orders.js',
+              risk: 'low',
+              preview: { status: 'no-change', message: '示例修改' },
+              applied: { at: now, root: 'backend', file: 'orders.js', backup: 'backups/orders.orig' },
+            }]
+          : [],
         toolCalls: [],
         needsMoreInfo: [],
+        usage: runId === 'run-b'
+          ? { numTurns: 7, totalTokens: 12345, totalInputTokens: 10000, outputTokens: 2345 }
+          : undefined,
       },
     }, null, 2), 'utf8');
   }
@@ -828,13 +852,38 @@ test('history runs behave as an accordion', {
     const second = [...document.querySelectorAll('#runs li[data-run-id]')].find((li) => li.textContent.includes('B'));
     second.click();
     await waitFor(() => report.hidden === false && report.textContent.includes('B结论'));
+    const kvText = [...report.querySelectorAll('.kv')].map((node) => node.textContent).join('|');
+    const questionEl = second?.querySelector('.run-question');
     const secondOpen = {
       reportHidden: report.hidden,
       visibleRuns: document.querySelectorAll('#runs li[data-run-id]:not([hidden])').length,
       selected: document.querySelector('#runs li.selected')?.textContent.includes('B') === true,
       databaseNoticeShown: report.textContent.includes('数据库查询不可用'),
+      usageShown: kvText.includes('轮次') && kvText.includes('消耗 Token') && kvText.includes('12,345'),
+      questionShown: Boolean(questionEl?.textContent.includes('登录后用户列表一直报错')),
+      questionTruncated: Boolean(questionEl && questionEl.scrollWidth > questionEl.clientWidth + 1),
+      questionTooltip: (questionEl?.title?.length ?? 0) > 40,
     };
-    return { initial, opened, closed, secondOpen };
+    const message = document.getElementById('history-message');
+    const chatB = report.querySelector('.chat-panel');
+    const inputB = chatB?.querySelector('.chat-input');
+    const sendB = chatB?.querySelector('.chat-input-row button');
+    let rejected = null;
+    if (inputB && sendB) {
+      inputB.value = '有修改时继续诊断';
+      sendB.click();
+      await waitFor(() => message.textContent.includes('请先撤销已应用的修改'));
+      const steps = [...report.querySelectorAll('.followup-progress .diagnose-step')];
+      const sendAfter = report.querySelector('.chat-panel .chat-input-row button');
+      rejected = {
+        errorShown: message.textContent.includes('继续诊断失败'),
+        spinnerSteps: report.querySelectorAll('.followup-progress .diagnose-step.start').length,
+        allStepsStopped: steps.length > 0 && steps.every((step) => step.classList.contains('error')),
+        buttonEnabled: Boolean(sendAfter && !sendAfter.disabled),
+        buttonLabel: sendAfter?.textContent ?? '',
+      };
+    }
+    return { initial, opened, closed, secondOpen, rejected };
   })()`;
 
   const child = spawn(electronPath, [
@@ -867,7 +916,23 @@ test('history runs behave as an accordion', {
       finished: { enabled: true, label: '继续诊断', text: true },
     },
     closed: { reportHidden: true, visibleRuns: 2 },
-    secondOpen: { reportHidden: false, visibleRuns: 1, selected: true, databaseNoticeShown: true },
+    secondOpen: {
+      reportHidden: false,
+      visibleRuns: 1,
+      selected: true,
+      databaseNoticeShown: true,
+      usageShown: true,
+      questionShown: true,
+      questionTruncated: true,
+      questionTooltip: true,
+    },
+    rejected: {
+      errorShown: true,
+      spinnerSteps: 0,
+      allStepsStopped: true,
+      buttonEnabled: true,
+      buttonLabel: '继续诊断',
+    },
   });
 });
 
@@ -920,4 +985,167 @@ test('saving config persists the current browser URL input', {
   const smoke = JSON.parse(match[1]);
   assert.equal(smoke.uiEvalResult.frontendUrl, 'http://localhost:6001');
   assert.match(smoke.uiEvalResult.message, /已保存/);
+});
+
+test('diagnoses multiple requests concurrently and keeps running ones when clearing', {
+  skip: available ? false : 'Electron binary is not installed',
+  timeout: 90_000,
+}, async (t) => {
+  const DIR = tempDir('electron-multi-diagnose');
+  await rm(DIR, { recursive: true, force: true });
+  await mkdir(path.join(DIR, 'configs'), { recursive: true });
+  t.after(async () => { await rm(DIR, { recursive: true, force: true }); });
+
+  const server = http.createServer((req, res) => {
+    if (req.url === '/page') {
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.end('<!doctype html><html><body><h2>multi diagnose</h2></body></html>');
+      return;
+    }
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify({ path: req.url, ok: true }));
+  });
+  server.listen(0);
+  await once(server, 'listening');
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  const pageScript = `(async () => {
+    await Promise.all([
+      fetch('/api/one').then((response) => response.text()),
+      fetch('/api/two').then((response) => response.text()),
+    ]);
+    return 'fetched';
+  })()`;
+
+  const uiScript = `(async () => {
+    const waitFor = async (fn, timeout = 20000) => {
+      const deadline = Date.now() + timeout;
+      while (Date.now() < deadline) {
+        if (fn()) return true;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      return false;
+    };
+    document.querySelector('[data-tab="requests"]').click();
+    const find = (suffix) => [...document.querySelectorAll('#requests li')]
+      .find((li) => li.querySelector('.url')?.textContent.includes(suffix));
+    await waitFor(() => Boolean(find('/api/one')) && Boolean(find('/api/two')));
+
+    const diagnoseButton = document.getElementById('diagnose-request');
+    find('/api/one').click();
+    diagnoseButton.click();
+    find('/api/two').click();
+    diagnoseButton.click();
+
+    const running = [...document.querySelectorAll('#requests .diagnose-state')]
+      .map((node) => node.textContent);
+
+    document.getElementById('clear-requests').click();
+    await waitFor(() => Boolean(find('/api/one')) && Boolean(find('/api/two')), 5000);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const afterClear = {
+      count: document.querySelectorAll('#requests li').length,
+      keptOne: Boolean(find('/api/one')),
+      keptTwo: Boolean(find('/api/two')),
+    };
+
+    await waitFor(() => {
+      const markers = [...document.querySelectorAll('#requests .diagnose-state')];
+      return markers.length === 2 && markers.every((node) => node.textContent.includes('诊断完成'));
+    }, 30000);
+    const done = [...document.querySelectorAll('#requests .diagnose-state')]
+      .map((node) => node.textContent);
+
+    const runId = () => {
+      const text = document.getElementById('diagnose-result')?.textContent ?? '';
+      return (text.match(/Run ([A-Za-z0-9._-]+)/) ?? [])[1] ?? null;
+    };
+
+    find('/api/one').click();
+    await waitFor(() => (
+      document.getElementById('request-title')?.textContent.includes('/api/one')
+      && document.getElementById('diagnose-result')?.hidden === false
+    ));
+    const toggle = document.getElementById('toggle-request-detail');
+    const detail = document.getElementById('request-detail');
+    const beforeCollapse = detail?.hidden === false;
+    toggle?.click();
+    const collapsed = detail?.hidden === true;
+    const collapsedLabel = toggle?.textContent ?? '';
+    toggle?.click();
+    const expanded = detail?.hidden === false;
+    const first = {
+      title: document.getElementById('request-title')?.textContent ?? '',
+      hasResult: document.getElementById('diagnose-result')?.hidden === false,
+      runId: runId(),
+      progressHidden: document.getElementById('diagnose-progress')?.hidden === true,
+      overviewToggle: { beforeCollapse, collapsed, collapsedLabel, expanded },
+    };
+
+    find('/api/two').click();
+    await waitFor(() => (
+      document.getElementById('request-title')?.textContent.includes('/api/two')
+      && document.getElementById('diagnose-result')?.hidden === false
+    ));
+    const second = {
+      title: document.getElementById('request-title')?.textContent ?? '',
+      hasResult: document.getElementById('diagnose-result')?.hidden === false,
+      runId: runId(),
+    };
+
+    document.getElementById('clear-requests').click();
+    await waitFor(() => document.querySelectorAll('#requests li').length === 0, 5000);
+
+    return {
+      running,
+      afterClear,
+      done,
+      first,
+      second,
+      differentRuns: Boolean(first.runId && second.runId && first.runId !== second.runId),
+      clearedAfterDone: document.querySelectorAll('#requests li').length === 0,
+    };
+  })()`;
+
+  const child = spawn(electronPath, [
+    MAIN, '--smoke', '--port', '0',
+    `--smoke-url=${baseUrl}/page`,
+    `--smoke-eval=${Buffer.from(pageScript).toString('base64')}`,
+    `--smoke-ui-eval-after=${Buffer.from(uiScript).toString('base64')}`,
+    '--config-dir', path.join(DIR, 'configs'),
+    '--runs-dir', path.join(DIR, 'runs'),
+  ], { env: { ...process.env } });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (chunk) => { stdout += chunk; });
+  child.stderr.on('data', (chunk) => { stderr += chunk; });
+  const code = await new Promise((resolve) => {
+    const timer = setTimeout(() => { child.kill(); resolve(-1); }, 80_000);
+    child.on('close', (exitCode) => { clearTimeout(timer); resolve(exitCode); });
+  });
+
+  assert.equal(code, 0, `electron exited ${code}\nstdout:\n${stdout}\nstderr:\n${stderr}`);
+  assert.match(stdout, /SMOKE_OK/);
+  const match = stdout.match(/SMOKE_RESULT (\{.*\})/);
+  assert.ok(match, `missing SMOKE_RESULT\n${stdout}`);
+  const smoke = JSON.parse(match[1]);
+  const result = smoke.uiEvalAfterResult;
+  assert.ok(result, JSON.stringify(smoke));
+  assert.deepEqual(result.running, ['（诊断中）', '（诊断中）']);
+  assert.deepEqual(result.afterClear, { count: 2, keptOne: true, keptTwo: true });
+  assert.deepEqual(result.done, ['（诊断完成）', '（诊断完成）']);
+  assert.match(result.first.title, /\/api\/one/);
+  assert.match(result.second.title, /\/api\/two/);
+  assert.equal(result.first.hasResult, true);
+  assert.equal(result.first.progressHidden, true);
+  assert.deepEqual(result.first.overviewToggle, {
+    beforeCollapse: true,
+    collapsed: true,
+    collapsedLabel: '展开接口概览',
+    expanded: true,
+  });
+  assert.equal(result.second.hasResult, true);
+  assert.equal(result.differentRuns, true);
+  assert.equal(result.clearedAfterDone, true);
 });

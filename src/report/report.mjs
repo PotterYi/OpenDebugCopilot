@@ -51,6 +51,14 @@ export function buildReport(result) {
     durationMs: result.meta?.durationMs ?? 0,
     conclusion: scrubText(agent.conclusion ?? ''),
     databaseNotice: result.databases?.notice ? scrubText(result.databases.notice) : null,
+    fixValidation: agent.fixesValidation
+      ? {
+          status: agent.fixesValidation.status ?? 'unknown',
+          error: scrubText(agent.fixesValidation.error ?? ''),
+          reason: scrubText(agent.fixesValidation.reason ?? ''),
+          commands: (agent.fixesValidation.commands ?? []).map((entry) => entry.command).filter(Boolean),
+        }
+      : null,
     fixes: normalizeFixList(agent.fixes).map((fix) => scrubText(formatFix(fix))),
     needsMoreInfo: (agent.needsMoreInfo ?? []).map((item) => scrubText(item)),
     request: {
@@ -66,6 +74,8 @@ export function buildReport(result) {
       threads: result.threads?.total ?? 0,
       sourceFiles: result.source?.files?.length ?? 0,
       toolCalls: agent.toolCalls?.length ?? 0,
+      turns: agent.usage?.numTurns ?? null,
+      tokens: agent.usage?.totalTokens ?? null,
       confidence: agent.confidence ?? null,
       correlation: result.logs?.correlation?.strategy ?? null,
       correlationId: result.logs?.correlation?.matchedId ?? null,
@@ -140,6 +150,22 @@ export function renderMarkdown(report) {
   if (report.needsMoreInfo.length > 0) {
     lines.push('', '## 待补充信息', '', ...report.needsMoreInfo.map((item) => `- ${item}`));
   }
+  if (report.fixValidation) {
+    const validation = report.fixValidation;
+    const statusText = validation.status === 'passed'
+      ? '通过'
+      : validation.status === 'failed'
+        ? '失败（修改建议已隐藏）'
+        : `未执行（${validation.reason || '无编译命令'}）`;
+    lines.push(
+      '',
+      '## 修改自测',
+      '',
+      `- 状态：${statusText}`,
+      ...(validation.commands.length ? [`- 命令：${validation.commands.join('；')}`] : []),
+      ...(validation.error ? [`- 错误：${validation.error}`] : []),
+    );
+  }
 
   lines.push(
     '',
@@ -160,6 +186,8 @@ export function renderMarkdown(report) {
     `- 线程数：${report.summary.threads}`,
     `- 源码片段：${report.summary.sourceFiles} 处`,
     `- 工具调用：${report.summary.toolCalls} 次`,
+    ...(report.summary.turns != null ? [`- 轮次：${report.summary.turns}`] : []),
+    ...(report.summary.tokens != null ? [`- 消耗 Token：${report.summary.tokens}`] : []),
     ...(report.summary.frontendErrors
       ? [`- 前端错误：${report.summary.frontendErrors} 条（源码片段 ${report.summary.frontendSources} 处）`]
       : []),

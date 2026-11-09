@@ -16,6 +16,8 @@ test('returns defaults when config files are absent', async (t) => {
   const workspace = await store.getWorkspace();
   assert.equal(workspace.frontendUrl, DEFAULT_WORKSPACE.frontendUrl);
   assert.deepEqual(workspace.window, DEFAULT_WORKSPACE.window);
+  assert.equal(workspace.agent.maxTurns, 60);
+  assert.equal(workspace.agent.timeoutMs, 600000);
   const routing = await store.getRouting();
   assert.deepEqual(routing, { rules: [], warnings: [] });
 });

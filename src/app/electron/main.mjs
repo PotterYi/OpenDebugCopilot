@@ -11,6 +11,7 @@ import { startLocalProxy } from './local-proxy.mjs';
 import { createDevServerManager, killProcessTreeSync } from './dev-server.mjs';
 import { applyFix, revertFix } from '../../core/fix-apply.mjs';
 import { buildFixPreviews } from '../../core/fixes.mjs';
+import { validateFixes } from '../../core/fix-validation.mjs';
 import { buildReport, renderMarkdown } from '../../report/report.mjs';
 import { resolveFrontendProjectRoot } from '../../core/frontend-service.mjs';
 import { runVerifyCommand } from './verify-command.mjs';
@@ -44,6 +45,7 @@ const smokeClick = argValue('--smoke-click');
 const smokeEval = argValue('--smoke-eval');
 const smokeWait = Number(argValue('--smoke-wait') ?? 0);
 const smokeUiEval = argValue('--smoke-ui-eval');
+const smokeUiEvalAfter = argValue('--smoke-ui-eval-after');
 const smokeOut = argValue('--smoke-out');
 const port = Number(argValue('--port') ?? 7080);
 const runsDir = argValue('--runs-dir');
@@ -601,12 +603,15 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
       case 'body':
         return { request: await host.loadBody(payload.id) };
       case 'clear':
-        host.clear();
+        host.clear({
+          exceptIds: payload.exceptIds ?? [],
+          exceptConsoleIds: payload.exceptConsoleIds ?? [],
+        });
         return { ok: true };
       case 'console':
         return { events: host.listConsole({ limit: payload.limit ?? 50 }) };
       case 'console-clear':
-        host.clearConsole();
+        host.clearConsole({ exceptIds: payload.exceptIds ?? [] });
         return { ok: true };
       default:
         throw new Error(`dc:capture: unknown action ${payload.action}`);
@@ -674,12 +679,20 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
       frontendErrors = host.listConsole({ limit: 20 });
     }
 
-    const agent = payload.mock === true
+    const agent = payload.mock === true || smoke
       ? createMockAgent()
       : createClaudeAgent(agentOptionsFromWorkspace(workspace));
 
+    const targetRequestId = payload.requestId != null ? String(payload.requestId) : null;
+    const targetConsoleId = payload.consoleId != null ? String(payload.consoleId) : null;
     const sendProgress = (progress) => {
-      if (!event.sender.isDestroyed()) event.sender.send('dc:diagnose:progress', progress);
+      if (!event.sender.isDestroyed()) {
+        event.sender.send('dc:diagnose:progress', {
+          ...progress,
+          requestId: targetRequestId,
+          consoleId: targetConsoleId,
+        });
+      }
     };
     let databaseConfig = { activeId: null, connections: [] };
     try {
@@ -700,6 +713,7 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
         databases: databaseConfig.connections,
         activeDatabaseId: databaseConfig.activeId,
         approveWrite: createWriteApprover(event),
+        verifyCommand: workspace.verifyCommand ?? '',
         onProgress: sendProgress,
       });
     } catch (error) {
@@ -807,6 +821,53 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
         fixes: await buildFixPreviews(follow.fixes, result.meta?.fixRoots ?? {}),
       };
       sendProgress({ id: 'preview', label: '生成修复预览', status: 'done' });
+
+      const editableFixes = (followAgent.fixes ?? [])
+        .filter((fix) => fix?.kind === 'edit' && fix?.preview?.status === 'ready');
+      if (editableFixes.length > 0) {
+        sendProgress({ id: 'selfcheck', label: '编译自测修改后的代码', status: 'start' });
+        let validation;
+        try {
+          validation = await validateFixes({
+            fixes: followAgent.fixes,
+            roots: result.meta?.fixRoots ?? {},
+            verifyCommand: workspace.verifyCommand ?? '',
+            workspace,
+            projectRoot: ROOT,
+            runDir: path.join(service.runsRoot, runId),
+          });
+        } catch (error) {
+          validation = {
+            status: 'failed',
+            ok: false,
+            error: `编译自测执行失败：${error?.message ?? error}`,
+            commands: [],
+            applied: 0,
+          };
+        }
+        followAgent.fixesValidation = validation;
+        if (validation.status === 'failed') {
+          followAgent.fixesWithheld = followAgent.fixes;
+          followAgent.fixes = [];
+          followAgent.needsMoreInfo = [
+            ...(followAgent.needsMoreInfo ?? []),
+            `修改建议未通过编译自测，已隐藏。${validation.error ?? ''}`.trim(),
+          ];
+          sendProgress({
+            id: 'selfcheck',
+            label: '编译自测失败，修改建议已隐藏',
+            status: 'error',
+            detail: validation.error,
+          });
+        } else {
+          sendProgress({
+            id: 'selfcheck',
+            label: validation.status === 'passed' ? '编译自测通过' : '未执行编译自测',
+            status: 'done',
+            detail: validation.reason,
+          });
+        }
+      }
     if (!Array.isArray(followAgent.evidenceRefs) || followAgent.evidenceRefs.length === 0) {
       followAgent.evidenceRefs = result.agent?.evidenceRefs ?? [{ type: 'request', ref: 'request' }];
     }
@@ -1182,6 +1243,40 @@ async function runSmoke(window, host) {
       };
     })()`).catch(() => null);
 
+    // Model settings show timeout in seconds and default to 60 turns / 600s.
+    const modelMenuItem = Menu.getApplicationMenu()?.items
+      ?.find((item) => item.label === '模型')?.submenu?.items
+      ?.find((item) => item.label === '模型设置…');
+    modelMenuItem?.click();
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const modelUi = await window.webContents.executeJavaScript(`(async () => {
+      const model = document.getElementById('model-name');
+      const customRow = document.getElementById('model-name-custom-row');
+      const maxTurns = document.getElementById('model-max-turns');
+      const timeout = document.getElementById('model-timeout');
+      const defaults = {
+        model: model?.value ?? null,
+        maxTurns: maxTurns?.value ?? null,
+        timeoutSeconds: timeout?.value ?? null,
+      };
+      model.value = '__custom__';
+      model.dispatchEvent(new Event('change', { bubbles: true }));
+      const customShown = customRow?.hidden === false;
+      model.value = 'claude-sonnet-5';
+      model.dispatchEvent(new Event('change', { bubbles: true }));
+      const customHidden = customRow?.hidden === true;
+      if (timeout) timeout.value = '900';
+      document.getElementById('model-save')?.click();
+      const deadline = Date.now() + 3000;
+      let config = null;
+      while (Date.now() < deadline) {
+        config = await window.dc.invoke('dc:config', { action: 'get' });
+        if (config?.workspace?.agent?.timeoutMs === 900000) break;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      return { defaults, customShown, customHidden, saved: config?.workspace?.agent ?? null };
+    })()`).catch(() => null);
+
     clearTimeout(timeout);
     const sample = host.list({ limit: 1 })[0] ?? null;
     const details = host.list({ limit: 50 }).map((item) => host.detail(item.id)).filter(Boolean);
@@ -1201,6 +1296,7 @@ async function runSmoke(window, host) {
       databaseMenuLeftOfModel: databaseMenuIndex >= 0 && modelMenuIndex >= 0 && databaseMenuIndex < modelMenuIndex,
       databaseModalOpen: Boolean(databaseUi?.open),
       databaseUi,
+      modelUi,
       url: host.status().url,
       evalResult,
       uiEvalResult,
@@ -1213,6 +1309,11 @@ async function runSmoke(window, host) {
       (!smokeUrl || (diagnose?.ok && diagnose.gates)),
     );
     result.ok = ok;
+    if (smokeUiEvalAfter) {
+      const script = Buffer.from(smokeUiEvalAfter, 'base64').toString('utf8');
+      result.uiEvalAfterResult = await window.webContents.executeJavaScript(script)
+        .catch((error) => ({ error: String(error?.message ?? error) }));
+    }
     console.log(`SMOKE_RESULT ${JSON.stringify(result)}`);
     console.log(ok ? 'SMOKE_OK' : 'SMOKE_FAILED');
     if (smokeOut) {

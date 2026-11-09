@@ -2,7 +2,7 @@ import { AppError } from '../core/errors.mjs';
 import { normalizeFixList } from '../core/fixes.mjs';
 import { summarizeToolCalls } from '../core/tool-calls.mjs';
 
-const DEFAULT_TIMEOUT_MS = 180_000;
+const DEFAULT_TIMEOUT_MS = 600_000;
 const MAX_TOOL_TEXT = 20_000;
 
 const SYSTEM_PROMPT = `你是 DebugCopilot 的后端问题定位助手。你的任务是结合请求、响应、日志与源码证据，定位问题并给出可执行的结论。
@@ -19,7 +19,9 @@ const SYSTEM_PROMPT = `你是 DebugCopilot 的后端问题定位助手。你的�
 9. 不要直接修改文件；本阶段只生成修复建议和 diff 预览，由用户确认。
 10. 证据包的 extraSources 里可能列出已配置但未授权的其他后端源码根；不要假设其内容。若判断需要这些代码，写入 needsMoreInfo，提示用户勾选「同时扫描其他后端源码」后重新诊断。
 11. 已授权时，读取/搜索其他后端源码使用 root=extra 和 extraRoot=<id>；修改建议同时带 root=extra 与 extraRoot=<id>。
-12. 数据库工具不可用或返回 DB_* 错误时，不要中断诊断：继续使用日志和源码工具分析，并在 conclusion 或 needsMoreInfo 中明确说明「数据库查询不可用，本次结论仅基于源码与日志分析」。`;
+12. 数据库工具不可用或返回 DB_* 错误时，不要中断诊断：继续使用日志和源码工具分析，并在 conclusion 或 needsMoreInfo 中明确说明「数据库查询不可用，本次结论仅基于源码与日志分析」。
+13. 新增日志时必须在同一条 replace 中补齐 logger 的 import/声明（Java 常见为 @Slf4j + import lombok.extern.slf4j.Slf4j，或使用文件中已有的 Logger 字段）；不要只添加 log.xxx 而遗漏 logger 定义。
+14. 修改只能调用项目中已存在的方法，或在同一条修改中同时新增该方法实现；不要凭空调用不存在的 Service、工具类或业务方法。`;
 
 const FOLLOWUP_SYSTEM_PROMPT = `你是 DebugCopilot 的诊断助手，正在和用户继续讨论一条已有诊断。
 
@@ -30,7 +32,9 @@ const FOLLOWUP_SYSTEM_PROMPT = `你是 DebugCopilot 的诊断助手，正在和�
 4. 如果用户只想先看方案，不要给 search/replace 具体代码；要求具体修改时再给可唯一定位的 search/replace。
 5. 可以使用 debugcopilot 提供的只读工具补充日志、线程、源码或数据库证据；不要假设未读取的内容。
 6. 数据库工具不可用或返回 DB_* 错误时，不要中断：继续用日志与源码分析，并明确说明「数据库查询不可用，本次结论仅基于源码与日志分析」。
-7. 不要直接修改文件。使用中文回答。`;
+7. 新增日志时必须同时补齐 logger 的 import/声明（如 @Slf4j 与 import，或使用文件已有的 Logger 字段），不要只添加 log.xxx。
+8. 只能调用项目中已存在的方法，或在同一条修改中新增该方法实现；不要凭空调用不存在的 Service、工具类或业务方法。
+9. 不要直接修改文件。使用中文回答。`;
 
 function turnLimitNote(turnLimit) {
   return Number.isFinite(turnLimit) && turnLimit > 0
@@ -327,6 +331,44 @@ function buildSdkTools(toolFn, specs, shapes, tools) {
 }
 
 /**
+ * Normalize SDK token accounting. `modelUsage` is the billing-grade source;
+ * `usage` is the fallback for older SDK results.
+ */
+export function usageFromResult(resultMessage) {
+  const models = Object.values(resultMessage?.modelUsage ?? {});
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let cacheReadInputTokens = 0;
+  let cacheCreationInputTokens = 0;
+  if (models.length > 0) {
+    for (const model of models) {
+      inputTokens += Number(model?.inputTokens) || 0;
+      outputTokens += Number(model?.outputTokens) || 0;
+      cacheReadInputTokens += Number(model?.cacheReadInputTokens) || 0;
+      cacheCreationInputTokens += Number(model?.cacheCreationInputTokens) || 0;
+    }
+  } else {
+    const usage = resultMessage?.usage ?? {};
+    inputTokens = Number(usage.input_tokens ?? usage.inputTokens) || 0;
+    outputTokens = Number(usage.output_tokens ?? usage.outputTokens) || 0;
+    cacheReadInputTokens = Number(usage.cache_read_input_tokens ?? usage.cacheReadInputTokens) || 0;
+    cacheCreationInputTokens = Number(usage.cache_creation_input_tokens ?? usage.cacheCreationInputTokens) || 0;
+  }
+  const totalInputTokens = inputTokens + cacheReadInputTokens + cacheCreationInputTokens;
+  return {
+    numTurns: resultMessage?.num_turns ?? null,
+    costUsd: resultMessage?.total_cost_usd ?? null,
+    durationMs: resultMessage?.duration_ms ?? null,
+    inputTokens,
+    outputTokens,
+    cacheReadInputTokens,
+    cacheCreationInputTokens,
+    totalInputTokens,
+    totalTokens: totalInputTokens + outputTokens,
+  };
+}
+
+/**
  * Live diagnoser backed by the Claude Agent SDK.
  * In-process MCP tools are read-only; built-in Claude Code tools are disabled.
  *
@@ -414,11 +456,7 @@ export function createClaudeAgent({ model, maxTurns = null, timeoutMs = DEFAULT_
           needsMoreInfo: [...(parsed.needsMoreInfo ?? []), `诊断未完成：${reason}`],
           fixes: normalizeFixList(parsed.fixes),
           toolCalls: tools.calls ?? [],
-          usage: {
-            numTurns: resultMessage.num_turns ?? null,
-            costUsd: resultMessage.total_cost_usd ?? null,
-            durationMs: resultMessage.duration_ms ?? null,
-          },
+          usage: usageFromResult(resultMessage),
           incomplete: true,
           incompleteReason: resultMessage.subtype ?? 'error',
           errors: Array.isArray(resultMessage.errors) ? resultMessage.errors : [],
@@ -429,11 +467,7 @@ export function createClaudeAgent({ model, maxTurns = null, timeoutMs = DEFAULT_
       return {
         ...parsed,
         toolCalls: tools.calls ?? [],
-        usage: {
-          numTurns: resultMessage.num_turns ?? null,
-          costUsd: resultMessage.total_cost_usd ?? null,
-          durationMs: resultMessage.duration_ms ?? null,
-        },
+        usage: usageFromResult(resultMessage),
       };
     },
 
@@ -517,11 +551,7 @@ export function createClaudeAgent({ model, maxTurns = null, timeoutMs = DEFAULT_
           needsMoreInfo: [...(parsed.needsMoreInfo ?? []), `继续诊断未完成：${reason}`],
           fixes: normalizeFixList(parsed.fixes),
           toolCalls: tools?.calls ?? [],
-          usage: {
-            numTurns: resultMessage.num_turns ?? null,
-            costUsd: resultMessage.total_cost_usd ?? null,
-            durationMs: resultMessage.duration_ms ?? null,
-          },
+          usage: usageFromResult(resultMessage),
           incomplete: true,
           incompleteReason: resultMessage.subtype ?? 'error',
           errors: Array.isArray(resultMessage.errors) ? resultMessage.errors : [],
@@ -532,11 +562,7 @@ export function createClaudeAgent({ model, maxTurns = null, timeoutMs = DEFAULT_
       return {
         ...parsed,
         toolCalls: tools?.calls ?? [],
-        usage: {
-          numTurns: resultMessage.num_turns ?? null,
-          costUsd: resultMessage.total_cost_usd ?? null,
-          durationMs: resultMessage.duration_ms ?? null,
-        },
+        usage: usageFromResult(resultMessage),
       };
     },
   };

@@ -3,7 +3,13 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { tempDir } from './tmp.mjs';
-import { normalizeFixList, buildFixPreview, buildFixPreviews } from '../../src/core/fixes.mjs';
+import {
+  buildFixPreview,
+  buildFixPreviews,
+  clearProjectMethodIndexCache,
+  inspectMissingMethods,
+  normalizeFixList,
+} from '../../src/core/fixes.mjs';
 
 const TMP = tempDir('fixes-test');
 
@@ -30,6 +36,7 @@ async function fixture(t) {
     '  <div>Hello</div>',
     '</template>',
   ].join('\n'), 'utf8');
+  clearProjectMethodIndexCache();
   return { backend, frontend };
 }
 
@@ -166,4 +173,146 @@ test('previews fixes in an authorized additional backend root', async (t) => {
   }, roots(dirs));
   assert.equal(unauthorized.preview.status, 'error');
   assert.match(unauthorized.preview.message, /未授权|无效/);
+});
+
+test('rejects a patch that adds log calls without a logger definition', async (t) => {
+  const dirs = await fixture(t);
+  const fix = await buildFixPreview({
+    summary: '加日志',
+    root: 'backend',
+    file: 'com/demo/OrderService.java',
+    search: '        if (order.getQty() <= 0) {',
+    replace: '        log.warn("qty invalid: {}", order.getQty());\n        if (order.getQty() <= 0) {',
+    risk: 'low',
+  }, roots(dirs));
+  assert.equal(fix.preview.status, 'error');
+  assert.match(fix.preview.message, /logger/);
+});
+
+test('allows log calls when the file already declares a logger', async (t) => {
+  const dirs = await fixture(t);
+  await writeFile(path.join(dirs.backend, 'com/demo/OrderService.java'), [
+    'package com.demo;',
+    '',
+    'import lombok.extern.slf4j.Slf4j;',
+    '',
+    '@Slf4j',
+    'public class OrderService {',
+    '    public void create(Order order) {',
+    '        if (order.getQty() <= 0) {',
+    '            throw new IllegalArgumentException("qty must be positive");',
+    '        }',
+    '    }',
+    '}',
+  ].join('\n'), 'utf8');
+  const fix = await buildFixPreview({
+    summary: '加日志',
+    root: 'backend',
+    file: 'com/demo/OrderService.java',
+    search: '        if (order.getQty() <= 0) {',
+    replace: '        log.warn("qty invalid: {}", order.getQty());\n        if (order.getQty() <= 0) {',
+    risk: 'low',
+  }, roots(dirs));
+  assert.equal(fix.preview.status, 'ready');
+});
+
+test('rejects @Slf4j when the lombok import is missing', async (t) => {
+  const dirs = await fixture(t);
+  await writeFile(path.join(dirs.backend, 'com/demo/OrderService.java'), [
+    'package com.demo;',
+    '',
+    '@Slf4j',
+    'public class OrderService {',
+    '    public void create(Order order) {',
+    '        if (order.getQty() <= 0) {',
+    '            throw new IllegalArgumentException("qty must be positive");',
+    '        }',
+    '    }',
+    '}',
+  ].join('\n'), 'utf8');
+  const fix = await buildFixPreview({
+    summary: '加日志',
+    root: 'backend',
+    file: 'com/demo/OrderService.java',
+    search: '        if (order.getQty() <= 0) {',
+    replace: '        log.warn("qty invalid: {}", order.getQty());\n        if (order.getQty() <= 0) {',
+    risk: 'low',
+  }, roots(dirs));
+  assert.equal(fix.preview.status, 'error');
+  assert.match(fix.preview.message, /缺少 import lombok\.extern\.slf4j\.Slf4j/);
+});
+
+test('rejects a logger symbol that the file does not define', async (t) => {
+  const dirs = await fixture(t);
+  await writeFile(path.join(dirs.backend, 'com/demo/OrderService.java'), [
+    'package com.demo;',
+    '',
+    'import lombok.extern.slf4j.Slf4j;',
+    '',
+    '@Slf4j',
+    'public class OrderService {',
+    '    public void create(Order order) {',
+    '        if (order.getQty() <= 0) {',
+    '            throw new IllegalArgumentException("qty must be positive");',
+    '        }',
+    '    }',
+    '}',
+  ].join('\n'), 'utf8');
+  const fix = await buildFixPreview({
+    summary: '加日志',
+    root: 'backend',
+    file: 'com/demo/OrderService.java',
+    search: '        if (order.getQty() <= 0) {',
+    replace: '        logger.warn("qty invalid: {}", order.getQty());\n        if (order.getQty() <= 0) {',
+    risk: 'low',
+  }, roots(dirs));
+  assert.equal(fix.preview.status, 'error');
+  assert.match(fix.preview.message, /没有定义这个 logger/);
+});
+
+test('rejects a call to a method that does not exist anywhere in the project', async (t) => {
+  const dirs = await fixture(t);
+  const fix = await buildFixPreview({
+    summary: '补充库存校验',
+    root: 'backend',
+    file: 'com/demo/OrderService.java',
+    search: '        if (order.getQty() <= 0) {',
+    replace: '        order.ensureStockAvailable();\n        if (order.getQty() <= 0) {',
+    risk: 'medium',
+  }, roots(dirs));
+  assert.equal(fix.preview.status, 'error');
+  assert.match(fix.preview.message, /ensureStockAvailable/);
+});
+
+test('allows a method that is declared elsewhere in the project', async (t) => {
+  const dirs = await fixture(t);
+  await writeFile(path.join(dirs.backend, 'com/demo/StockService.java'), [
+    'package com.demo;',
+    '',
+    'public class StockService {',
+    '    public void ensureStockAvailable() {',
+    '    }',
+    '}',
+  ].join('\n'), 'utf8');
+  clearProjectMethodIndexCache();
+  const fix = await buildFixPreview({
+    summary: '补充库存校验',
+    root: 'backend',
+    file: 'com/demo/OrderService.java',
+    search: '        if (order.getQty() <= 0) {',
+    replace: '        order.ensureStockAvailable();\n        if (order.getQty() <= 0) {',
+    risk: 'medium',
+  }, roots(dirs));
+  assert.equal(fix.preview.status, 'ready');
+});
+
+test('allows a method added in the same patch', async (t) => {
+  const dirs = await fixture(t);
+  const issue = await inspectMissingMethods({
+    original: 'class A {\n}\n',
+    updated: 'class A {\n    void helper() {\n    }\n    void run() {\n        helper();\n    }\n}\n',
+    replacement: '    void run() {\n        helper();\n    }\n',
+    sourceRoot: dirs.backend,
+  });
+  assert.equal(issue, null);
 });

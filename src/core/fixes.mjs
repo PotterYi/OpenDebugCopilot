@@ -1,5 +1,6 @@
 import { readFile, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
+import { walkSourceFiles } from '../evidence/source.mjs';
 
 export const FIX_RISKS = ['low', 'medium', 'high'];
 
@@ -12,6 +13,249 @@ function clean(value, max = 1000) {
 
 function cleanBlock(value) {
   return typeof value === 'string' ? value.slice(0, MAX_SEARCH_BYTES) : '';
+}
+
+// Logger calls such as log.info(...) / logger.warn(...). The word boundary
+// avoids matching e.g. `catalog.debug`.
+const LOGGER_CALL = /\b(log|logger|LOG|LOGGER)\s*\.\s*(?:trace|debug|info|warn|error|fatal|log|fine|finest|finer|config|severe|warning|notice|critical|print(?:ln|f)?|panic(?:ln|f)?)\s*\(/;
+const LOGGER_CALL_ALL = new RegExp(LOGGER_CALL.source, 'g');
+
+const LOMBOK_LOGGERS = [
+  { name: 'Slf4j', pkg: 'lombok.extern.slf4j' },
+  { name: 'XSlf4j', pkg: 'lombok.extern.slf4j' },
+  { name: 'Log4j2', pkg: 'lombok.extern.log4j' },
+  { name: 'Log4j', pkg: 'lombok.extern.log4j' },
+  { name: 'CommonsLog', pkg: 'lombok.extern.apachecommons' },
+  { name: 'JBossLog', pkg: 'lombok.extern.jbosslog' },
+];
+
+const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * Check that a newly introduced logger call has a usable definition and, when
+ * the definition needs an import, that the import is present too.
+ *
+ * @param {string} updated full file text after applying the patch
+ * @returns {string | null}
+ */
+function loggerDefinitionIssue(updated) {
+  let defined = false;
+  const problems = [];
+
+  for (const { name, pkg } of LOMBOK_LOGGERS) {
+    const simple = new RegExp(`@${name}\\b`);
+    const qualified = new RegExp(`@${escapeRegex(pkg)}\\.${name}\\b`);
+    if (!simple.test(updated) && !qualified.test(updated)) continue;
+    defined = true;
+    const imported = new RegExp(
+      `import\\s+(?:${escapeRegex(pkg)}\\.${name}|${escapeRegex(pkg)}\\.\\*)\\s*;`,
+    ).test(updated);
+    if (!qualified.test(updated) && !imported) {
+      problems.push(`使用了 @${name}，但缺少 import ${pkg}.${name}`);
+    }
+  }
+
+  const fullyQualifiedField = /(?:[A-Za-z_$][\w$]*\.)+(?:Logger|Log)\s+(?:log|logger|LOG|LOGGER)\b/.test(updated);
+  if (fullyQualifiedField) {
+    defined = true;
+  } else {
+    const field = updated.match(/\b(Logger|Log)\s+(?:log|logger|LOG|LOGGER)\b/);
+    if (field) {
+      defined = true;
+      const type = field[1];
+      const imported = new RegExp(`import\\s+[\\w.]*\\.${type}\\s*;`).test(updated);
+      if (!imported) problems.push(`声明了 ${type} 字段，但缺少 import 对应的 ${type} 类`);
+    }
+  }
+
+  if (/\b(?:org\.slf4j\.)?LoggerFactory\s*\.\s*getLogger\s*\(/.test(updated)) {
+    const factoryImported = /import\s+org\.slf4j\.LoggerFactory\s*;/.test(updated)
+      || /\borg\.slf4j\.LoggerFactory\s*\.\s*getLogger/.test(updated);
+    if (!factoryImported) problems.push('使用了 LoggerFactory，但缺少 import org.slf4j.LoggerFactory');
+  }
+
+  if (/\blogging\s*\.\s*getLogger\s*\(/.test(updated)) {
+    defined = true;
+    const imported = /^\s*import\s+logging\b/m.test(updated)
+      || /^\s*from\s+logging\s+import\b/m.test(updated);
+    if (!imported) problems.push('使用了 logging.getLogger，但缺少 import logging');
+  }
+
+  if (/(?:^|\n)\s*import\s+[^\n]*\b(?:log|logger|Logger)\b[^\n]*from/m.test(updated)
+    || /^\s*(?:const|let|var)\s+(?:log|logger)\s*=/m.test(updated)) {
+    defined = true;
+  }
+
+  if (/(?:import\s+)?["']log["']/.test(updated)) {
+    defined = true; // Go standard library logger
+  }
+
+  if (!defined) return '文件中没有可用的 logger 定义';
+  if (problems.length > 0) return problems[0];
+  return null;
+}
+
+function symbolDefined(updated, symbol) {
+  if (symbol === 'log' && /@(?:[a-z][\w$]*\.)*(?:Slf4j|XSlf4j|Log4j2?|CommonsLog|JBossLog)\b/.test(updated)) {
+    return true;
+  }
+  const escaped = escapeRegex(symbol);
+  if (new RegExp(`\\b(?:[A-Za-z_$][\\w$]*\\.)*(?:Logger|Log)\\s+${escaped}\\b`).test(updated)) return true;
+  if (new RegExp(`\\b${escaped}\\s*=\\s*[^\\n]*(?:getLogger|LoggerFactory|LogFactory)`).test(updated)) return true;
+  if (new RegExp(`\\b(?:const|let|var)\\s+${escaped}\\s*=`).test(updated)) return true;
+  if (new RegExp(`^\\s*import\\s+${escaped}\\b[^\\n]*from`, 'm').test(updated)
+    || new RegExp(`^\\s*import\\s+\\{[^}]*\\b${escaped}\\b[^}]*\\}\\s+from`, 'm').test(updated)) {
+    return true;
+  }
+  if (symbol === 'log' && /(?:import\s+)?["']log["']/.test(updated)) return true;
+  return false;
+}
+
+/**
+ * Reject a patch that starts calling a logger method without making the logger
+ * available in the same file. Existing logger calls mean the symbol already
+ * resolves (including inherited loggers), so only new symbols are checked.
+ *
+ * @param {{ original: string, updated: string, replacement: string }} input
+ * @returns {string | null}
+ */
+export function inspectLoggerUsage({ original, updated, replacement }) {
+  const replacementSymbols = [...replacement.matchAll(LOGGER_CALL_ALL)].map((match) => match[1]);
+  if (replacementSymbols.length === 0) return null;
+  const existingSymbols = new Set([...original.matchAll(LOGGER_CALL_ALL)].map((match) => match[1]));
+  const newSymbols = [...new Set(replacementSymbols)].filter((symbol) => !existingSymbols.has(symbol));
+  if (newSymbols.length === 0) return null;
+
+  const issue = loggerDefinitionIssue(updated);
+  if (issue) {
+    return `修改新增了 log 调用，但${issue}；请在同一条修改中补齐 import/声明（如 Java 的 @Slf4j 与 import，或项目已有的 Logger 字段），或改用文件已有的 logger。`;
+  }
+  const missing = newSymbols.find((symbol) => !symbolDefined(updated, symbol));
+  if (!missing) return null;
+  return `修改使用了 ${missing}，但文件中没有定义这个 logger；请在同一条修改中补齐 import/声明，或改用文件已有的 logger。`;
+}
+
+const METHOD_CALL = /\b([a-z_$][A-Za-z0-9_$]*)\s*\(/g;
+const METHOD_CALL_ALL = new RegExp(METHOD_CALL.source, 'g');
+
+// Control-flow keywords and common language/library methods. The project-wide
+// method index is the primary source of truth; this list only suppresses the
+// obvious false positives when a library method is first used inside a patch.
+const NON_METHOD_WORDS = new Set(
+  'if for while switch catch return throw new synchronized assert do else try finally when case super this function typeof await yield delete in with match'.split(' '),
+);
+const BUILTIN_METHODS = new Set(`
+  toString hashCode equals compareTo clone getClass getMessage getCause printStackTrace
+  println printf print format valueOf parseInt parseLong parseDouble parseFloat parseBoolean
+  now of asList stream map filter collect forEach sorted limit skip count findFirst findAny
+  orElse orElseGet orElseThrow ifPresent isPresent isEmpty isNotEmpty isBlank isNumeric
+  length size add addAll put putAll get getOrDefault remove contains containsKey containsValue
+  keySet values entrySet iterator next hasNext clear poll peek offer push pop join split trim strip
+  replace replaceAll replaceFirst startsWith endsWith indexOf lastIndexOf substring charAt
+  toCharArray toUpperCase toLowerCase concat matches toArray copyOf requireNonNull checkArgument
+  checkState checkNotNull nonNull isNull uuid random currentTimeMillis nanoTime sleep wait notify
+  notifyAll append insert reverse setLength build builder getBean getLogger log info debug warn
+  error trace fatal execute query queryForObject queryForList batchUpdate commit rollback
+  beginTransaction close read write flush sendRedirect getParameter setAttribute getAttribute
+  setHeader getHeader selectOne selectList selectCount insert update delete selectById
+  insertBatch updateBatch deleteByIds startPage getDataTable success toAjax getLoginUser
+  getUserId getUsername getDeptId isAdmin fetch then json text reduce find some every includes
+  slice splice stringify parse querySelector querySelectorAll addEventListener removeEventListener
+  getElementById createElement appendChild focus preventDefault stopPropagation setTimeout
+  clearTimeout requestAnimationFrame alert confirm toLocaleString len str int float bool list
+  dict set tuple range enumerate zip open items keys update startswith endswith isinstance
+  hasattr getattr setattr any all min max sum sorted Printf Sprintf Errorf WriteLine
+  isNotBlank isEqual isTrue isFalse capitalize abbreviate defaultString defaultIfBlank
+  isNotNull notEmpty hasText hasLength ofNullable empty copyProperties convert parseObject
+  toJSONString toBean getInstance newInstance newBuilder computeIfAbsent putIfAbsent merge
+  requireNonNullElse singletonList emptyList unmodifiableList synchronizedList newArrayList
+  newHashMap newHashSet copyOfRange binarySearch deepEquals deepHashCode identityHashCode
+  send doGet doPost service init destroy post request use next emit on off once mount unmount
+  render setup computed ref reactive watch watchEffect provide inject createApp useRouter
+  useRoute beforeEach afterEach push back go useState useEffect useMemo useCallback useRef
+  useContext createElement setState dispatch require resolve readFile writeFile existsSync
+  mkdir readdir stat exec spawn getCurrentUser getRequest getResponse getNowDate
+  checkUserAllowed checkRoleAllowed checkDataScope
+`.trim().split(/\s+/).filter(Boolean));
+
+function methodNamesIn(text) {
+  const names = new Set();
+  for (const match of String(text ?? '').matchAll(METHOD_CALL_ALL)) names.add(match[1]);
+  return names;
+}
+
+function methodDefined(updated, name) {
+  const escaped = escapeRegex(name);
+  return [
+    new RegExp(`\\b(?:public|private|protected|static|final|synchronized|abstract|native|default|async|export|function|def|fun|func|fn|void|int|long|double|float|boolean|char|byte|short|String|Object)\\b[^\\n;{}=]*\\b${escaped}\\s*\\(`, 'm'),
+    new RegExp(`^\\s*(?:@[^\\n]+\\s*)*(?:[\\w<>\\[\\],.?]+\\s+)?${escaped}\\s*\\([^)]*\\)\\s*(?:throws[^\\n{]+)?\\{`, 'm'),
+    new RegExp(`\\b(?:const|let|var)\\s+${escaped}\\s*=\\s*(?:async\\s*)?(?:\\(|function)`, 'm'),
+    new RegExp(`\\bfunction\\s+${escaped}\\s*\\(`),
+    new RegExp(`\\bdef\\s+${escaped}\\s*\\(`),
+    new RegExp(`\\bfun\\s+${escaped}\\s*\\(`),
+    new RegExp(`\\b(?:func|fn)\\s+${escaped}\\s*\\(`),
+  ].some((pattern) => pattern.test(updated));
+}
+
+const projectMethodIndexCache = new Map();
+
+export function clearProjectMethodIndexCache() {
+  projectMethodIndexCache.clear();
+}
+
+async function projectMethodIndex(root) {
+  const key = path.resolve(root);
+  if (projectMethodIndexCache.has(key)) return projectMethodIndexCache.get(key);
+  const names = new Set();
+  try {
+    const files = await walkSourceFiles(key);
+    for (const file of files) {
+      try {
+        const info = await stat(file);
+        if (info.size > MAX_FILE_BYTES) continue;
+        const text = await readFile(file, 'utf8');
+        for (const match of text.matchAll(METHOD_CALL_ALL)) names.add(match[1]);
+      } catch {
+        // unreadable file: skip
+      }
+    }
+  } catch {
+    // A source scan failure must never block a fix preview.
+  }
+  projectMethodIndexCache.set(key, names);
+  return names;
+}
+
+/**
+ * Reject an edit that calls a method which exists nowhere in the project and is
+ * not added by the same patch. Getter/setter names are ignored because Lombok
+ * and similar generators create them without textual definitions.
+ *
+ * @param {{ original: string, updated: string, replacement: string, sourceRoot?: string | null }} input
+ * @returns {Promise<string | null>}
+ */
+export async function inspectMissingMethods({ original, updated, replacement, sourceRoot }) {
+  if (!sourceRoot) return null;
+  const existing = methodNamesIn(original);
+  const added = [...methodNamesIn(replacement)].filter((name) => !existing.has(name));
+  const candidates = added.filter((name) => (
+    !NON_METHOD_WORDS.has(name)
+    && !BUILTIN_METHODS.has(name)
+    && !/^(?:get|set|is)[A-Z]/.test(name)
+  ));
+  if (candidates.length === 0) return null;
+
+  const index = await projectMethodIndex(sourceRoot);
+  if (index.size === 0) return null;
+  const missing = [];
+  for (const name of candidates) {
+    if (methodDefined(updated, name)) continue;
+    if (index.has(name)) continue;
+    missing.push(name);
+    if (missing.length >= 3) break;
+  }
+  if (missing.length === 0) return null;
+  return `修改调用了项目中不存在的方法：${missing.map((name) => `${name}()`).join('、')}，且没有在同一条修改中新增该方法；请补充方法实现或改用已有方法。`;
 }
 
 /**
@@ -312,6 +556,22 @@ export async function buildFixPreview(item, {
   }
 
   const index = text.indexOf(fix.search);
+  const updated = text.slice(0, index) + fix.replace + text.slice(index + fix.search.length);
+  const loggerIssue = inspectLoggerUsage({ original: text, updated, replacement: fix.replace });
+  if (loggerIssue) {
+    return { ...fix, root: target.name, preview: { status: 'error', message: loggerIssue } };
+  }
+
+  const missingMethodIssue = await inspectMissingMethods({
+    original: text,
+    updated,
+    replacement: fix.replace,
+    sourceRoot: target.root,
+  });
+  if (missingMethodIssue) {
+    return { ...fix, root: target.name, preview: { status: 'error', message: missingMethodIssue } };
+  }
+
   const line = text.slice(0, index).split('\n').length;
   const file = fix.file.replace(/\\/g, '/');
   const patch = buildPatch({ file, line, search: fix.search, replace: fix.replace, text });

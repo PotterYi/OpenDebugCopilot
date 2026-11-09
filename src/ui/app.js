@@ -24,6 +24,7 @@ const browserUrlInput = $('browser-url');
 const browserSlot = $('browser-slot');
 const requestTitle = $('request-title');
 const requestMeta = $('request-meta');
+const toggleRequestDetailButton = $('toggle-request-detail');
 const configPath = $('config-path');
 const logPath = $('log-path');
 const logSource = $('log-source');
@@ -56,6 +57,8 @@ const profileModal = $('profile-modal');
 const profileNameInput = $('profile-name-input');
 const modelModal = $('model-modal');
 const modelNameInput = $('model-name');
+const modelNameCustomRow = $('model-name-custom-row');
+const modelNameCustomInput = $('model-name-custom');
 const modelMaxTurnsInput = $('model-max-turns');
 const modelMaxBudgetInput = $('model-max-budget');
 const modelTimeoutInput = $('model-timeout');
@@ -85,6 +88,7 @@ let routingHits = 0;
 let targetCandidates = { local: [], sit: [] };
 let discoveredLocalPorts = [];
 let currentRequest = null;
+let requestDetailCollapsed = false;
 let consoleErrorCount = 0;
 const consoleState = new Map();
 let currentRequestId = null;
@@ -99,7 +103,8 @@ let profileModalMode = 'create';
 let profileModalTargetId = null;
 let databasesState = { activeId: null, connections: [] };
 let databaseEditingId = null;
-let diagnoseProgressSteps = [];
+const diagnosisStates = new Map();
+let activeDiagnosisKey = null;
 let followUpProgressContext = null;
 const MAX_DEV_LOG_LINES = 300;
 const DEV_STATUS_LABELS = {
@@ -569,6 +574,21 @@ async function loadRuns() {
       const when = run.startedAt ? new Date(run.startedAt).toLocaleString() : '';
       meta.textContent = `${run.agent ?? ''} ${run.mode ?? ''} · ${when}`.trim();
 
+      const main = document.createElement('div');
+      main.className = 'run-main';
+      const head = document.createElement('div');
+      head.className = 'run-head';
+      head.append(title, meta);
+      main.append(head);
+      const questionText = String(run.question ?? '').trim();
+      if (questionText) {
+        const question = document.createElement('span');
+        question.className = 'run-question';
+        question.textContent = questionText;
+        question.title = questionText;
+        main.append(question);
+      }
+
       const remove = document.createElement('button');
       remove.type = 'button';
       remove.className = 'run-delete';
@@ -599,7 +619,7 @@ async function loadRuns() {
         }
       });
 
-      li.append(title, meta, remove);
+      li.append(main, remove);
       li.addEventListener('click', () => {
         if (selectedRunId === run.runId) closeRun();
         else showRun(run.runId);
@@ -652,6 +672,18 @@ function requestPath(url) {
   }
 }
 
+function requestDiagnosisKey(id) {
+  return `request:${String(id)}`;
+}
+
+function consoleDiagnosisKey(id) {
+  return `console:${String(id)}`;
+}
+
+function activeDiagnosisState() {
+  return activeDiagnosisKey ? diagnosisStates.get(activeDiagnosisKey) : null;
+}
+
 function scheduleRender() {
   if (renderQueued) return;
   renderQueued = true;
@@ -670,13 +702,30 @@ function renderRequests() {
   requestsEl.textContent = '';
   for (const item of filtered) {
     const li = document.createElement('li');
+    if (currentRequestId != null && String(item.id) === String(currentRequestId)) {
+      li.classList.add('selected');
+    }
     const method = document.createElement('span');
     method.className = 'method';
     method.textContent = item.method ?? '';
+    const urlCell = document.createElement('span');
+    urlCell.className = 'url-cell';
     const url = document.createElement('span');
     url.className = 'url';
     url.textContent = requestPath(item.url);
     url.title = item.url;
+    urlCell.append(url);
+    const diagnosis = diagnosisStates.get(requestDiagnosisKey(item.id));
+    if (diagnosis) {
+      const marker = document.createElement('span');
+      marker.className = `diagnose-state ${diagnosis.status}`;
+      marker.textContent = diagnosis.status === 'running'
+        ? '（诊断中）'
+        : diagnosis.status === 'done'
+          ? '（诊断完成）'
+          : '（诊断失败）';
+      urlCell.append(marker);
+    }
     const status = document.createElement('span');
     const isError = Boolean(item.error) || (item.status ?? 0) >= 400 || Boolean(item.businessError);
     status.className = `status ${isError ? 'error' : 'ok'}`;
@@ -691,7 +740,7 @@ function renderRequests() {
     const type = document.createElement('span');
     type.className = 'muted';
     type.textContent = item.resourceType ?? '';
-    li.append(method, url, status, duration, type);
+    li.append(method, urlCell, status, duration, type);
     li.addEventListener('click', () => showRequest(item.id));
     requestsEl.append(li);
   }
@@ -839,6 +888,17 @@ function kv(pairs) {
     grid.append(el('span', 'kv-key', key), el('span', 'kv-value', String(value ?? '—')));
   }
   return grid;
+}
+
+function formatTokenUsage(usage) {
+  const total = Number(usage?.totalTokens);
+  if (!Number.isFinite(total)) return '—';
+  const input = Number(usage?.totalInputTokens);
+  const output = Number(usage?.outputTokens);
+  const detail = Number.isFinite(input) && Number.isFinite(output)
+    ? `（入 ${input.toLocaleString()} / 出 ${output.toLocaleString()}）`
+    : '';
+  return `${total.toLocaleString()}${detail}`;
 }
 
 function preBlock(text) {
@@ -1124,6 +1184,14 @@ async function runFollowUp(view, input, button) {
     });
   } catch (error) {
     if (followUpProgressContext) {
+      // Stop every in-flight spinner: a rejected follow-up (for example when a
+      // fix is still applied) must not leave the "思考中" steps animating.
+      for (const step of followUpProgressContext.steps) {
+        if (step.status === 'start') {
+          step.status = 'error';
+          step.label = `${step.label ?? ''}（已中止）`;
+        }
+      }
       upsertProgressStep(followUpProgressContext.steps, {
         id: 'error',
         label: '继续诊断失败',
@@ -1248,6 +1316,35 @@ function describeCorrelation(result) {
   };
 }
 
+function renderFixValidation(validation) {
+  const block = el('section', 'card-section fix-validation');
+  const summary = el('div', 'verify-summary');
+  if (validation.status === 'passed') {
+    summary.append(el('span', 'badge ok', '编译自测通过'));
+    const commands = (validation.commands ?? []).map((entry) => entry.command).filter(Boolean);
+    if (commands.length) summary.append(el('span', 'muted small', commands.join('；')));
+    if (validation.durationMs != null) summary.append(el('span', 'muted small', `${validation.durationMs} ms`));
+  } else if (validation.status === 'failed') {
+    const count = Number(validation.applied);
+    summary.append(el(
+      'span',
+      'badge error',
+      `编译自测失败，已隐藏${count > 0 ? ` ${count} 条` : ''}修改建议`,
+    ));
+  } else {
+    summary.append(el('span', 'badge', '未执行编译自测'));
+    if (validation.reason) summary.append(el('span', 'muted small', validation.reason));
+  }
+  block.append(summary);
+  if (validation.error) block.append(el('p', 'error-text small', validation.error));
+  if (validation.output && validation.status === 'failed') {
+    const output = String(validation.output);
+    const tail = output.length > 8000 ? output.slice(output.length - 8000) : output;
+    block.append(el('pre', 'verify-log', tail));
+  }
+  return block;
+}
+
 function renderRunBody(container, result, agent, view, { readOnly = false, showHeader = true } = {}) {
   const runId = view.response?.runId ?? result.meta?.runId;
   const correlationInfo = describeCorrelation(result);
@@ -1298,6 +1395,8 @@ function renderRunBody(container, result, agent, view, { readOnly = false, showH
     ['数据库查询', String(result.databaseQueries?.length ?? 0)],
     ['前端错误', String(result.frontend?.errors?.length ?? 0)],
     ['前端源码', String(result.frontend?.files?.length ?? 0)],
+    ['轮次', agent?.usage?.numTurns != null ? String(agent.usage.numTurns) : '—'],
+    ['消耗 Token', formatTokenUsage(agent?.usage)],
     ['耗时', `${result.meta?.durationMs ?? 0} ms`],
   ])));
   if (correlationInfo.warning) {
@@ -1352,6 +1451,10 @@ function renderRunBody(container, result, agent, view, { readOnly = false, showH
     ])));
   }
 
+  if (agent?.fixesValidation) {
+    container.append(renderFixValidation(agent.fixesValidation));
+  }
+
   const fixes = agent?.fixes;
   if (Array.isArray(fixes) && fixes.length > 0) {
     const block = el('section', 'card-section');
@@ -1393,15 +1496,34 @@ function renderRunBody(container, result, agent, view, { readOnly = false, showH
   }
 }
 
+function applyRequestDetailCollapsed() {
+  const hasRequest = currentRequestId != null;
+  detailEl.hidden = Boolean(hasRequest) && requestDetailCollapsed;
+  toggleRequestDetailButton.disabled = !hasRequest;
+  toggleRequestDetailButton.textContent = requestDetailCollapsed ? '展开接口概览' : '收起接口概览';
+  toggleRequestDetailButton.title = requestDetailCollapsed
+    ? '展开接口概览，查看完整请求详情'
+    : '收起接口概览，为诊断报告腾出更多空间';
+}
+
 async function showRequest(id) {
   currentRequestId = id;
+  activeDiagnosisKey = requestDiagnosisKey(id);
+  applyRequestDetailCollapsed();
+  const diagnosis = diagnosisStates.get(activeDiagnosisKey);
+  diagnoseQuestion.value = diagnosis?.question ?? '';
+  renderRequests();
+  renderDiagnosisState();
   requestTitle.textContent = '加载中…';
   requestMeta.textContent = '';
   detailEl.textContent = '加载中…';
   try {
     const { request } = await api.capture('detail', { id });
+    // Selection may have moved while the detail request was in flight.
+    if (String(currentRequestId) !== String(id)) return;
     if (!request) {
       detailEl.textContent = '请求已被清空或不存在';
+      renderDiagnosisState();
       return;
     }
     currentRequest = request;
@@ -1427,6 +1549,7 @@ async function showRequest(id) {
       buildBodySection(request),
     );
   } catch (err) {
+    if (String(currentRequestId) !== String(id)) return;
     detailEl.textContent = `加载失败：${err.message}`;
   }
 }
@@ -1758,7 +1881,9 @@ function renderConsoleList() {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'secondary';
-    button.textContent = '诊断';
+    const diagnosis = diagnosisStates.get(consoleDiagnosisKey(item.id));
+    button.disabled = diagnosis?.status === 'running';
+    button.textContent = diagnosis?.status === 'running' ? '诊断中…' : '诊断';
     button.addEventListener('click', () => runConsoleDiagnose(item.id));
     row.append(time, message, button);
     consoleList.append(row);
@@ -1802,58 +1927,119 @@ function upsertProgressStep(steps, event) {
   }
 }
 
-function renderDiagnoseProgress() {
-  renderProgressSteps(diagnoseProgressEl, diagnoseProgressSteps);
-}
-
-function upsertDiagnoseProgress(event) {
-  upsertProgressStep(diagnoseProgressSteps, event);
-  renderDiagnoseProgress();
-}
-
-function resetDiagnoseProgress() {
-  diagnoseProgressSteps = [];
-  diagnoseProgressEl.textContent = '';
-  diagnoseProgressEl.hidden = true;
-}
-
-function finalizeDiagnoseProgress(status, label, detail = null) {
-  // The client-side placeholder must never keep spinning after the run settles.
-  diagnoseProgressSteps = diagnoseProgressSteps.filter((step) => step.id !== 'client-start');
-  const id = status === 'error' ? 'error' : 'done';
-  if (!diagnoseProgressSteps.some((step) => step.id === id)) {
-    upsertProgressStep(diagnoseProgressSteps, { id, label, status, detail });
+function syncDiagnoseControls() {
+  const state = currentRequestId
+    ? diagnosisStates.get(requestDiagnosisKey(currentRequestId))
+    : null;
+  const running = state?.status === 'running';
+  const button = $('diagnose-request');
+  if (button) {
+    button.disabled = running;
+    button.textContent = running ? '诊断中…' : '诊断此请求';
   }
-  renderDiagnoseProgress();
+  diagnoseQuestion.disabled = running;
+}
+
+function renderDiagnosisState() {
+  const state = activeDiagnosisState();
+  if (state?.status === 'done') {
+    // Finished diagnoses only keep the overview and the report; every
+    // thinking step is hidden to leave room for the result.
+    diagnoseProgressEl.textContent = '';
+    diagnoseProgressEl.hidden = true;
+  } else {
+    renderProgressSteps(diagnoseProgressEl, state?.progressSteps ?? []);
+  }
+  if (!state) {
+    diagnoseMessage.textContent = '';
+    diagnoseMessage.className = 'muted';
+    diagnoseResult.hidden = true;
+    diagnoseResult.textContent = '';
+    currentRunView = null;
+  } else if (state.status === 'running') {
+    diagnoseMessage.textContent = `${state.label}诊断中…`;
+    diagnoseMessage.className = 'muted';
+    diagnoseResult.hidden = true;
+    diagnoseResult.textContent = '';
+    currentRunView = null;
+  } else if (state.status === 'done') {
+    diagnoseMessage.textContent = '诊断完成';
+    diagnoseMessage.className = 'message ok';
+    if (state.response) {
+      renderDiagnosis(state.response);
+      diagnoseResult.hidden = false;
+    }
+  } else {
+    diagnoseMessage.textContent = `诊断失败：${state.error ?? '未知错误'}`;
+    diagnoseMessage.className = 'message error';
+    diagnoseResult.hidden = true;
+    diagnoseResult.textContent = '';
+    currentRunView = null;
+  }
+  syncDiagnoseControls();
+}
+
+function finalizeStateProgress(state, status, label, detail = null) {
+  // The client-side placeholder must never keep spinning after the run settles.
+  state.progressSteps = state.progressSteps.filter((step) => step.id !== 'client-start');
+  const id = status === 'error' ? 'error' : 'done';
+  if (!state.progressSteps.some((step) => step.id === id)) {
+    upsertProgressStep(state.progressSteps, { id, label, status, detail });
+  }
 }
 
 async function runDiagnosisPayload(payload, label) {
-  diagnoseMessage.textContent = `${label}诊断中…`;
-  diagnoseMessage.className = 'muted';
-  diagnoseResult.hidden = true;
-  resetDiagnoseProgress();
-  upsertDiagnoseProgress({ id: 'client-start', label: `${label}诊断已开始`, status: 'start' });
-  const button = $('diagnose-request');
-  button.disabled = true;
+  const requestId = payload.requestId != null ? String(payload.requestId) : null;
+  const consoleId = payload.consoleId != null ? String(payload.consoleId) : null;
+  if (!requestId && !consoleId) return;
+  const key = requestId ? requestDiagnosisKey(requestId) : consoleDiagnosisKey(consoleId);
+  if (diagnosisStates.get(key)?.status === 'running') return;
+
+  const question = diagnoseQuestion.value.trim();
+  const state = {
+    key,
+    requestId,
+    consoleId,
+    label,
+    question,
+    status: 'running',
+    progressSteps: [],
+    response: null,
+    error: null,
+    startedAt: Date.now(),
+    endedAt: null,
+  };
+  diagnosisStates.set(key, state);
+  activeDiagnosisKey = key;
+  upsertProgressStep(state.progressSteps, { id: 'client-start', label: `${label}诊断已开始`, status: 'start' });
+  renderDiagnosisState();
+  renderRequests();
+  renderConsoleList();
+
   try {
     const response = await api.diagnose({
       ...payload,
-      question: diagnoseQuestion.value.trim(),
+      question,
       allowExtraSources: $('allow-extra-sources').checked,
       mock: false,
       recheck: 1,
     });
-    finalizeDiagnoseProgress('done', '诊断完成');
-    renderDiagnosis(response);
-    diagnoseMessage.textContent = '诊断完成';
-    diagnoseMessage.className = 'message ok';
+    state.status = 'done';
+    state.response = response;
+    state.endedAt = Date.now();
+    finalizeStateProgress(state, 'done', '诊断完成');
+    if (activeDiagnosisKey === key) renderDiagnosisState();
+    renderRequests();
+    renderConsoleList();
     await loadRuns();
   } catch (err) {
-    finalizeDiagnoseProgress('error', '诊断失败', err.message);
-    diagnoseMessage.textContent = `诊断失败：${err.message}`;
-    diagnoseMessage.className = 'message error';
-  } finally {
-    button.disabled = false;
+    state.status = 'error';
+    state.error = err?.message ?? String(err);
+    state.endedAt = Date.now();
+    finalizeStateProgress(state, 'error', '诊断失败', state.error);
+    if (activeDiagnosisKey === key) renderDiagnosisState();
+    renderRequests();
+    renderConsoleList();
   }
 }
 
@@ -2135,12 +2321,23 @@ function restoreBrowserAfterModal() {
   }
 }
 
+function syncModelCustomRow({ focus = false } = {}) {
+  const custom = modelNameInput.value === '__custom__';
+  modelNameCustomRow.hidden = !custom;
+  if (custom && focus) modelNameCustomInput.focus();
+}
+
 function openModelModal() {
   const agent = configCache?.workspace?.agent ?? {};
-  modelNameInput.value = agent.model ?? '';
+  const model = String(agent.model ?? '').trim();
+  const known = [...modelNameInput.options]
+    .some((option) => option.value === model && option.value !== '__custom__');
+  modelNameInput.value = known ? model : (model ? '__custom__' : '');
+  modelNameCustomInput.value = known ? '' : model;
+  syncModelCustomRow();
   modelMaxTurnsInput.value = agent.maxTurns ?? '';
   modelMaxBudgetInput.value = agent.maxBudgetUsd ?? '';
-  modelTimeoutInput.value = agent.timeoutMs ?? 180000;
+  modelTimeoutInput.value = Math.round((agent.timeoutMs ?? 600000) / 1000);
   modelModal.hidden = false;
   hideBrowserForModal();
   modelNameInput.focus();
@@ -2156,14 +2353,25 @@ async function saveModelSettings() {
     setStatus('配置尚未加载，请稍后重试', 'error');
     return;
   }
+  const selectedModel = modelNameInput.value;
+  const model = selectedModel === '__custom__'
+    ? modelNameCustomInput.value.trim()
+    : selectedModel;
+  if (selectedModel === '__custom__' && !model) {
+    setStatus('请输入自定义模型名称', 'error');
+    return;
+  }
   const maxTurns = Number(modelMaxTurnsInput.value);
   const maxBudget = Number(modelMaxBudgetInput.value);
-  const timeout = Number(modelTimeoutInput.value);
+  // The modal shows seconds; workspace.agent.timeoutMs stays in milliseconds.
+  const timeoutSeconds = Number(modelTimeoutInput.value);
   const agent = {
-    model: modelNameInput.value.trim(),
+    model,
     maxTurns: Number.isFinite(maxTurns) && maxTurns > 0 ? Math.floor(maxTurns) : null,
     maxBudgetUsd: Number.isFinite(maxBudget) && maxBudget > 0 ? maxBudget : null,
-    timeoutMs: Number.isFinite(timeout) && timeout > 0 ? Math.floor(timeout) : 180000,
+    timeoutMs: Number.isFinite(timeoutSeconds) && timeoutSeconds > 0
+      ? Math.floor(timeoutSeconds * 1000)
+      : 600000,
   };
   try {
     const saved = await api.saveConfig({
@@ -2178,6 +2386,13 @@ async function saveModelSettings() {
 }
 
 $('model-save').addEventListener('click', saveModelSettings);
+modelNameInput.addEventListener('change', () => syncModelCustomRow({ focus: true }));
+modelNameCustomInput.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    saveModelSettings();
+  }
+});
 $('model-cancel').addEventListener('click', closeModelModal);
 modelModal.addEventListener('click', (event) => {
   if (event.target === modelModal) closeModelModal();
@@ -2256,14 +2471,51 @@ browserUrlInput.addEventListener('keydown', (event) => {
 $('browser-reload').addEventListener('click', () => api.browser('reload').catch(() => {}));
 $('browser-devtools').addEventListener('click', () => api.browser('devtools').catch(() => {}));
 async function clearCapturedData() {
+  const runningRequestIds = [];
+  const runningConsoleIds = [];
+  for (const state of diagnosisStates.values()) {
+    if (state.status !== 'running') continue;
+    if (state.requestId != null) runningRequestIds.push(String(state.requestId));
+    if (state.consoleId != null) runningConsoleIds.push(String(state.consoleId));
+  }
+  const keepRequests = new Set(runningRequestIds);
+  const keepConsoles = new Set(runningConsoleIds);
   try {
-    await api.capture('clear');
-    await api.capture('console-clear').catch(() => {});
-    captureState.clear();
-    consoleState.clear();
-    consoleErrorCount = 0;
+    await api.capture('clear', {
+      exceptIds: runningRequestIds,
+      exceptConsoleIds: runningConsoleIds,
+    });
+    for (const id of [...captureState.keys()]) {
+      if (!keepRequests.has(String(id))) captureState.delete(id);
+    }
+    for (const id of [...consoleState.keys()]) {
+      if (!keepConsoles.has(String(id))) consoleState.delete(id);
+    }
+    consoleErrorCount = consoleState.size;
+
+    // Settled diagnoses for cleared records disappear with them; running ones
+    // stay alive until they finish and can be cleared next time.
+    for (const [key, state] of [...diagnosisStates]) {
+      if (state.status === 'running') continue;
+      const requestGone = state.requestId != null && !keepRequests.has(String(state.requestId));
+      const consoleGone = state.consoleId != null && !keepConsoles.has(String(state.consoleId));
+      if (requestGone || consoleGone) diagnosisStates.delete(key);
+    }
+
+    if (currentRequestId != null && !keepRequests.has(String(currentRequestId))) {
+      currentRequestId = null;
+      currentRequest = null;
+      requestTitle.textContent = '选择一条请求';
+      requestMeta.textContent = '';
+      detailEl.textContent = '选择一条请求查看详情';
+      applyRequestDetailCollapsed();
+    }
+    if (activeDiagnosisKey && !diagnosisStates.has(activeDiagnosisKey)) {
+      activeDiagnosisKey = currentRequestId != null ? requestDiagnosisKey(currentRequestId) : null;
+    }
     renderConsoleList();
     renderRequests();
+    renderDiagnosisState();
   } catch (err) {
     hintEl.textContent = `清空失败：${err.message}`;
   }
@@ -2303,10 +2555,30 @@ makeRuleButton.addEventListener('click', () => {
   addCandidateRules([currentRequest]).then(() => setTab('routing')).catch(() => {});
 });
 $('diagnose-request').addEventListener('click', runDiagnoseRequest);
+toggleRequestDetailButton.addEventListener('click', () => {
+  if (!currentRequestId) return;
+  requestDetailCollapsed = !requestDetailCollapsed;
+  applyRequestDetailCollapsed();
+});
+applyRequestDetailCollapsed();
 $('clear-console').addEventListener('click', async () => {
-  await api.capture('console-clear').catch(() => {});
-  consoleState.clear();
-  consoleErrorCount = 0;
+  const keep = new Set();
+  for (const state of diagnosisStates.values()) {
+    if (state.status === 'running' && state.consoleId != null) keep.add(String(state.consoleId));
+  }
+  await api.capture('console-clear', { exceptIds: [...keep] }).catch(() => {});
+  for (const id of [...consoleState.keys()]) {
+    if (!keep.has(String(id))) consoleState.delete(id);
+  }
+  consoleErrorCount = consoleState.size;
+  for (const [key, state] of [...diagnosisStates]) {
+    if (state.status === 'running') continue;
+    if (state.consoleId != null && !keep.has(String(state.consoleId))) diagnosisStates.delete(key);
+  }
+  if (activeDiagnosisKey && !diagnosisStates.has(activeDiagnosisKey)) {
+    activeDiagnosisKey = currentRequestId != null ? requestDiagnosisKey(currentRequestId) : null;
+    renderDiagnosisState();
+  }
   renderConsoleList();
 });
 $('save-routing').addEventListener('click', saveRouting);
@@ -2315,7 +2587,17 @@ for (const tab of document.querySelectorAll('.tab')) {
 }
 
 api.onDiagnoseProgress((progress) => {
-  upsertDiagnoseProgress(progress);
+  const key = progress?.consoleId != null
+    ? consoleDiagnosisKey(progress.consoleId)
+    : progress?.requestId != null
+      ? requestDiagnosisKey(progress.requestId)
+      : null;
+  if (!key) return;
+  const state = diagnosisStates.get(key);
+  if (!state || state.status !== 'running') return;
+  upsertProgressStep(state.progressSteps, progress);
+  if (activeDiagnosisKey !== key) return;
+  renderProgressSteps(diagnoseProgressEl, state.progressSteps);
 });
 
 api.onFollowUpProgress((progress) => {
@@ -2347,7 +2629,14 @@ api.onCapture((event) => {
     captureState.set(event.record.id, event.record);
     scheduleRender();
   } else if (event.type === 'clear') {
-    captureState.clear();
+    const keep = new Set((event.keepRequestIds ?? []).map(String));
+    if (keep.size === 0) {
+      captureState.clear();
+    } else {
+      for (const id of [...captureState.keys()]) {
+        if (!keep.has(String(id))) captureState.delete(id);
+      }
+    }
     renderRequests();
   } else if (event.type === 'navigation') {
     browserUrlInput.value = event.url;
@@ -2362,8 +2651,15 @@ api.onCapture((event) => {
     renderConsoleList();
     scheduleRender();
   } else if (event.type === 'console-clear') {
-    consoleState.clear();
-    consoleErrorCount = 0;
+    const keep = new Set((event.keepIds ?? []).map(String));
+    if (keep.size === 0) {
+      consoleState.clear();
+    } else {
+      for (const id of [...consoleState.keys()]) {
+        if (!keep.has(String(id))) consoleState.delete(id);
+      }
+    }
+    consoleErrorCount = consoleState.size;
     renderConsoleList();
     scheduleRender();
   } else if (event.type === 'routing-miss') {

@@ -15,9 +15,9 @@ export const DEFAULT_WORKSPACE = Object.freeze({
   verifyCommand: '',
   agent: {
     model: '',
-    maxTurns: 24,
+    maxTurns: 60,
     maxBudgetUsd: null,
-    timeoutMs: 180000,
+    timeoutMs: 600000,
   },
   window: { beforeMs: 3000, afterMs: 2000 },
 });
@@ -50,7 +50,7 @@ export function validateWorkspace(value) {
         model: String(raw.model ?? ''),
         maxTurns: Number.isFinite(maxTurns) && maxTurns > 0 ? Math.floor(maxTurns) : null,
         maxBudgetUsd: Number.isFinite(maxBudget) && maxBudget > 0 ? maxBudget : null,
-        timeoutMs: Number.isFinite(timeout) && timeout > 0 ? Math.floor(timeout) : 180000,
+        timeoutMs: Number.isFinite(timeout) && timeout > 0 ? Math.floor(timeout) : DEFAULT_WORKSPACE.agent.timeoutMs,
       };
     })(),
     frontendSourceRoot: String(value.frontendSourceRoot ?? ''),

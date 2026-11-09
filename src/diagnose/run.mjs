@@ -5,6 +5,7 @@ import { newRunId } from '../core/ids.mjs';
 import { resolveScenarioPaths } from '../core/scenario.mjs';
 import { resolveFrontendSources } from '../evidence/frontend.mjs';
 import { buildFixPreviews } from '../core/fixes.mjs';
+import { validateFixes } from '../core/fix-validation.mjs';
 import { resolveFrontendProjectRoot } from '../core/frontend-service.mjs';
 import { fireScenario } from '../driver/index.mjs';
 import { readLogs, listThreads } from '../evidence/logs.mjs';
@@ -210,6 +211,8 @@ async function diagnoseWithFired({
   approveWrite = null,
   databaseConnect = undefined,
   databaseNotice = null,
+  verifyCommand = '',
+  workspace = {},
   onProgress = () => {},
 }) {
   const progress = (id, label, status = 'done', detail = null) => {
@@ -425,6 +428,49 @@ async function diagnoseWithFired({
     await runLog.error(`fix preview failed: ${error?.message ?? error}`);
   }
 
+  const editableFixes = (agentResult.fixes ?? [])
+    .filter((fix) => fix?.kind === 'edit' && fix?.preview?.status === 'ready');
+  if (editableFixes.length > 0) {
+    progress('selfcheck', '编译自测修改后的代码', 'start');
+    let validation;
+    try {
+      validation = await validateFixes({
+        fixes: agentResult.fixes,
+        roots: {
+          sourceRoot: paths.sourceRoot,
+          frontendSourceRoot: frontendFixRoot,
+          extraSourceRoots,
+        },
+        verifyCommand,
+        workspace,
+        projectRoot: scenario.dir ?? process.cwd(),
+        runDir,
+      });
+    } catch (error) {
+      validation = {
+        status: 'failed',
+        ok: false,
+        error: `编译自测执行失败：${error?.message ?? error}`,
+        commands: [],
+        applied: 0,
+      };
+    }
+    agentResult.fixesValidation = validation;
+    if (validation.status === 'failed') {
+      agentResult.fixesWithheld = agentResult.fixes;
+      agentResult.fixes = [];
+      agentResult.needsMoreInfo = [
+        ...(agentResult.needsMoreInfo ?? []),
+        `修改建议未通过编译自测，已隐藏。${validation.error ?? ''}`.trim(),
+      ];
+      progress('selfcheck', '编译自测失败，修改建议已隐藏', 'error', validation.error);
+      await runLog.error(`fix self-check failed: ${validation.error ?? 'unknown'}`);
+    } else {
+      progress('selfcheck', validation.status === 'passed' ? '编译自测通过' : '未执行编译自测', 'done', validation.reason);
+      await runLog.info(`fix self-check ${validation.status} commands=${(validation.commands ?? []).length}`);
+    }
+  }
+
   const gates = evaluateGates(fired, agentResult);
   const recheckInfo = recheck > 1
     ? (() => {
@@ -586,6 +632,8 @@ export async function runDiagnosis(scenario, options = {}) {
     activeDatabaseId = null,
     approveWrite = null,
     databaseConnect,
+    verifyCommand = '',
+    workspace = {},
     onProgress = () => {},
   } = options;
 
@@ -630,6 +678,8 @@ export async function runDiagnosis(scenario, options = {}) {
     approveWrite,
     databaseConnect,
     databaseNotice,
+    verifyCommand,
+    workspace,
     onProgress,
   });
 
@@ -668,6 +718,7 @@ export async function runCaptureDiagnosis(observation, options = {}) {
     activeDatabaseId = null,
     approveWrite = null,
     databaseConnect,
+    verifyCommand = '',
     onProgress = () => {},
   } = options;
 
@@ -767,6 +818,8 @@ export async function runCaptureDiagnosis(observation, options = {}) {
     approveWrite,
     databaseConnect,
     databaseNotice,
+    verifyCommand,
+    workspace,
     onProgress,
   });
 }

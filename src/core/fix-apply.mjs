@@ -1,6 +1,6 @@
 import { chmod, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { normalizeFix, resolveFixTarget } from './fixes.mjs';
+import { clearProjectMethodIndexCache, normalizeFix, resolveFixTarget } from './fixes.mjs';
 
 function toFileEol(text, eol) {
   return String(text).replace(/\r\n/g, '\n').replace(/\n/g, eol);
@@ -65,6 +65,7 @@ export async function applyFix({ fix: rawFix, roots, backupPath }) {
   await mkdir(path.dirname(backupPath), { recursive: true });
   await writeFile(backupPath, raw, 'utf8');
   await atomicWrite(target.resolved, next);
+  clearProjectMethodIndexCache();
 
   return {
     file: target.relative,
@@ -91,5 +92,6 @@ export async function revertFix({ fix: rawFix, roots, backupPath }) {
 
   const backup = await readFile(backupPath, 'utf8');
   await atomicWrite(target.resolved, backup);
+  clearProjectMethodIndexCache();
   return { file: target.relative, root: target.name };
 }

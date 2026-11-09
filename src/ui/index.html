@@ -141,6 +141,7 @@
             <div class="detail-head">
               <span id="request-title">选择一条请求</span>
               <span id="request-meta" class="muted"></span>
+              <button id="toggle-request-detail" type="button" class="secondary" disabled>收起接口概览</button>
             </div>
             <div class="question-row">
               <textarea id="diagnose-question" class="question-input" rows="2" placeholder="描述现象（可选），例如：登录后用户列表报错"></textarea>
@@ -301,8 +302,46 @@
   <div id="model-modal" class="modal-backdrop" hidden>
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="model-modal-title">
       <h2 id="model-modal-title">模型设置</h2>
-      <label>模型名称
-        <input id="model-name" placeholder="留空使用 SDK 默认模型" />
+      <label>模型
+        <select id="model-name">
+          <option value="">默认（跟随 SDK）</option>
+          <optgroup label="别名（跟随最新版本）">
+            <option value="sonnet">Sonnet（最新）</option>
+            <option value="opus">Opus（最新）</option>
+            <option value="haiku">Haiku（最新）</option>
+            <option value="fable">Fable（最新）</option>
+            <option value="best">Best（自动选择）</option>
+            <option value="opusplan">Opus Plan</option>
+          </optgroup>
+          <optgroup label="最新">
+            <option value="claude-sonnet-5-5">Claude Sonnet 5.5</option>
+            <option value="claude-sonnet-5">Claude Sonnet 5</option>
+            <option value="claude-opus-5-5">Claude Opus 5.5</option>
+            <option value="claude-opus-5">Claude Opus 5</option>
+            <option value="claude-haiku-5-5">Claude Haiku 5.5</option>
+            <option value="claude-fable-5-1">Claude Fable 5.1</option>
+            <option value="claude-fable-5">Claude Fable 5</option>
+          </optgroup>
+          <optgroup label="Claude 4.x">
+            <option value="claude-sonnet-4-6">Claude Sonnet 4.6</option>
+            <option value="claude-sonnet-4-5">Claude Sonnet 4.5</option>
+            <option value="claude-opus-4-8">Claude Opus 4.8</option>
+            <option value="claude-opus-4-7">Claude Opus 4.7</option>
+            <option value="claude-opus-4-6">Claude Opus 4.6</option>
+            <option value="claude-opus-4-5">Claude Opus 4.5</option>
+            <option value="claude-opus-4-1">Claude Opus 4.1</option>
+            <option value="claude-haiku-4-5">Claude Haiku 4.5</option>
+          </optgroup>
+          <optgroup label="旧版">
+            <option value="claude-3-7-sonnet">Claude 3.7 Sonnet</option>
+            <option value="claude-3-5-sonnet">Claude 3.5 Sonnet</option>
+            <option value="claude-3-5-haiku">Claude 3.5 Haiku</option>
+          </optgroup>
+          <option value="__custom__">自定义…</option>
+        </select>
+      </label>
+      <label id="model-name-custom-row" hidden>自定义模型名称
+        <input id="model-name-custom" placeholder="如 claude-sonnet-5" />
       </label>
       <label>最大轮次
         <input id="model-max-turns" type="number" min="1" step="1" placeholder="留空 = 不限制" />
@@ -310,10 +349,10 @@
       <label>最大费用（USD）
         <input id="model-max-budget" type="number" min="0" step="0.01" placeholder="留空 = 不限制" />
       </label>
-      <label>超时（ms）
-        <input id="model-timeout" type="number" min="1000" step="1000" placeholder="180000" />
+      <label>超时（秒）
+        <input id="model-timeout" type="number" min="1" step="1" placeholder="600" />
       </label>
-      <p class="muted small">轮次留空表示不限制；建议同时保留费用或超时上限。</p>
+      <p class="muted small">默认 60 轮、超时 600 秒；轮次留空表示不限制。建议同时保留费用或超时上限。</p>
       <div class="modal-actions">
         <button id="model-save" type="button">保存</button>
         <button id="model-cancel" type="button" class="secondary">取消</button>
