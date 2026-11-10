@@ -103,6 +103,9 @@ test('overlapping sessions on the same repo degrade as busy', async (t) => {
   const second = await startSession(repo, runDir, 'run-b');
   assert.equal(second.ok, false);
   assert.equal(second.reason, 'busy');
+  assert.equal(second.owner.runId, 'run-a');
+  assert.equal(second.owner.pid, process.pid);
+  assert.ok(second.owner.at > 0);
   await first.discard();
   const third = await startSession(repo, runDir, 'run-c');
   assert.equal(third.ok, true);
@@ -260,4 +263,58 @@ test('journal recovery reports external edits instead of overwriting them', asyn
   const kept = await finalizeWorkspaceJournal(journalPathOf(runDir), 'keep');
   assert.equal(kept.status, 'kept');
   assert.equal(await readFile(file, 'utf8'), 'user-edited-after\n');
+});
+
+test('busy workspace lock is surfaced in the diagnosis result', async (t) => {
+  const { repo, runDir } = await fixture(t);
+  const first = await startSession(repo, runDir, 'run-owner');
+  assert.equal(first.ok, true);
+
+  const agent = {
+    id: 'busy-agent',
+    scope: null,
+    configureScope(next) { this.scope = next; },
+    async diagnose() {
+      assert.equal(this.scope.toolMode, 'readonly');
+      return {
+        conclusion: '工作区被占用，使用只读分析',
+        evidenceRefs: [],
+        confidence: 0.6,
+        needsMoreInfo: [],
+        fixes: [],
+      };
+    },
+  };
+  const { runCaptureDiagnosis } = await import('../../src/diagnose/run.mjs');
+  const outcome = await runCaptureDiagnosis({
+    request: {
+      method: 'GET',
+      url: 'http://localhost/api/order',
+      headers: {},
+      body: null,
+      startedAt: Date.now(),
+    },
+    response: { status: 500, statusText: 'Error', ok: false, headers: {}, body: '{}', durationMs: 1 },
+    firedAt: Date.now(),
+  }, {
+    workspace: {
+      sourceRoot: repo,
+      logfiles: [],
+      window: { beforeMs: 1000, afterMs: 1000 },
+      agent: { toolMode: 'sandbox' },
+    },
+    root: TMP,
+    runsDir: path.join(TMP, 'runs'),
+    agent,
+    sandbox: true,
+  });
+
+  const notice = outcome.result.meta.workspaceNotice;
+  assert.equal(notice.mode, 'readonly');
+  assert.equal(notice.code, 'busy');
+  assert.match(notice.message, /只读模式/);
+  assert.equal(notice.owner.runId, 'run-owner');
+  assert.equal(notice.owner.pid, process.pid);
+  assert.ok(notice.owner.at > 0);
+  await first.discard();
 });

@@ -1408,6 +1408,52 @@ function renderFixValidation(validation) {
   return block;
 }
 
+function renderWorkspaceNotice(notice, view) {
+  if (!notice || notice.code === 'ok' || notice.mode === 'in-place') return null;
+  const block = el('section', 'card-section workspace-notice');
+  const summary = el('div', 'verify-summary');
+  summary.append(el(
+    'span',
+    `badge ${notice.mode === 'copy' ? '' : 'error'}`,
+    notice.mode === 'copy' ? '隔离副本模式' : '只读模式',
+  ));
+  summary.append(el('span', 'muted small', notice.message ?? ''));
+  block.append(summary);
+  if (notice.owner) {
+    const at = notice.owner.at ? new Date(notice.owner.at).toLocaleString() : '未知时间';
+    block.append(el(
+      'p',
+      'muted small',
+      `占用诊断：${notice.owner.runId ?? 'unknown'} · pid ${notice.owner.pid ?? '?'} · ${at}`,
+    ));
+  }
+  if (notice.detail) block.append(el('p', 'error-text small', notice.detail));
+  if (notice.code === 'busy') {
+    const state = activeDiagnosisState();
+    if (view?.mode === 'live' && state && state.response === view.response) {
+      const actions = el('div', 'modal-actions');
+      const retry = el('button', 'secondary', '锁释放后重试');
+      retry.type = 'button';
+      retry.addEventListener('click', () => retryWorkspaceDiagnosis(state));
+      actions.append(retry);
+      block.append(actions);
+    } else {
+      block.append(el('p', 'muted small', '锁释放后重新诊断即可使用原地模式。'));
+    }
+  }
+  return block;
+}
+
+function retryWorkspaceDiagnosis(state) {
+  if (!state) return undefined;
+  if (state.element) return runElementDiagnosisPayload(state.element, state.question);
+  if (state.payload) {
+    diagnoseQuestion.value = state.question ?? '';
+    return runDiagnosisPayload(state.payload, state.label);
+  }
+  return undefined;
+}
+
 function renderWorkspaceSession(session, view, runId, { readOnly = false } = {}) {
   const block = el('section', 'card-section workspace-session');
   const summary = el('div', 'verify-summary');
@@ -1731,6 +1777,8 @@ function renderRunBody(container, result, agent, view, { readOnly = false, showH
     ])));
   }
 
+  const workspaceNoticeBlock = renderWorkspaceNotice(result.meta?.workspaceNotice, view);
+  if (workspaceNoticeBlock) container.append(workspaceNoticeBlock);
   if (agent?.workspaceSession) {
     container.append(renderWorkspaceSession(
       agent.workspaceSession,
@@ -2309,6 +2357,7 @@ async function runDiagnosisPayload(payload, label) {
     consoleId,
     label,
     question,
+    payload: { ...payload },
     status: 'running',
     progressSteps: [],
     response: null,

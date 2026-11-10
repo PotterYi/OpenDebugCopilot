@@ -341,6 +341,7 @@ async function diagnoseWithFired({
   let sandboxRunCommand = null;
   let sandboxUsed = false;
   let inPlaceUsed = false;
+  let workspaceNotice = null;
   if (sandbox && agent.id !== 'mock' && typeof agent.configureScope === 'function') {
     const writableRoots = [
       paths.sourceRoot ? { key: 'backend', name: 'backend', root: paths.sourceRoot } : null,
@@ -381,6 +382,7 @@ async function diagnoseWithFired({
         onAfterWrite: inPlace.onAfterWrite,
       });
       sandboxRunCommand = inPlace.runCommand;
+      workspaceNotice = { mode: 'in-place', code: 'ok', message: '原地工作区已就绪' };
       progress('sandbox', '原地工作区已就绪，开放编辑与测试', 'done', inPlace.cwd);
       await runLog.info(`in-place session repos=${inPlace.repos.length}`);
     } else if (inPlace?.reason === 'not-git') {
@@ -400,24 +402,50 @@ async function diagnoseWithFired({
           verifyCommand,
           workspace,
         });
-        progress('sandbox', '非 Git 项目，使用隔离副本', 'done', sandboxContext.dir);
+        workspaceNotice = {
+          mode: 'copy',
+          code: 'not-git',
+          message: '非 Git 项目，使用隔离副本',
+          fileCount: sandboxContext.fileCount,
+        };
+        progress('sandbox', '非 Git 项目，使用隔离副本', 'done', `${sandboxContext.fileCount} 个文件`);
         await runLog.info(`copy sandbox files=${sandboxContext.fileCount}`);
       } catch (error) {
         sandboxContext = null;
         sandboxRunCommand = null;
         agent.configureScope({ toolMode: 'readonly', systemPromptSuffix: '' });
-        progress('sandbox', '工作区过大或无法创建副本，退回只读模式', 'error', error?.message ?? String(error));
+        workspaceNotice = {
+          mode: 'readonly',
+          code: error?.code ?? 'sandbox-error',
+          message: '工作区过大或无法创建副本，退回只读模式',
+          detail: error?.message ?? String(error),
+        };
+        progress('sandbox', workspaceNotice.message, 'error', workspaceNotice.detail);
         await runLog.error(`copy sandbox failed: ${error?.message ?? error}`);
       }
     } else {
       sandboxContext = null;
       sandboxRunCommand = null;
       agent.configureScope({ toolMode: 'readonly', systemPromptSuffix: '' });
+      const owner = inPlace?.reason === 'busy' ? inPlace.owner ?? null : null;
+      const ownerDetail = owner
+        ? `占用诊断：${owner.runId ?? 'unknown'} · pid ${owner.pid ?? '?'}${owner.at ? ` · 开始于 ${new Date(owner.at).toLocaleString()}` : ''}`
+        : null;
       const reason = inPlace?.reason === 'busy'
         ? '工作区正被其他诊断占用，本次使用只读模式'
         : `无法建立工作区基线，本次使用只读模式：${inPlace?.error?.message ?? inPlace?.reason ?? 'unknown'}`;
-      progress('sandbox', reason, 'error');
-      await runLog.warn(`workspace session degraded to readonly: ${reason}`);
+      workspaceNotice = {
+        mode: 'readonly',
+        code: inPlace?.reason ?? 'unknown',
+        message: reason,
+        busyRepo: inPlace?.busyRepo ?? null,
+        detail: inPlace?.error?.message ?? null,
+        owner: owner
+          ? { runId: owner.runId ?? null, pid: owner.pid ?? null, at: owner.at ?? null, repoRoot: owner.repoRoot ?? null }
+          : null,
+      };
+      progress('sandbox', reason, 'error', ownerDetail);
+      await runLog.warn(`workspace session degraded to readonly: ${reason}${ownerDetail ? ` (${ownerDetail})` : ''}`);
     }
   }
 
@@ -815,6 +843,7 @@ async function diagnoseWithFired({
       incompleteReason: agentResult.incompleteReason ?? null,
       agentErrors: agentResult.errors ?? [],
       workspaceSessionStatus: agentResult.workspaceSession?.status ?? null,
+      workspaceNotice,
       // Needed by 2b apply/undo to re-resolve fix files safely.
       fixRoots: {
         sourceRoot: paths.sourceRoot ?? null,

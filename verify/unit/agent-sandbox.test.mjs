@@ -177,3 +177,20 @@ test('extracts newly created and deleted files with base hashes', async (t) => {
   assert.equal(await readFile(path.join(root, 'src', 'app.js'), 'utf8'), 'export const value = 1;\n');
   await cleanupAgentSandbox(sandbox);
 });
+
+test('preflights oversized non-Git copies before writing anything', async (t) => {
+  const { root, runDir } = await fixture(t);
+  await writeFile(path.join(root, 'src', 'second.js'), 'export const second = 1;\n', 'utf8');
+
+  await assert.rejects(
+    createAgentSandbox({
+      runDir,
+      roots: [{ key: 'backend', name: 'backend', root }],
+      limits: { maxFiles: 1 },
+    }),
+    (error) => error?.code === 'SANDBOX_TOO_LARGE' && /已退回只读模式/.test(error.message),
+  );
+  // Preflight must fail before the first destination directory/file is created.
+  await assert.rejects(access(path.join(runDir, 'sandbox', 'backend')));
+  await assert.rejects(access(path.join(runDir, 'sandbox')));
+});

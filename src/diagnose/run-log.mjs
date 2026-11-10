@@ -17,6 +17,7 @@ export function createRunLog(runDir) {
   return {
     file,
     info: (message) => write('INFO', message),
+    warn: (message) => write('WARN', message),
     error: (message) => write('ERROR', message),
   };
 }

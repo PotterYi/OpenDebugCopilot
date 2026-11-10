@@ -15,6 +15,11 @@ const MAX_FILES = 20_000;
 const MAX_TOTAL_BYTES = 200 * 1024 * 1024;
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 const MAX_EXTRACT_BYTES = 100 * 1024;
+const DEFAULT_LIMITS = Object.freeze({
+  maxFiles: MAX_FILES,
+  maxTotalBytes: MAX_TOTAL_BYTES,
+  maxFileBytes: MAX_FILE_BYTES,
+});
 const COMMAND_OUTPUT_LIMIT = 12_000;
 
 const SAFE_COMMAND = /^(?:(?:\.\/)?(?:mvnw|mvn)(?:\.cmd)?|(?:\.\/)?gradlew(?:\.bat)?|gradle|npm|pnpm|yarn|npx|python(?:3)?|pytest|go|dotnet|cargo)\b/i;
@@ -49,7 +54,50 @@ async function pathKind(target) {
   }
 }
 
-async function copyTree(source, dest, state) {
+function formatBytes(bytes) {
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${bytes} B`;
+}
+
+function tooLarge(state, limits) {
+  return new AppError(
+    'SANDBOX_TOO_LARGE',
+    `源码目录过大（${state.files} 个文件 / ${formatBytes(state.bytes)}），`
+      + `超过上限（${limits.maxFiles} 个文件 / ${formatBytes(limits.maxTotalBytes)}），已退回只读模式`,
+    { exitCode: 3 },
+  );
+}
+
+/**
+ * Count exactly what copyTree would copy, before any file is written. This
+ * avoids leaving a half-built sandbox behind when a huge non-Git project
+ * exceeds the limits.
+ */
+async function preflightTree(source, state, limits) {
+  const entries = await readdir(source, { withFileTypes: true });
+  for (const entry of entries) {
+    if (entry.name === 'node_modules') continue;
+    if (entry.isDirectory() && IGNORED_DIRS.has(entry.name)) continue;
+    if (entry.isSymbolicLink()) continue;
+    const from = path.join(source, entry.name);
+    if (entry.isDirectory()) {
+      await preflightTree(from, state, limits);
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    if (SENSITIVE_FILE.test(entry.name)) continue;
+    const info = await stat(from);
+    if (info.size > limits.maxFileBytes) continue;
+    state.files += 1;
+    state.bytes += info.size;
+    if (state.files > limits.maxFiles || state.bytes > limits.maxTotalBytes) {
+      throw tooLarge(state, limits);
+    }
+  }
+}
+
+async function copyTree(source, dest, state, limits = DEFAULT_LIMITS) {
   const entries = await readdir(source, { withFileTypes: true });
   for (const entry of entries) {
     if (entry.name === 'node_modules') continue;
@@ -59,17 +107,17 @@ async function copyTree(source, dest, state) {
     if (entry.isSymbolicLink()) continue;
     if (entry.isDirectory()) {
       await mkdir(to, { recursive: true });
-      await copyTree(from, to, state);
+      await copyTree(from, to, state, limits);
       continue;
     }
     if (!entry.isFile()) continue;
     if (SENSITIVE_FILE.test(entry.name)) continue;
     const info = await stat(from);
-    if (info.size > MAX_FILE_BYTES) continue;
+    if (info.size > limits.maxFileBytes) continue;
     state.files += 1;
     state.bytes += info.size;
-    if (state.files > MAX_FILES || state.bytes > MAX_TOTAL_BYTES) {
-      throw new AppError('SANDBOX_TOO_LARGE', '源码目录过大，无法创建沙箱', { exitCode: 3 });
+    if (state.files > limits.maxFiles || state.bytes > limits.maxTotalBytes) {
+      throw tooLarge(state, limits);
     }
     await copyFile(from, to);
   }
@@ -100,8 +148,9 @@ function rootDescriptor({ key, name, root, extraRoot = null }, sandboxDir) {
  * Create an isolated copy of the affected source roots. The model may edit
  * this copy freely; the real workspace is never touched.
  */
-export async function createAgentSandbox({ runDir, roots = [] }) {
+export async function createAgentSandbox({ runDir, roots = [], limits = {} } = {}) {
   const sandboxDir = path.join(runDir, 'sandbox');
+  const effectiveLimits = { ...DEFAULT_LIMITS, ...limits };
   await rm(sandboxDir, { recursive: true, force: true });
   await mkdir(sandboxDir, { recursive: true });
 
@@ -119,22 +168,38 @@ export async function createAgentSandbox({ runDir, roots = [] }) {
     throw new AppError('SANDBOX_NO_ROOTS', '没有可用的源码目录，无法创建沙箱', { exitCode: 3 });
   }
 
+  // Fail before copying anything when a non-Git project is clearly too large.
+  const preflight = { files: 0, bytes: 0 };
+  try {
+    for (const descriptor of descriptors) {
+      await preflightTree(descriptor.realRoot, preflight, effectiveLimits);
+    }
+  } catch (error) {
+    await rm(sandboxDir, { recursive: true, force: true }).catch(() => {});
+    throw error;
+  }
+
   const state = { files: 0, bytes: 0 };
-  for (const descriptor of descriptors) {
-    await mkdir(descriptor.sandboxRoot, { recursive: true });
-    await copyTree(descriptor.realRoot, descriptor.sandboxRoot, state);
-    await linkNodeModules(descriptor.realRoot, descriptor.sandboxRoot);
-    // Remember the snapshot hashes so extraction can detect user edits that
-    // happened while the model was working in the sandbox.
-    descriptor.baseHashes = new Map();
-    for (const file of await walkFiles(descriptor.sandboxRoot)) {
-      const relative = path.relative(descriptor.sandboxRoot, file);
-      try {
-        descriptor.baseHashes.set(relative, sha256(await readFile(file)));
-      } catch {
-        // unreadable copied file: conflict detection will treat it as unknown
+  try {
+    for (const descriptor of descriptors) {
+      await mkdir(descriptor.sandboxRoot, { recursive: true });
+      await copyTree(descriptor.realRoot, descriptor.sandboxRoot, state, effectiveLimits);
+      await linkNodeModules(descriptor.realRoot, descriptor.sandboxRoot);
+      // Remember the snapshot hashes so extraction can detect user edits that
+      // happened while the model was working in the sandbox.
+      descriptor.baseHashes = new Map();
+      for (const file of await walkFiles(descriptor.sandboxRoot)) {
+        const relative = path.relative(descriptor.sandboxRoot, file);
+        try {
+          descriptor.baseHashes.set(relative, sha256(await readFile(file)));
+        } catch {
+          // unreadable copied file: conflict detection will treat it as unknown
+        }
       }
     }
+  } catch (error) {
+    await rm(sandboxDir, { recursive: true, force: true }).catch(() => {});
+    throw error;
   }
   return {
     dir: sandboxDir,

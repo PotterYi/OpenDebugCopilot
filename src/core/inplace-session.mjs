@@ -498,7 +498,7 @@ export async function listPendingWorkspaceJournals(runsRoot) {
       const journal = JSON.parse(await readFile(journalPath, 'utf8'));
       if (!['editing', 'pending'].includes(journal.status)) continue;
       const files = (journal.touched ?? [])
-        .map((entry) => (entry?.key ? `${entry.key}/${entry.relative ?? ''}` : entry?.relative))
+        .map((entry) => (entry?.relative ? (entry.key ? `${entry.key}/${entry.relative}` : entry.relative) : null))
         .filter(Boolean);
       pending.push({
         runId: journal.runId ?? name,
