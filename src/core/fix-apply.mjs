@@ -1,9 +1,19 @@
+import { createHash } from 'node:crypto';
 import { chmod, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { clearProjectMethodIndexCache, normalizeFix, resolveFixTarget } from './fixes.mjs';
+import {
+  clearProjectMethodIndexCache,
+  normalizeFix,
+  resolveFixDestination,
+  resolveFixTarget,
+} from './fixes.mjs';
 
 function toFileEol(text, eol) {
   return String(text).replace(/\r\n/g, '\n').replace(/\n/g, eol);
+}
+
+function sha256(buffer) {
+  return createHash('sha256').update(buffer).digest('hex');
 }
 
 function countOccurrences(text, needle) {
@@ -43,13 +53,48 @@ async function atomicWrite(file, content) {
 export async function applyFix({ fix: rawFix, roots, backupPath }) {
   const fix = normalizeFix(rawFix);
   if (!fix) throw new Error('无效的修复建议');
+
+  if (fix.kind === 'create') {
+    if (!fix.content) throw new Error('新建文件的 content 不能为空');
+    const target = await resolveFixDestination(fix, roots);
+    if (target.error) throw new Error(target.error);
+    await mkdir(path.dirname(target.resolved), { recursive: true });
+    await writeFile(target.resolved, fix.content, 'utf8');
+    clearProjectMethodIndexCache();
+    return {
+      file: target.relative,
+      root: target.name,
+      line: 1,
+      bytes: Buffer.byteLength(fix.content, 'utf8'),
+      created: true,
+    };
+  }
+
+  if (fix.kind === 'delete') {
+    const target = await resolveFixTarget(fix, roots);
+    if (target.error) throw new Error(target.error);
+    const buffer = await readFile(target.resolved);
+    if (fix.baseHash && sha256(buffer) !== fix.baseHash) {
+      throw new Error('文件在诊断后已被修改，补丁基于旧版本；请重新诊断。');
+    }
+    await mkdir(path.dirname(backupPath), { recursive: true });
+    await writeFile(backupPath, buffer);
+    await rm(target.resolved);
+    clearProjectMethodIndexCache();
+    return { file: target.relative, root: target.name, line: 1, deleted: true };
+  }
+
   if (fix.kind !== 'edit') throw new Error('该建议没有可应用的代码修改');
   if (!fix.search) throw new Error('search 片段不能为空');
 
   const target = await resolveFixTarget(fix, roots);
   if (target.error) throw new Error(target.error);
 
-  const raw = await readFile(target.resolved, 'utf8');
+  const buffer = await readFile(target.resolved);
+  if (fix.baseHash && sha256(buffer) !== fix.baseHash) {
+    throw new Error('文件在诊断后已被修改，补丁基于旧版本；请重新诊断或手动合并。');
+  }
+  const raw = buffer.toString('utf8');
   const eol = raw.includes('\r\n') ? '\r\n' : '\n';
   const search = toFileEol(fix.search, eol);
   const replace = toFileEol(fix.replace, eol);
@@ -63,7 +108,7 @@ export async function applyFix({ fix: rawFix, roots, backupPath }) {
   const next = `${raw.slice(0, index)}${replace}${raw.slice(index + search.length)}`;
 
   await mkdir(path.dirname(backupPath), { recursive: true });
-  await writeFile(backupPath, raw, 'utf8');
+  await writeFile(backupPath, buffer);
   await atomicWrite(target.resolved, next);
   clearProjectMethodIndexCache();
 
@@ -87,6 +132,29 @@ export async function applyFix({ fix: rawFix, roots, backupPath }) {
 export async function revertFix({ fix: rawFix, roots, backupPath }) {
   const fix = normalizeFix(rawFix);
   if (!fix) throw new Error('无效的修复建议');
+
+  if (fix.kind === 'create') {
+    const target = await resolveFixTarget(fix, roots);
+    if (target.error) throw new Error(target.error);
+    const current = await readFile(target.resolved, 'utf8');
+    if (current.replace(/\r\n/g, '\n') !== String(fix.content ?? '').replace(/\r\n/g, '\n')) {
+      throw new Error('新建文件在应用后被修改，拒绝自动删除。');
+    }
+    await rm(target.resolved);
+    clearProjectMethodIndexCache();
+    return { file: target.relative, root: target.name, deleted: true };
+  }
+
+  if (fix.kind === 'delete') {
+    const target = await resolveFixDestination(fix, roots);
+    if (target.error) throw new Error(target.error);
+    const backup = await readFile(backupPath);
+    await mkdir(path.dirname(target.resolved), { recursive: true });
+    await writeFile(target.resolved, backup);
+    clearProjectMethodIndexCache();
+    return { file: target.relative, root: target.name, restored: true };
+  }
+
   const target = await resolveFixTarget(fix, roots);
   if (target.error) throw new Error(target.error);
 

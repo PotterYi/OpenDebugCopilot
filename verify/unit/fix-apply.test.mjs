@@ -123,3 +123,51 @@ test('applies and reverts a fix in an authorized additional backend root', async
     /未授权|无效/,
   );
 });
+
+test('creates a new file and reverts by deleting it', async (t) => {
+  const { backend, roots } = await fixture(t);
+  const createdFile = 'com/demo/NewService.java';
+  const content = 'package com.demo;\n\npublic class NewService {\n}\n';
+  const create = {
+    summary: '新增服务',
+    kind: 'create',
+    root: 'backend',
+    file: createdFile,
+    content,
+  };
+  const target = path.join(backend, createdFile);
+  const backupPath = path.join(TMP, 'backups', 'create.orig');
+  const applied = await applyFix({ fix: create, roots, backupPath });
+  assert.equal(applied.created, true);
+  assert.equal(await readFile(target, 'utf8'), content);
+  await revertFix({ fix: create, roots, backupPath });
+  await assert.rejects(stat(target), /ENOENT/);
+});
+
+test('deletes a file and restores it on revert', async (t) => {
+  const { file, roots } = await fixture(t);
+  const { createHash } = await import('node:crypto');
+  const baseHash = createHash('sha256').update(await readFile(file)).digest('hex');
+  const remove = {
+    summary: '删除旧文件',
+    kind: 'delete',
+    root: 'backend',
+    file: FILE,
+    baseHash,
+  };
+  const backupPath = path.join(TMP, 'backups', 'delete.orig');
+  const applied = await applyFix({ fix: remove, roots, backupPath });
+  assert.equal(applied.deleted, true);
+  await assert.rejects(stat(file), /ENOENT/);
+  await revertFix({ fix: remove, roots, backupPath });
+  assert.equal(await readFile(file, 'utf8'), ORIGINAL);
+});
+
+test('refuses to apply a patch when the base hash no longer matches', async (t) => {
+  const { roots } = await fixture(t);
+  const stale = { ...fix, baseHash: 'not-the-current-hash' };
+  await assert.rejects(
+    applyFix({ fix: stale, roots, backupPath: path.join(TMP, 'backups', 'stale.orig') }),
+    /文件在诊断后已被修改/,
+  );
+});

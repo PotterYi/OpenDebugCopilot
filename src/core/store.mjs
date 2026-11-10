@@ -18,6 +18,7 @@ export const DEFAULT_WORKSPACE = Object.freeze({
     maxTurns: 60,
     maxBudgetUsd: null,
     timeoutMs: 600000,
+    toolMode: 'sandbox',
   },
   window: { beforeMs: 3000, afterMs: 2000 },
 });
@@ -51,6 +52,11 @@ export function validateWorkspace(value) {
         maxTurns: Number.isFinite(maxTurns) && maxTurns > 0 ? Math.floor(maxTurns) : null,
         maxBudgetUsd: Number.isFinite(maxBudget) && maxBudget > 0 ? maxBudget : null,
         timeoutMs: Number.isFinite(timeout) && timeout > 0 ? Math.floor(timeout) : DEFAULT_WORKSPACE.agent.timeoutMs,
+        toolMode: (() => {
+          if (['readonly', 'sandbox', 'full'].includes(raw.toolMode)) return raw.toolMode;
+          // Legacy boolean: sandbox=false meant read-only.
+          return raw.sandbox === false ? 'readonly' : 'sandbox';
+        })(),
       };
     })(),
     frontendSourceRoot: String(value.frontendSourceRoot ?? ''),

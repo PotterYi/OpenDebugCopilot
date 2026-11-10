@@ -10,7 +10,7 @@ const DEFAULT_MAX_RESULT_BYTES = 32 * 1024;
 const DEFAULT_READ_LINES = 200;
 
 /** Tool definitions exposed to the agent (MCP-shaped). */
-export function toolSpecs({ databases = [] } = {}) {
+export function toolSpecs({ databases = [], runCommand = null } = {}) {
   return [
     {
       name: 'get_logs',
@@ -91,6 +91,21 @@ export function toolSpecs({ databases = [] } = {}) {
         additionalProperties: false,
       },
     },
+    ...(runCommand
+      ? [{
+          name: 'run_command',
+          description: 'Run an allowed build/test command inside the isolated sandbox (Maven/Gradle/npm/tsc/Python/Go/etc.). Use it to compile and run tests after editing sandbox files. Shell chaining and environment-changing commands are rejected.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              command: { type: 'string' },
+              cwd: { type: 'string' },
+            },
+            required: ['command'],
+            additionalProperties: false,
+          },
+        }]
+      : []),
     ...(databases.length > 0
       ? [{
           name: 'query_db',
@@ -140,6 +155,7 @@ export function toolSpecs({ databases = [] } = {}) {
  *   activeDatabaseId?: string | null,
  *   approveWrite?: (input: { connection: any, sql: string }) => Promise<boolean>,
  *   databaseConnect?: Function,
+ *   runCommand?: ((input: { command: string, cwd?: string }) => Promise<any>) | null,
  *   window?: { beforeMs: number, afterMs: number },
  *   limitBytes?: number,
  *   onCall?: (event: { id: number, stage: 'start'|'done', name: string, error?: boolean, durationMs?: number }) => void
@@ -157,6 +173,7 @@ export function createTools({
   activeDatabaseId = null,
   approveWrite = null,
   databaseConnect = undefined,
+  runCommand = null,
   window,
   limitBytes = DEFAULT_MAX_RESULT_BYTES,
   onCall = null,
@@ -424,11 +441,20 @@ export function createTools({
         throw error;
       }
     }, args),
+
+    ...(runCommand
+      ? {
+          run_command: (args = {}) => safe('run_command', async () => {
+            const result = await runCommand({ command: args.command, cwd: args.cwd });
+            return result;
+          }, args),
+        }
+      : {}),
   };
 
   return {
     tools,
-    specs: toolSpecs({ databases: databaseConnections }),
+    specs: toolSpecs({ databases: databaseConnections, runCommand }),
     spillDir,
     dbQueryDir,
     dbQueries,

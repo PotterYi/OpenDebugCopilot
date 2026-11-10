@@ -61,6 +61,10 @@ export const api = {
     if (!dc?.invoke) return { pending: true };
     return dc.invoke('dc:browser', { action, ...payload });
   },
+  async element(action, payload = {}) {
+    if (!dc?.invoke) return { pending: true };
+    return dc.invoke('dc:element', { action, ...payload });
+  },
   async capture(action, payload = {}) {
     if (!dc?.invoke) return action === 'list' ? { requests: [] } : { pending: true };
     return dc.invoke('dc:capture', { action, ...payload });
@@ -116,6 +120,10 @@ export const api = {
   onCapture(handler) {
     if (!dc?.on) return () => {};
     return dc.on('dc:capture:event', handler);
+  },
+  onElementEvent(handler) {
+    if (!dc?.on) return () => {};
+    return dc.on('dc:element:event', handler);
   },
   onDevServer(handler) {
     if (!dc?.on) return () => {};

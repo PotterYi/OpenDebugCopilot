@@ -11,13 +11,20 @@ import { startLocalProxy } from './local-proxy.mjs';
 import { createDevServerManager, killProcessTreeSync } from './dev-server.mjs';
 import { applyFix, revertFix } from '../../core/fix-apply.mjs';
 import { buildFixPreviews } from '../../core/fixes.mjs';
-import { validateFixes } from '../../core/fix-validation.mjs';
+import { detectCompileCommands, validateFixes } from '../../core/fix-validation.mjs';
+import {
+  cleanupAgentSandbox,
+  createAgentSandbox,
+  createSandboxCommandRunner,
+  extractSandboxFixes,
+  sandboxPromptFor,
+} from '../../core/agent-sandbox.mjs';
 import { buildReport, renderMarkdown } from '../../report/report.mjs';
 import { resolveFrontendProjectRoot } from '../../core/frontend-service.mjs';
 import { runVerifyCommand } from './verify-command.mjs';
 import { createTools } from '../../tools/index.mjs';
 import { readLogs } from '../../evidence/logs.mjs';
-import { runCaptureDiagnosis } from '../../diagnose/run.mjs';
+import { runCaptureDiagnosis, runElementDiagnosis } from '../../diagnose/run.mjs';
 import { createMockAgent } from '../../agent/mock.mjs';
 import { createClaudeAgent } from '../../agent/claude.mjs';
 import { getLogFile, log, setLogFile } from '../../core/logger.mjs';
@@ -134,10 +141,28 @@ async function loadRunFix(service, runId, fixIndex) {
   return { ...context, fix: context.fixes[fixIndex] };
 }
 
-function agentOptionsFromWorkspace(workspace = {}) {
+function agentToolMode(workspace = {}) {
+  const mode = workspace.agent?.toolMode;
+  if (['readonly', 'sandbox', 'full'].includes(mode)) return mode;
+  return workspace.agent?.sandbox === false ? 'readonly' : 'sandbox';
+}
+
+function agentOptionsFromWorkspace(workspace = {}, { extraSourceRoots = [] } = {}) {
   const agent = workspace.agent ?? {};
+  const roots = new Set();
+  const addRoot = (value) => {
+    const text = String(value ?? '').trim();
+    if (text) roots.add(path.resolve(ROOT, text));
+  };
+  addRoot(workspace.sourceRoot);
+  addRoot(workspace.frontendSourceRoot);
+  addRoot(workspace.frontendProjectRoot);
+  for (const root of extraSourceRoots) addRoot(root?.root ?? root);
+  const sourceRoot = workspace.sourceRoot ? path.resolve(ROOT, workspace.sourceRoot) : undefined;
+  const fallbackRoot = [...roots][0];
   return {
-    cwd: workspace.sourceRoot ? path.resolve(ROOT, workspace.sourceRoot) : undefined,
+    cwd: sourceRoot ?? fallbackRoot,
+    allowedRoots: [...roots],
     model: agent.model || undefined,
     maxTurns: agent.maxTurns,
     maxBudgetUsd: agent.maxBudgetUsd ?? undefined,
@@ -195,6 +220,41 @@ function createWriteApprover(event) {
       message: `即将在 ${connection?.name ?? connection?.id ?? '测试库'} 执行写操作`,
       detail: `${target}\n\n${sql}\n\n该操作会直接修改测试数据库。`,
     });
+  };
+}
+
+/** Per-action confirmation for full-permission Edit/Write/Bash. */
+function createToolApprover(event) {
+  const parent = BrowserWindow.fromWebContents(event.sender) ?? mainWindow;
+  let queue = Promise.resolve();
+  return (request) => {
+    const next = queue.then(async () => {
+      if (smoke) return false;
+      const toolName = request?.toolName ?? '工具';
+      const input = request?.input ?? {};
+      let message;
+      let detail;
+      if (toolName === 'Bash') {
+        message = 'AI 请求执行命令';
+        detail = String(input.command ?? '');
+      } else {
+        message = toolName === 'Write' ? 'AI 请求写入文件' : 'AI 请求修改文件';
+        detail = [
+          String(input.file_path ?? ''),
+          '',
+          toolName === 'Write'
+            ? String(input.content ?? '').slice(0, 3000)
+            : `- ${String(input.old_string ?? '').slice(0, 1200)}\n+ ${String(input.new_string ?? '').slice(0, 1200)}`,
+        ].join('\n');
+      }
+      return confirmFixDialog(parent, {
+        title: '确认 AI 操作',
+        message,
+        detail: detail || '(无详情)',
+      });
+    });
+    queue = next.catch(() => false);
+    return next;
   };
 }
 
@@ -290,7 +350,7 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
       if (payload.action === 'apply-all') {
         const targets = fixes
           .map((fix, index) => ({ fix, index }))
-          .filter(({ fix }) => fix?.kind === 'edit'
+          .filter(({ fix }) => ['edit', 'create', 'delete'].includes(fix?.kind)
             && fix.preview?.status === 'ready'
             && !(fix.applied && !fix.applied.revertedAt));
         if (targets.length === 0) return { ok: true, applied: 0, fixes };
@@ -565,6 +625,21 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
     }
   });
 
+  handle('dc:element', async (_event, payload = {}) => {
+    const host = getHost();
+    if (!host) throw new Error('browser host is not ready');
+    switch (payload.action) {
+      case 'start':
+        await host.startElementPick();
+        return { ok: true };
+      case 'cancel':
+        await host.cancelElementPick();
+        return { ok: true };
+      default:
+        throw new Error(`dc:element: unknown action ${payload.action}`);
+    }
+  });
+
   handle('dc:logs', async (_event, payload = {}) => {
     if (payload.action === 'pick') {
       const result = await dialog.showOpenDialog({
@@ -623,10 +698,14 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
     if (!host) throw new Error('browser host is not ready');
     const workspace = (await service.getConfig()).workspace;
 
+    const element = payload.element && typeof payload.element === 'object' ? payload.element : null;
     let observation;
     let frontendErrors;
 
-    if (payload.consoleId) {
+    if (element) {
+      observation = null;
+      frontendErrors = [];
+    } else if (payload.consoleId) {
       const event = host.listConsole({ limit: 200 }).find((item) => String(item.id) === String(payload.consoleId));
       if (!event) throw new Error(`console error not found: ${payload.consoleId}`);
       const pageUrl = host.status().url;
@@ -679,18 +758,29 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
       frontendErrors = host.listConsole({ limit: 20 });
     }
 
+    const toolMode = agentToolMode(workspace);
     const agent = payload.mock === true || smoke
       ? createMockAgent()
-      : createClaudeAgent(agentOptionsFromWorkspace(workspace));
+      : createClaudeAgent({
+        ...agentOptionsFromWorkspace(workspace, {
+          extraSourceRoots: payload.allowExtraSources === true ? (workspace.extraSourceRoots ?? []) : [],
+        }),
+        // Fail closed: sandbox config is applied only after the isolated copy
+        // exists. Full mode is the only mode constructed with write access.
+        toolMode: toolMode === 'full' ? 'full' : 'readonly',
+        approval: createToolApprover(event),
+      });
 
     const targetRequestId = payload.requestId != null ? String(payload.requestId) : null;
     const targetConsoleId = payload.consoleId != null ? String(payload.consoleId) : null;
+    const targetElementId = element?.id != null ? String(element.id) : null;
     const sendProgress = (progress) => {
       if (!event.sender.isDestroyed()) {
         event.sender.send('dc:diagnose:progress', {
           ...progress,
           requestId: targetRequestId,
           consoleId: targetConsoleId,
+          elementId: targetElementId,
         });
       }
     };
@@ -701,21 +791,24 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
       log.warn('[db] database config unreadable; diagnosis continues without db tools:', error?.message ?? error);
     }
     try {
-      return await runCaptureDiagnosis(observation, {
+      const options = {
         workspace,
         root: ROOT,
         runsDir: service.runsRoot,
         question: payload.question ?? '',
         recheck: payload.recheck ?? 1,
         agent,
-        frontendErrors,
         allowExtraSources: payload.allowExtraSources === true,
         databases: databaseConfig.connections,
         activeDatabaseId: databaseConfig.activeId,
         approveWrite: createWriteApprover(event),
         verifyCommand: workspace.verifyCommand ?? '',
+        sandbox: toolMode === 'sandbox',
         onProgress: sendProgress,
-      });
+      };
+      return element
+        ? await runElementDiagnosis(element, options)
+        : await runCaptureDiagnosis(observation, { ...options, frontendErrors });
     } catch (error) {
       sendProgress({
         id: 'error',
@@ -733,6 +826,7 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
       if (!event.sender.isDestroyed()) event.sender.send('dc:followup:progress', progress);
     };
     sendProgress({ id: 'prepare', label: '整理上一轮诊断', status: 'start' });
+    let followSandbox = null;
     try {
       const question = String(payload.question ?? '').trim();
       if (!question) throw new Error('请输入继续诊断的内容');
@@ -743,10 +837,66 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
       sendProgress({ id: 'prepare', label: '整理上一轮诊断', status: 'done' });
 
       const workspace = (await service.getConfig()).workspace;
+      const runDir = path.join(service.runsRoot, runId);
+      const toolMode = agentToolMode(workspace);
       const agent = payload.mock === true || smoke
         ? createMockAgent()
-        : createClaudeAgent(agentOptionsFromWorkspace(workspace));
+        : createClaudeAgent({
+          ...agentOptionsFromWorkspace(workspace, {
+            extraSourceRoots: result.meta?.logContext?.extraSourceRoots ?? [],
+          }),
+          toolMode: toolMode === 'full' ? 'full' : 'readonly',
+          approval: createToolApprover(event),
+        });
       if (typeof agent.followUp !== 'function') throw new Error('当前 Agent 不支持继续诊断');
+
+      let followRunCommand = null;
+      if (toolMode === 'sandbox'
+        && agent.id !== 'mock'
+        && typeof agent.configureScope === 'function') {
+        const fixRoots = result.meta?.fixRoots ?? {};
+        const sandboxRoots = [
+          fixRoots.sourceRoot ? { key: 'backend', name: 'backend', root: fixRoots.sourceRoot } : null,
+          fixRoots.frontendSourceRoot
+            ? { key: 'frontend', name: 'frontend', root: fixRoots.frontendSourceRoot }
+            : null,
+          ...(fixRoots.extraSourceRoots ?? []).map((entry) => ({
+            key: 'extra',
+            extraRoot: entry.id,
+            name: `extra-${entry.id}`,
+            root: entry.root,
+          })),
+        ].filter(Boolean);
+        sendProgress({ id: 'sandbox', label: '创建隔离沙箱', status: 'start' });
+        try {
+          followSandbox = await createAgentSandbox({ runDir, roots: sandboxRoots });
+          agent.configureScope({
+            cwd: followSandbox.dir,
+            allowedRoots: followSandbox.roots.map((entry) => entry.sandboxRoot),
+            toolMode: 'sandbox',
+            systemPromptSuffix: sandboxPromptFor(followSandbox),
+          });
+          followRunCommand = createSandboxCommandRunner({
+            sandbox: followSandbox,
+            verifyCommand: workspace.verifyCommand ?? '',
+            workspace,
+          });
+          sendProgress({ id: 'sandbox', label: '沙箱已就绪，开放编辑与测试', status: 'done' });
+        } catch (error) {
+          followSandbox = null;
+          followRunCommand = null;
+          if (typeof agent.configureScope === 'function') {
+            agent.configureScope({ toolMode: 'readonly', systemPromptSuffix: '' });
+          }
+          sendProgress({
+            id: 'sandbox',
+            label: '沙箱创建失败，退回只读模式',
+            status: 'error',
+            detail: error?.message ?? String(error),
+          });
+          log.warn('[sandbox] follow-up sandbox failed:', error?.message ?? error);
+        }
+      }
 
       let followTools = null;
       const logContext = result.meta?.logContext;
@@ -760,6 +910,7 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
           read: '读取工具结果',
           query_db: '查询数据库',
           write_db: '写入数据库',
+          run_command: '运行编译/测试',
         };
         let databaseConfig = { activeId: null, connections: [] };
         try {
@@ -796,6 +947,7 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
           databases: followDatabases,
           activeDatabaseId: logContext.activeDatabaseId ?? databaseConfig.activeId,
           approveWrite: createWriteApprover(event),
+          runCommand: followRunCommand,
           window: followWindow,
           onCall: (call) => sendProgress({
             id: `tool-${call.id}`,
@@ -809,21 +961,90 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
       }
 
       sendProgress({ id: 'agent', label: 'AI 正在继续分析', status: 'start' });
-      const follow = await agent.followUp({ question, previous: result, tools: followTools });
+      const builtinToolLabels = {
+        Read: '读取文件',
+        Grep: '搜索项目引用',
+        Glob: '查找项目文件',
+        Edit: '修改沙箱文件',
+        Write: '写入沙箱文件',
+      };
+      const follow = await agent.followUp({
+        question,
+        previous: result,
+        tools: followTools,
+        onToolUse: (tool) => {
+          if (!tool?.id) return;
+          const label = builtinToolLabels[tool.name] ?? tool.name;
+          sendProgress({
+            id: `builtin-${tool.id}`,
+            label: tool.stage === 'start' ? `${label}…` : label,
+            status: tool.stage === 'start' ? 'start' : tool.isError ? 'error' : 'done',
+            detail: tool.name,
+          });
+        },
+      });
       sendProgress({
         id: 'agent',
         label: follow.incomplete ? 'AI 未完成，已保留部分回复' : 'AI 已给出本轮回复',
         status: follow.incomplete ? 'error' : 'done',
       });
+      const usedFollowSandbox = Boolean(followSandbox);
+      let followFixes = follow.fixes;
+      if (followSandbox) {
+        try {
+          const extracted = await extractSandboxFixes(followSandbox);
+          followFixes = extracted.fixes;
+          if (extracted.skipped.length > 0) {
+            follow.needsMoreInfo = [
+              ...(follow.needsMoreInfo ?? []),
+              `沙箱中有 ${extracted.skipped.length} 个变更未能自动提取（新增/删除/大文件），请手动检查。`,
+            ];
+          }
+          sendProgress({
+            id: 'sandbox',
+            label: `沙箱修改 ${extracted.changedFiles.length} 个文件`,
+            status: 'done',
+          });
+        } catch (error) {
+          followFixes = [];
+          follow.needsMoreInfo = [
+            ...(follow.needsMoreInfo ?? []),
+            `沙箱修改提取失败，已隐藏修改建议：${error?.message ?? error}`,
+          ];
+          sendProgress({
+            id: 'sandbox',
+            label: '沙箱修改提取失败',
+            status: 'error',
+            detail: error?.message ?? String(error),
+          });
+        } finally {
+          await cleanupAgentSandbox(followSandbox);
+          followSandbox = null;
+        }
+      }
+
+      let staticChecks = 'strict';
+      if (usedFollowSandbox || toolMode === 'full') {
+        const commands = await detectCompileCommands({
+          roots: result.meta?.fixRoots ?? {},
+          verifyCommand: workspace.verifyCommand ?? '',
+          workspace,
+          projectRoot: ROOT,
+        }).catch(() => []);
+        if (commands.length > 0) staticChecks = 'warn';
+      }
       sendProgress({ id: 'preview', label: '生成修复预览', status: 'start' });
       const followAgent = {
         ...follow,
-        fixes: await buildFixPreviews(follow.fixes, result.meta?.fixRoots ?? {}),
+        fixes: await buildFixPreviews(followFixes, {
+          ...(result.meta?.fixRoots ?? {}),
+          staticChecks,
+        }),
       };
       sendProgress({ id: 'preview', label: '生成修复预览', status: 'done' });
 
       const editableFixes = (followAgent.fixes ?? [])
-        .filter((fix) => fix?.kind === 'edit' && fix?.preview?.status === 'ready');
+        .filter((fix) => ['edit', 'create', 'delete'].includes(fix?.kind) && fix?.preview?.status === 'ready');
       if (editableFixes.length > 0) {
         sendProgress({ id: 'selfcheck', label: '编译自测修改后的代码', status: 'start' });
         let validation;
@@ -923,7 +1144,6 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
     result.followUps.push({ question, at, agent: followAgent });
     result.agent = followAgent;
 
-    const runDir = path.join(service.runsRoot, runId);
     await writeJsonAtomic(path.join(runDir, 'result.json'), result);
     await writeFile(path.join(runDir, 'report.md'), renderMarkdown(buildReport(result)), 'utf8');
     await appendFile(
@@ -935,6 +1155,10 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
     sendProgress({ id: 'done', label: '继续诊断完成', status: 'done' });
     return { runId, result };
     } catch (error) {
+      if (followSandbox) {
+        await cleanupAgentSandbox(followSandbox);
+        followSandbox = null;
+      }
       sendProgress({
         id: 'error',
         label: '继续诊断失败',
@@ -1206,6 +1430,53 @@ async function runSmoke(window, host) {
       })()`);
     }
 
+    let elementUi = null;
+    if (smokeUrl && process.argv.includes('--smoke-element')) {
+      try {
+        await host.startElementPick();
+        const documentNode = await host.sendCdp('DOM.getDocument', { depth: 0 });
+        const queried = await host.sendCdp('DOM.querySelector', {
+          nodeId: documentNode.root.nodeId,
+          selector: 'body',
+        });
+        const described = await host.sendCdp('DOM.describeNode', { nodeId: queried.nodeId });
+        await host.handleElementPicked(described.node.backendNodeId);
+        elementUi = await host.view.webContents.executeJavaScript(`(() => {
+          const host = document.getElementById('__dc-element-diagnose__');
+          return {
+            overlay: Boolean(host),
+            panel: Boolean(host?.shadowRoot?.querySelector('.panel')),
+            hasInput: Boolean(host?.shadowRoot?.querySelector('textarea')),
+          };
+        })()`);
+        if (!elementUi?.overlay && host.elementLastError) elementUi.error = host.elementLastError;
+        elementUi.screenshot = host.elementScreenshots.size > 0;
+        elementUi.screenshotError = host.elementLastScreenshotError;
+        if (elementUi?.overlay) {
+          await host.view.webContents.executeJavaScript(`(() => {
+            const host = document.getElementById('__dc-element-diagnose__');
+            const shadow = host?.shadowRoot;
+            const input = shadow?.querySelector('textarea');
+            if (!input) return false;
+            input.value = '元素显示异常';
+            shadow.querySelector('.go')?.click();
+            return true;
+          })()`);
+          await new Promise((resolve) => setTimeout(resolve, 800));
+          const runs = await window.webContents.executeJavaScript(
+            `window.dc.invoke('dc:runs', { action: 'list' })`,
+          );
+          const elementRun = (runs?.runs ?? [])
+            .find((run) => String(run.scenario).startsWith('element-'));
+          elementUi.runScenario = elementRun?.scenario ?? null;
+          elementUi.runId = elementRun?.runId ?? null;
+        }
+        await host.cancelElementPick();
+      } catch (error) {
+        elementUi = { error: String(error?.message ?? error) };
+      }
+    }
+
     // The database entry must sit in the application menu, immediately before
     // "模型", and open the settings modal.
     const menuLabels = Menu.getApplicationMenu()?.items?.map((item) => item.label) ?? [];
@@ -1258,6 +1529,7 @@ async function runSmoke(window, host) {
         model: model?.value ?? null,
         maxTurns: maxTurns?.value ?? null,
         timeoutSeconds: timeout?.value ?? null,
+        toolMode: document.getElementById('model-tool-mode')?.value ?? null,
       };
       model.value = '__custom__';
       model.dispatchEvent(new Event('change', { bubbles: true }));
@@ -1265,6 +1537,7 @@ async function runSmoke(window, host) {
       model.value = 'claude-sonnet-5';
       model.dispatchEvent(new Event('change', { bubbles: true }));
       const customHidden = customRow?.hidden === true;
+      document.getElementById('model-tool-mode').value = 'full';
       if (timeout) timeout.value = '900';
       document.getElementById('model-save')?.click();
       const deadline = Date.now() + 3000;
@@ -1290,6 +1563,7 @@ async function runSmoke(window, host) {
       diagnose,
       diagnoseUi,
       consoleDiagnose,
+      elementUi,
       pageTitle,
       menuHasLog: Boolean(Menu.getApplicationMenu()?.items?.some((item) => item.label === '日志')),
       menuHasDatabase: databaseMenuIndex >= 0,
@@ -1530,7 +1804,12 @@ async function bootstrap() {
           // ignore invalid navigation URLs
         }
       }
-      if (!window.isDestroyed()) window.webContents.send('dc:capture:event', event);
+      if (!window.isDestroyed()) {
+        if (String(event.type).startsWith('element-')) {
+          window.webContents.send('dc:element:event', event);
+        }
+        window.webContents.send('dc:capture:event', event);
+      }
     },
   });
   router = new Router({

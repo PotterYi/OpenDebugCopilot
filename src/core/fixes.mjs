@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readFile, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { walkSourceFiles } from '../evidence/source.mjs';
@@ -268,7 +269,20 @@ export function normalizeFix(item) {
   if (typeof item === 'string') {
     const summary = clean(item);
     return summary
-      ? { summary, kind: 'text', root: null, extraRoot: null, file: '', search: '', replace: '', risk: null, verification: '', note: '' }
+      ? {
+          summary,
+          kind: 'text',
+          root: null,
+          extraRoot: null,
+          file: '',
+          search: '',
+          replace: '',
+          content: '',
+          baseHash: null,
+          risk: null,
+          verification: '',
+          note: '',
+        }
       : null;
   }
   if (!item || typeof item !== 'object' || Array.isArray(item)) return null;
@@ -277,9 +291,13 @@ export function normalizeFix(item) {
   const file = clean(item.file, 500);
   const search = cleanBlock(item.search);
   const replace = cleanBlock(item.replace);
-  const kind = search || replace ? 'edit' : 'text';
+  const content = cleanBlock(item.content);
+  let kind = 'text';
+  if (item.kind === 'create' && file) kind = 'create';
+  else if (item.kind === 'delete' && file) kind = 'delete';
+  else if (item.kind === 'edit' || search || replace) kind = 'edit';
   const root = ['frontend', 'backend', 'extra'].includes(item.root) ? item.root : null;
-  const risk = FIX_RISKS.includes(item.risk) ? item.risk : kind === 'edit' ? 'medium' : null;
+  const risk = FIX_RISKS.includes(item.risk) ? item.risk : kind === 'text' ? null : 'medium';
   if (!summary && !file) return null;
 
   return {
@@ -290,6 +308,8 @@ export function normalizeFix(item) {
     file,
     search,
     replace,
+    content,
+    baseHash: clean(item.baseHash, 128) || null,
     risk,
     verification: clean(item.verification, 1000),
     note: clean(item.note, 1000),
@@ -393,12 +413,84 @@ export async function resolveFixTarget(item, {
   return { ...existing[0], relative: relative };
 }
 
+/**
+ * Resolve the destination of a new file. The path must be inside a configured
+ * root and must not exist yet.
+ */
+export async function resolveFixDestination(item, {
+  sourceRoot = null,
+  frontendSourceRoot = null,
+  extraSourceRoots = [],
+} = {}) {
+  const fix = normalizeFix(item);
+  if (!fix) return { error: '无效的修复建议' };
+  if (!fix.file) return { error: '修复建议没有指定文件' };
+  if (path.isAbsolute(fix.file)) return { error: '文件路径必须是相对路径' };
+
+  const relative = fix.file.replace(/\\/g, '/');
+  const candidates = [];
+  const add = (name, root, extraRoot = null) => {
+    if (!root) return;
+    const resolved = path.resolve(root, relative);
+    if (!isInside(root, resolved)) {
+      candidates.push({ name, root, extraRoot, outside: true });
+      return;
+    }
+    candidates.push({ name, root, extraRoot, resolved });
+  };
+
+  if (fix.root === 'backend') add('backend', sourceRoot);
+  else if (fix.root === 'frontend') add('frontend', frontendSourceRoot);
+  else if (fix.root === 'extra') {
+    const list = Array.isArray(extraSourceRoots) ? extraSourceRoots : [];
+    const matched = list.find((entry) => entry.id === fix.extraRoot);
+    if (!matched) return { error: '其他后端源码未授权或 extraRoot 无效，无法生成预览' };
+    add('extra', matched.root, matched.id);
+  } else {
+    add('backend', sourceRoot);
+    add('frontend', frontendSourceRoot);
+  }
+
+  if (candidates.length === 0) return { error: '未配置后端/前端源码目录，无法生成预览' };
+  if (candidates.some((candidate) => candidate.outside)) {
+    return { error: `文件路径越出源码目录：${fix.file}` };
+  }
+  const missing = [];
+  for (const candidate of candidates) {
+    const kind = await pathKind(candidate.resolved);
+    if (kind !== null) return { error: `目标文件已存在：${fix.file}` };
+    let parent = path.dirname(candidate.resolved);
+    let safeParent = false;
+    for (;;) {
+      if (await pathKind(parent)) {
+        const [realRoot, realParent] = await Promise.all([
+          realpath(candidate.root).catch(() => null),
+          realpath(parent).catch(() => null),
+        ]);
+        safeParent = Boolean(realRoot && realParent && isInside(realRoot, realParent));
+        break;
+      }
+      const next = path.dirname(parent);
+      if (next === parent) break;
+      parent = next;
+    }
+    if (!safeParent) return { error: `新建文件路径通过符号链接越出源码目录：${fix.file}` };
+    missing.push(candidate);
+  }
+  if (missing.length === 0) return { error: `目标文件已存在：${fix.file}` };
+  if (missing.length > 1) {
+    return { error: `同一相对路径可同时创建于后端和前端源码目录，请在修复建议中指定 root：${fix.file}` };
+  }
+  return { ...missing[0], relative };
+}
+
 async function readText(file) {
   const info = await stat(file);
   if (!info.isFile()) throw new Error('目标不是文件');
   if (info.size > MAX_FILE_BYTES) throw new Error('文件超过 2MB，拒绝预览');
-  const raw = await readFile(file, 'utf8');
-  return raw.replace(/^﻿/, '').replace(/\r\n/g, '\n');
+  const buffer = await readFile(file);
+  const text = buffer.toString('utf8').replace(/^﻿/, '').replace(/\r\n/g, '\n');
+  return { text, hash: createHash('sha256').update(buffer).digest('hex') };
 }
 
 function countOccurrences(text, needle) {
@@ -498,6 +590,27 @@ function buildPatch({ file, line, search, replace, text }) {
   ].join('\n');
 }
 
+function buildCreatePatch(file, content) {
+  const lines = String(content ?? '').replace(/\r\n/g, '\n').split('\n');
+  if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+  return [
+    '--- /dev/null',
+    `+++ b/${file}`,
+    `@@ -0,0 +1,${lines.length} @@`,
+    ...lines.map((line) => `+${line}`),
+  ].join('\n');
+}
+
+function buildDeletePatch(file, text) {
+  const lines = splitLines(text);
+  return [
+    `--- a/${file}`,
+    '+++ /dev/null',
+    `@@ -1,${lines.length} +0,0 @@`,
+    ...lines.map((line) => `-${line}`),
+  ].join('\n');
+}
+
 /**
  * Build a read-only diff preview for a structured fix. Never writes files.
  *
@@ -512,27 +625,98 @@ export async function buildFixPreview(item, {
   sourceRoot = null,
   frontendSourceRoot = null,
   extraSourceRoots = [],
+  staticChecks = 'strict',
 } = {}) {
   const fix = normalizeFix(item);
   if (!fix) return null;
-  if (fix.kind !== 'edit') {
+  const file = fix.file.replace(/\\/g, '/');
+  const roots = { sourceRoot, frontendSourceRoot, extraSourceRoots };
+
+  if (fix.kind === 'text') {
     return { ...fix, preview: { status: 'no-edit', message: '仅文字建议，未提供可预览的代码修改' } };
   }
+
+  if (fix.kind === 'create') {
+    if (!fix.content) {
+      return { ...fix, preview: { status: 'error', message: '新建文件的 content 不能为空' } };
+    }
+    const target = await resolveFixDestination(fix, roots);
+    if (target.error) return { ...fix, preview: { status: 'error', message: target.error } };
+    return {
+      ...fix,
+      root: target.name,
+      preview: {
+        status: 'ready',
+        line: 1,
+        patch: buildCreatePatch(file, fix.content),
+        message: '可预览（新建文件）',
+      },
+    };
+  }
+
+  if (fix.kind === 'delete') {
+    const target = await resolveFixTarget(fix, roots);
+    if (target.error) return { ...fix, preview: { status: 'error', message: target.error } };
+    let text;
+    let hash;
+    try {
+      ({ text, hash } = await readText(target.resolved));
+    } catch (error) {
+      return {
+        ...fix,
+        root: target.name,
+        preview: { status: 'error', message: `读取文件失败：${error?.message ?? error}` },
+      };
+    }
+    if (fix.baseHash && hash !== fix.baseHash) {
+      return {
+        ...fix,
+        root: target.name,
+        preview: {
+          status: 'error',
+          message: '文件在诊断后已被修改，不能安全删除；请重新诊断。',
+        },
+      };
+    }
+    return {
+      ...fix,
+      root: target.name,
+      preview: {
+        status: 'ready',
+        line: 1,
+        patch: buildDeletePatch(file, text),
+        message: '可预览（删除文件）',
+      },
+    };
+  }
+
   if (!fix.search) {
     return { ...fix, preview: { status: 'error', message: 'search 片段不能为空' } };
   }
 
-  const target = await resolveFixTarget(fix, { sourceRoot, frontendSourceRoot, extraSourceRoots });
+  const target = await resolveFixTarget(fix, roots);
   if (target.error) return { ...fix, preview: { status: 'error', message: target.error } };
 
   let text;
+  let hash;
   try {
-    text = await readText(target.resolved);
+    ({ text, hash } = await readText(target.resolved));
   } catch (error) {
     return {
       ...fix,
       root: target.name,
       preview: { status: 'error', message: `读取文件失败：${error?.message ?? error}` },
+    };
+  }
+
+  if (fix.baseHash && hash !== fix.baseHash) {
+    return {
+      ...fix,
+      root: target.name,
+      preview: {
+        status: 'error',
+        message: '文件在诊断后已被修改，补丁基于旧版本；请重新诊断或手动合并。',
+      },
     };
   }
 
@@ -557,28 +741,42 @@ export async function buildFixPreview(item, {
 
   const index = text.indexOf(fix.search);
   const updated = text.slice(0, index) + fix.replace + text.slice(index + fix.search.length);
-  const loggerIssue = inspectLoggerUsage({ original: text, updated, replacement: fix.replace });
-  if (loggerIssue) {
-    return { ...fix, root: target.name, preview: { status: 'error', message: loggerIssue } };
-  }
-
-  const missingMethodIssue = await inspectMissingMethods({
-    original: text,
-    updated,
-    replacement: fix.replace,
-    sourceRoot: target.root,
-  });
-  if (missingMethodIssue) {
-    return { ...fix, root: target.name, preview: { status: 'error', message: missingMethodIssue } };
+  const warnings = [];
+  if (staticChecks !== 'off') {
+    const loggerIssue = inspectLoggerUsage({ original: text, updated, replacement: fix.replace });
+    if (loggerIssue) {
+      if (staticChecks === 'strict') {
+        return { ...fix, root: target.name, preview: { status: 'error', message: loggerIssue } };
+      }
+      warnings.push(loggerIssue);
+    }
+    const missingMethodIssue = await inspectMissingMethods({
+      original: text,
+      updated,
+      replacement: fix.replace,
+      sourceRoot: target.root,
+    });
+    if (missingMethodIssue) {
+      if (staticChecks === 'strict') {
+        return { ...fix, root: target.name, preview: { status: 'error', message: missingMethodIssue } };
+      }
+      warnings.push(missingMethodIssue);
+    }
   }
 
   const line = text.slice(0, index).split('\n').length;
-  const file = fix.file.replace(/\\/g, '/');
   const patch = buildPatch({ file, line, search: fix.search, replace: fix.replace, text });
   return {
     ...fix,
     root: target.name,
-    preview: { status: 'ready', line, occurrences, patch, message: '可预览' },
+    preview: {
+      status: 'ready',
+      line,
+      occurrences,
+      patch,
+      message: warnings.length > 0 ? '可预览（有静态告警）' : '可预览',
+      ...(warnings.length > 0 ? { warnings } : {}),
+    },
   };
 }
 

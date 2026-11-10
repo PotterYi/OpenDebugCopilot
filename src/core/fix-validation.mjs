@@ -107,7 +107,7 @@ export async function resolveValidationCommands({
   workspace = {},
   projectRoot = process.cwd(),
 } = {}) {
-  const editFixes = fixes.filter((fix) => fix?.kind === 'edit' && fix?.preview?.status === 'ready');
+  const editFixes = fixes.filter((fix) => ['edit', 'create', 'delete'].includes(fix?.kind) && fix?.preview?.status === 'ready');
   if (editFixes.length === 0) return [];
 
   const backendRoots = [];
@@ -159,6 +159,39 @@ export async function resolveValidationCommands({
     .map((entry) => ({ ...entry, cwd: path.resolve(entry.cwd) }));
 }
 
+/** Detect which compile/test commands can run for the configured roots. */
+export async function detectCompileCommands({
+  roots = {},
+  verifyCommand = '',
+  workspace = {},
+  projectRoot = process.cwd(),
+} = {}) {
+  const fixes = [];
+  if (roots.sourceRoot) {
+    fixes.push({ kind: 'edit', preview: { status: 'ready' }, root: 'backend', file: 'placeholder' });
+  }
+  if (roots.frontendSourceRoot) {
+    fixes.push({ kind: 'edit', preview: { status: 'ready' }, root: 'frontend', file: 'placeholder' });
+  }
+  for (const entry of roots.extraSourceRoots ?? []) {
+    fixes.push({
+      kind: 'edit',
+      preview: { status: 'ready' },
+      root: 'extra',
+      extraRoot: entry.id,
+      file: 'placeholder',
+    });
+  }
+  if (fixes.length === 0) return [];
+  return resolveValidationCommands({
+    fixes,
+    roots,
+    verifyCommand,
+    workspace,
+    projectRoot,
+  });
+}
+
 function tail(text, max = MAX_RESULT_OUTPUT) {
   const value = String(text ?? '');
   return value.length > max ? value.slice(value.length - max) : value;
@@ -175,7 +208,7 @@ async function runValidation(options) {
     timeoutMs = DEFAULT_TIMEOUT_MS,
   } = options;
 
-  const editFixes = fixes.filter((fix) => fix?.kind === 'edit' && fix?.preview?.status === 'ready');
+  const editFixes = fixes.filter((fix) => ['edit', 'create', 'delete'].includes(fix?.kind) && fix?.preview?.status === 'ready');
   if (editFixes.length === 0) {
     return { status: 'skipped', ok: true, reason: '没有可应用的代码修改', commands: [], applied: 0 };
   }

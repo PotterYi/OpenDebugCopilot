@@ -4,8 +4,16 @@ import { AppError } from '../core/errors.mjs';
 import { newRunId } from '../core/ids.mjs';
 import { resolveScenarioPaths } from '../core/scenario.mjs';
 import { resolveFrontendSources } from '../evidence/frontend.mjs';
+import { collectElementEvidence } from '../evidence/element.mjs';
 import { buildFixPreviews } from '../core/fixes.mjs';
-import { validateFixes } from '../core/fix-validation.mjs';
+import { detectCompileCommands, validateFixes } from '../core/fix-validation.mjs';
+import {
+  cleanupAgentSandbox,
+  createAgentSandbox,
+  createSandboxCommandRunner,
+  extractSandboxFixes,
+  sandboxPromptFor,
+} from '../core/agent-sandbox.mjs';
 import { resolveFrontendProjectRoot } from '../core/frontend-service.mjs';
 import { fireScenario } from '../driver/index.mjs';
 import { readLogs, listThreads } from '../evidence/logs.mjs';
@@ -156,8 +164,43 @@ async function waitForMarker({ logfiles, parser, encoding, anchor, window, marke
   }
 }
 
-function evaluateGates(fired, agentResult) {
+function evaluateGates(fired, agentResult, element = null) {
   const refs = Array.isArray(agentResult?.evidenceRefs) ? agentResult.evidenceRefs : [];
+  const conclusionCheck = {
+    name: 'conclusion-present',
+    ok: typeof agentResult?.conclusion === 'string' && agentResult.conclusion.trim() !== '',
+    detail: truncate(agentResult?.conclusion ?? '', 200),
+  };
+  const evidenceCheck = {
+    name: 'evidence-refs',
+    ok:
+      refs.length > 0 &&
+      refs.every((ref) => ref && typeof ref.type === 'string' && typeof ref.ref === 'string' && ref.type && ref.ref),
+    detail: `${refs.length} ref(s)`,
+  };
+  if (element) {
+    const checks = [
+      {
+        name: 'element-captured',
+        ok: Boolean(element.selector) && Boolean(element.page?.url),
+        detail: element.selector ?? 'missing selector',
+      },
+      {
+        name: 'component-context',
+        ok: Boolean(element.framework?.componentFile || element.componentCandidates?.length),
+        severity: 'warn',
+        detail: element.framework?.componentFile
+          ?? element.componentCandidates?.[0]?.file
+          ?? (element.framework?.componentName ?? '未解析到组件文件'),
+      },
+      conclusionCheck,
+      evidenceCheck,
+    ];
+    return {
+      ok: checks.every((check) => check.ok || check.severity === 'warn'),
+      checks,
+    };
+  }
   const checks = [
     { name: 'request-captured', ok: Boolean(fired?.request), detail: fired?.request?.url ?? 'missing request' },
     {
@@ -165,18 +208,8 @@ function evaluateGates(fired, agentResult) {
       ok: Boolean(fired?.response) && !fired.response.pending,
       detail: String(fired?.response?.status ?? 'pending'),
     },
-    {
-      name: 'conclusion-present',
-      ok: typeof agentResult?.conclusion === 'string' && agentResult.conclusion.trim() !== '',
-      detail: truncate(agentResult?.conclusion ?? '', 200),
-    },
-    {
-      name: 'evidence-refs',
-      ok:
-        refs.length > 0 &&
-        refs.every((ref) => ref && typeof ref.type === 'string' && typeof ref.ref === 'string' && ref.type && ref.ref),
-      detail: `${refs.length} ref(s)`,
-    },
+    conclusionCheck,
+    evidenceCheck,
   ];
   return { ok: checks.every((check) => check.ok), checks };
 }
@@ -213,6 +246,8 @@ async function diagnoseWithFired({
   databaseNotice = null,
   verifyCommand = '',
   workspace = {},
+  sandbox = false,
+  element = null,
   onProgress = () => {},
 }) {
   const progress = (id, label, status = 'done', detail = null) => {
@@ -231,6 +266,7 @@ async function diagnoseWithFired({
     read: '读取工具结果',
     query_db: '查询数据库',
     write_db: '写入数据库',
+    run_command: '运行编译/测试',
   };
 
   const extraSourceRoots = Array.isArray(scenario.extraSourceRoots) ? scenario.extraSourceRoots : [];
@@ -300,6 +336,48 @@ async function diagnoseWithFired({
     progress('database', '数据库不可用，改用源码与日志分析', 'error', databaseNotice);
   }
 
+  let sandboxContext = null;
+  let sandboxRunCommand = null;
+  let sandboxUsed = false;
+  if (sandbox && agent.id !== 'mock' && typeof agent.configureScope === 'function') {
+    const sandboxRoots = [
+      paths.sourceRoot ? { key: 'backend', name: 'backend', root: paths.sourceRoot } : null,
+      frontendFixRoot ? { key: 'frontend', name: 'frontend', root: frontendFixRoot } : null,
+      ...extraSourceRoots.map((entry) => ({
+        key: 'extra',
+        extraRoot: entry.id,
+        name: `extra-${entry.id}`,
+        root: entry.root,
+      })),
+    ].filter(Boolean);
+    progress('sandbox', '创建隔离沙箱', 'start');
+    try {
+      sandboxContext = await createAgentSandbox({ runDir, roots: sandboxRoots });
+      sandboxUsed = true;
+      agent.configureScope({
+        cwd: sandboxContext.dir,
+        allowedRoots: sandboxContext.roots.map((entry) => entry.sandboxRoot),
+        toolMode: 'sandbox',
+        systemPromptSuffix: sandboxPromptFor(sandboxContext),
+      });
+      sandboxRunCommand = createSandboxCommandRunner({
+        sandbox: sandboxContext,
+        verifyCommand,
+        workspace,
+      });
+      progress('sandbox', '沙箱已就绪，开放编辑与测试', 'done', sandboxContext.dir);
+      await runLog.info(`sandbox roots=${sandboxContext.roots.length} files=${sandboxContext.fileCount}`);
+    } catch (error) {
+      sandboxContext = null;
+      sandboxRunCommand = null;
+      // Fail closed: never leave the agent in sandbox/write mode against the
+      // real workspace when the isolated copy could not be created.
+      agent.configureScope({ toolMode: 'readonly', systemPromptSuffix: '' });
+      progress('sandbox', '沙箱创建失败，退回只读模式', 'error', error?.message ?? String(error));
+      await runLog.error(`sandbox failed: ${error?.message ?? error}`);
+    }
+  }
+
   const toolsBundle = createTools({
     scenario,
     anchor: fired.firedAt,
@@ -312,6 +390,7 @@ async function diagnoseWithFired({
     activeDatabaseId,
     approveWrite,
     databaseConnect,
+    runCommand: sandboxRunCommand,
     window: timeWindow,
     onCall: (call) => {
       const label = TOOL_LABELS[call.name] ?? call.name;
@@ -324,8 +403,18 @@ async function diagnoseWithFired({
     },
   });
 
+  const elementContext = element
+    ? (await collectElementEvidence({
+        element,
+        frontendSourceRoot: frontendFixRoot ?? scenario.frontendSourceRoot,
+        frontendProjectRoot: scenario.frontendProjectRoot ?? null,
+        backendSourceRoot: paths.sourceRoot,
+      })).element
+    : null;
+
   const evidence = {
-    symptom: { question, pageUrl: fired.request?.url ?? null },
+    symptom: { question, pageUrl: element?.page?.url ?? fired.request?.url ?? null },
+    element: elementContext ?? undefined,
     request: {
       method: fired.request?.method,
       url: fired.request?.url,
@@ -380,9 +469,30 @@ async function diagnoseWithFired({
   };
 
   await runLog.info(`agent=${agent.id} mode=${agent.id === 'mock' ? 'mock' : 'live'}`);
+  const BUILTIN_TOOL_LABELS = {
+    Read: '读取文件',
+    Grep: '搜索项目引用',
+    Glob: '查找项目文件',
+    Edit: '修改沙箱文件',
+    Write: '写入沙箱文件',
+  };
   const callAgent = async () => {
     try {
-      return await agent.diagnose({ question, evidence, tools: toolsBundle });
+      return await agent.diagnose({
+        question,
+        evidence,
+        tools: toolsBundle,
+        onToolUse: (tool) => {
+          if (!tool?.id) return;
+          const label = BUILTIN_TOOL_LABELS[tool.name] ?? tool.name;
+          progress(
+            `builtin-${tool.id}`,
+            tool.stage === 'start' ? `${label}…` : label,
+            tool.stage === 'start' ? 'start' : tool.isError ? 'error' : 'done',
+            tool.name,
+          );
+        },
+      });
     } catch (error) {
       await runLog.error(`agent failed: ${error?.message ?? error}`);
       throw error;
@@ -399,6 +509,10 @@ async function diagnoseWithFired({
     );
   } catch (error) {
     progress('agent', 'AI 分析失败', 'error');
+    if (sandboxContext) {
+      await cleanupAgentSandbox(sandboxContext);
+      sandboxContext = null;
+    }
     throw error;
   }
   const agentRuns = [agentResult];
@@ -410,17 +524,66 @@ async function diagnoseWithFired({
       progress(id, `第 ${i + 1}/${recheck} 轮复核`, 'done');
     } catch (error) {
       progress(id, `第 ${i + 1}/${recheck} 轮复核失败`, 'error');
+      if (sandboxContext) {
+        await cleanupAgentSandbox(sandboxContext);
+        sandboxContext = null;
+      }
       throw error;
     }
   }
 
+  if (sandboxContext) {
+    try {
+      const extracted = await extractSandboxFixes(sandboxContext);
+      agentResult.fixes = extracted.fixes;
+      agentResult.sandbox = {
+        changedFiles: extracted.changedFiles,
+        skipped: extracted.skipped,
+      };
+      if (extracted.skipped.length > 0) {
+        agentResult.needsMoreInfo = [
+          ...(agentResult.needsMoreInfo ?? []),
+          `沙箱中有 ${extracted.skipped.length} 个变更未能自动提取（新增/删除/大文件），请手动检查。`,
+        ];
+      }
+      progress('sandbox', `沙箱修改 ${extracted.changedFiles.length} 个文件`, 'done');
+      await runLog.info(`sandbox extracted=${extracted.fixes.length} skipped=${extracted.skipped.length}`);
+    } catch (error) {
+      agentResult.fixes = [];
+      agentResult.needsMoreInfo = [
+        ...(agentResult.needsMoreInfo ?? []),
+        `沙箱修改提取失败，已隐藏修改建议：${error?.message ?? error}`,
+      ];
+      progress('sandbox', '沙箱修改提取失败', 'error', error?.message ?? String(error));
+      await runLog.error(`sandbox extract failed: ${error?.message ?? error}`);
+    } finally {
+      await cleanupAgentSandbox(sandboxContext);
+      sandboxContext = null;
+    }
+  }
+
   // 2a: attach read-only diff previews; never write the working tree here.
+  let staticChecks = 'strict';
+  if (sandboxUsed || workspace.agent?.toolMode === 'full') {
+    const commands = await detectCompileCommands({
+      roots: {
+        sourceRoot: paths.sourceRoot,
+        frontendSourceRoot: frontendFixRoot,
+        extraSourceRoots,
+      },
+      verifyCommand,
+      workspace,
+      projectRoot: scenario.dir ?? process.cwd(),
+    }).catch(() => []);
+    if (commands.length > 0) staticChecks = 'warn';
+  }
   progress('preview', '生成修复预览', 'start');
   try {
     agentResult.fixes = await buildFixPreviews(agentResult.fixes, {
       sourceRoot: paths.sourceRoot,
       frontendSourceRoot: frontendFixRoot,
       extraSourceRoots,
+      staticChecks,
     });
     progress('preview', '生成修复预览', 'done');
   } catch (error) {
@@ -429,7 +592,7 @@ async function diagnoseWithFired({
   }
 
   const editableFixes = (agentResult.fixes ?? [])
-    .filter((fix) => fix?.kind === 'edit' && fix?.preview?.status === 'ready');
+    .filter((fix) => ['edit', 'create', 'delete'].includes(fix?.kind) && fix?.preview?.status === 'ready');
   if (editableFixes.length > 0) {
     progress('selfcheck', '编译自测修改后的代码', 'start');
     let validation;
@@ -471,7 +634,7 @@ async function diagnoseWithFired({
     }
   }
 
-  const gates = evaluateGates(fired, agentResult);
+  const gates = evaluateGates(fired, agentResult, elementContext);
   const recheckInfo = recheck > 1
     ? (() => {
         const evaluation = evaluateRecheck(agentRuns, { responseStatus: fired.response?.status ?? null });
@@ -488,7 +651,17 @@ async function diagnoseWithFired({
 
   const endedAt = Date.now();
   let target;
-  if (scenario.driverKind === 'browser') {
+  if (element) {
+    target = {
+      driver: 'element',
+      selector: elementContext?.selector ?? element.selector ?? null,
+      componentName: elementContext?.framework?.componentName ?? null,
+      componentFile: elementContext?.framework?.componentFile
+        ?? elementContext?.componentCandidates?.[0]?.file
+        ?? null,
+      pageUrl: elementContext?.page?.url ?? element.page?.url ?? null,
+    };
+  } else if (scenario.driverKind === 'browser') {
     target = {
       driver: 'browser',
       path: scenario.browser.path,
@@ -571,6 +744,7 @@ async function diagnoseWithFired({
       },
     },
     target,
+    ...(element ? { element: evidence.element } : {}),
     request: evidence.request,
     response: evidence.response,
     marker: evidence.marker,
@@ -634,6 +808,7 @@ export async function runDiagnosis(scenario, options = {}) {
     databaseConnect,
     verifyCommand = '',
     workspace = {},
+    sandbox = false,
     onProgress = () => {},
   } = options;
 
@@ -680,6 +855,7 @@ export async function runDiagnosis(scenario, options = {}) {
     databaseNotice,
     verifyCommand,
     workspace,
+    sandbox,
     onProgress,
   });
 
@@ -719,6 +895,7 @@ export async function runCaptureDiagnosis(observation, options = {}) {
     approveWrite = null,
     databaseConnect,
     verifyCommand = '',
+    sandbox = false,
     onProgress = () => {},
   } = options;
 
@@ -820,6 +997,164 @@ export async function runCaptureDiagnosis(observation, options = {}) {
     databaseNotice,
     verifyCommand,
     workspace,
+    sandbox,
+    onProgress,
+  });
+}
+
+/**
+ * Diagnose a UI element (display/style/data symptom) without replaying a request.
+ * Reuses the capture pipeline but replaces request/response gates with element gates.
+ *
+ * @param {any} element element snapshot that came from the page picker
+ * @param {any} [options]
+ */
+export async function runElementDiagnosis(element, options = {}) {
+  const {
+    workspace = {},
+    root = process.cwd(),
+    runId = newRunId(),
+    runsDir = path.resolve('runs'),
+    question = '',
+    agent = createMockAgent(),
+    recheck = 1,
+    markerTimeoutMs = DEFAULT_MARKER_TIMEOUT_MS,
+    pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
+    window,
+    preflight: preflightOverride,
+    allowExtraSources = false,
+    databases = [],
+    activeDatabaseId = null,
+    approveWrite = null,
+    databaseConnect,
+    verifyCommand = '',
+    sandbox = false,
+    onProgress = () => {},
+  } = options;
+
+  if (!element || typeof element !== 'object') {
+    throw new AppError('ELEMENT_REQUIRED', '缺少元素信息', { exitCode: 2 });
+  }
+
+  const startedAt = Date.now();
+  const logfiles = (workspace.logfiles ?? []).map((file) => path.resolve(root, file));
+  const sourceRoot = workspace.sourceRoot ? path.resolve(root, workspace.sourceRoot) : null;
+  const configuredExtraRoots = [];
+  for (const [index, entry] of (workspace.extraSourceRoots ?? []).entries()) {
+    if (!entry) continue;
+    const resolved = path.resolve(root, String(entry));
+    try {
+      const info = await stat(resolved);
+      if (!info.isDirectory()) continue;
+    } catch {
+      continue;
+    }
+    configuredExtraRoots.push({
+      id: `extra-${index + 1}`,
+      root: resolved,
+      label: path.basename(resolved) || `extra-${index + 1}`,
+    });
+  }
+  const authorizedExtraRoots = allowExtraSources ? configuredExtraRoots : [];
+  const configuredFrontendSourceRoot = workspace.frontendSourceRoot
+    ? path.resolve(root, workspace.frontendSourceRoot)
+    : null;
+  let frontendProjectRoot = null;
+  try {
+    const project = await resolveFrontendProjectRoot(workspace, { rootDir: root });
+    if (project.ok) frontendProjectRoot = project.cwd;
+  } catch {
+    // source mapping can still work with an explicit frontendSourceRoot
+  }
+  const frontendSourceRoot = configuredFrontendSourceRoot ?? frontendProjectRoot;
+  const label = String(
+    element.framework?.componentName
+      || element.framework?.componentFile
+      || element.selector
+      || 'element',
+  ).slice(0, 80);
+  const scenario = {
+    name: `element-${label}`,
+    driverKind: 'element',
+    logfiles,
+    source: sourceRoot ? { root: sourceRoot } : undefined,
+    extraSourceRoots: authorizedExtraRoots,
+    extraSourcesConfigured: configuredExtraRoots.map(({ id, label: name }) => ({ id, label: name })),
+    frontendSourceRoot,
+    frontendProjectRoot,
+    parser: { preset: workspace.logParser || 'auto' },
+    logEncoding: 'auto',
+    marker: { mode: 'none', header: 'X-DC-Probe' },
+    window: window ?? workspace.window ?? { beforeMs: 3000, afterMs: 2000 },
+    filePath: undefined,
+    dir: root,
+  };
+
+  const preflight = preflightOverride ?? (await runCapturePreflight({ logfiles, sourceRoot, databases }));
+  if (!preflight.ok) {
+    const failed = preflight.checks.filter((check) => !check.ok && check.severity === 'error');
+    throw new AppError(
+      'PREFLIGHT_FAILED',
+      `Preflight failed: ${failed.map((check) => `${check.name}(${check.detail})`).join('; ')}`,
+      { exitCode: 3, details: { checks: preflight.checks } },
+    );
+  }
+  const reachableDatabases = preflight.databases ?? databases;
+  const databaseNotice = buildDatabaseNotice(databases, reachableDatabases);
+
+  const runDir = path.resolve(runsDir, runId);
+  await mkdir(runDir, { recursive: true });
+  let elementForRun = element;
+  if (element.screenshotDataUrl) {
+    const match = /^data:image\/png;base64,(.+)$/s.exec(String(element.screenshotDataUrl));
+    if (match) {
+      try {
+        const evidenceDir = path.join(runDir, 'evidence');
+        await mkdir(evidenceDir, { recursive: true });
+        await writeFile(path.join(evidenceDir, 'element.png'), Buffer.from(match[1], 'base64'));
+      } catch (error) {
+        await writeFile(path.join(runDir, 'run.log'), `screenshot save failed: ${error?.message ?? error}\n`, { flag: 'a' }).catch(() => {});
+      }
+    }
+    const { screenshotDataUrl: _dataUrl, ...rest } = element;
+    elementForRun = {
+      ...rest,
+      screenshot: match ? 'evidence/element.png' : null,
+    };
+  }
+  const paths = resolveScenarioPaths(scenario);
+  const timeWindow = scenario.window;
+  const fired = {
+    request: null,
+    response: null,
+    firedAt: Number(element.capturedAt) || startedAt,
+    marker: { mode: 'none', injected: false, value: null, targets: { header: false, body: false } },
+    consoleErrors: [],
+  };
+
+  return diagnoseWithFired({
+    fired,
+    scenario,
+    paths,
+    timeWindow,
+    runId,
+    runDir,
+    question,
+    agent,
+    recheck,
+    markerTimeoutMs,
+    pollIntervalMs,
+    preflight,
+    startedAt,
+    databases: reachableDatabases,
+    activeDatabaseId,
+    approveWrite,
+    databaseConnect,
+    databaseNotice,
+    verifyCommand,
+    workspace,
+    sandbox,
+    element: elementForRun,
     onProgress,
   });
 }

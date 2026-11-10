@@ -4,6 +4,7 @@ const CHANNELS = new Set([
   'dc:config',
   'dc:databases',
   'dc:browser',
+  'dc:element',
   'dc:capture',
   'dc:logs',
   'dc:diagnose',
@@ -20,6 +21,7 @@ const EVENTS = new Set([
   'dc:diagnose:progress',
   'dc:followup:progress',
   'dc:devserver:event',
+  'dc:element:event',
   'dc:database:open',
   'dc:model:open',
 ]);

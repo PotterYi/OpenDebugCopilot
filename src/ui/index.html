@@ -108,6 +108,7 @@
         <button id="browser-open" type="button" class="secondary">打开</button>
         <button id="browser-reload" type="button" class="secondary">刷新</button>
         <button id="browser-clear" type="button" class="secondary" title="清空请求与页面错误">清空请求</button>
+        <button id="element-scan" type="button" class="element-scan" title="元素视野：选择页面元素并诊断显示/数据问题">元素视野</button>
         <button id="browser-devtools" type="button" class="secondary">DevTools</button>
       </div>
 
@@ -141,7 +142,6 @@
             <div class="detail-head">
               <span id="request-title">选择一条请求</span>
               <span id="request-meta" class="muted"></span>
-              <button id="toggle-request-detail" type="button" class="secondary" disabled>收起接口概览</button>
             </div>
             <div class="question-row">
               <textarea id="diagnose-question" class="question-input" rows="2" placeholder="描述现象（可选），例如：登录后用户列表报错"></textarea>
@@ -352,7 +352,14 @@
       <label>超时（秒）
         <input id="model-timeout" type="number" min="1" step="1" placeholder="600" />
       </label>
-      <p class="muted small">默认 60 轮、超时 600 秒；轮次留空表示不限制。建议同时保留费用或超时上限。</p>
+      <label>工具模式
+        <select id="model-tool-mode">
+          <option value="readonly">只读（Read / Grep / Glob）</option>
+          <option value="sandbox">沙箱编辑（推荐：隔离副本中编辑并编译测试）</option>
+          <option value="full">完全权限（直接修改真实文件，每次操作确认）</option>
+        </select>
+      </label>
+      <p class="muted small">默认 60 轮、超时 600 秒；轮次留空表示不限制。完全权限会直接操作真实项目，所有 Edit/Write/Bash 都会弹窗确认。</p>
       <div class="modal-actions">
         <button id="model-save" type="button">保存</button>
         <button id="model-cancel" type="button" class="secondary">取消</button>

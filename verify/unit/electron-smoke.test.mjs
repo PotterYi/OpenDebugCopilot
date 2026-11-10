@@ -131,6 +131,7 @@ test('electron shell boots, captures, routes and diagnoses', {
     '--port', '0',
     `--smoke-url=http://localhost:${pageServer.address().port}/page`,
     '--smoke-click=#create',
+    '--smoke-element',
     '--runs-dir', path.join(TMP, 'runs'),
     '--config-dir', path.join(TMP, 'configs'),
   ], { env: { ...process.env } });
@@ -190,12 +191,18 @@ test('electron shell boots, captures, routes and diagnoses', {
   assert.equal(smokeResult.databaseUi?.actionsSameRow, true);
   assert.equal(smokeResult.databaseUi?.actionsLeftToRight, true);
   assert.equal(smokeResult.databaseUi?.edgeButtons, true);
-  assert.deepEqual(smokeResult.modelUi?.defaults, { model: '', maxTurns: '60', timeoutSeconds: '600' });
+  assert.deepEqual(smokeResult.modelUi?.defaults, {
+    model: '',
+    maxTurns: '60',
+    timeoutSeconds: '600',
+    toolMode: 'sandbox',
+  });
   assert.equal(smokeResult.modelUi?.customShown, true);
   assert.equal(smokeResult.modelUi?.customHidden, true);
   assert.equal(smokeResult.modelUi?.saved?.model, 'claude-sonnet-5');
   assert.equal(smokeResult.modelUi?.saved?.maxTurns, 60);
   assert.equal(smokeResult.modelUi?.saved?.timeoutMs, 900000);
+  assert.equal(smokeResult.modelUi?.saved?.toolMode, 'full');
   assert.match(stdout, /"captureOk":true/);
   assert.match(stdout, /"captured":[1-9]/);
   assert.match(stdout, /"pageTitle":"ok"/);
@@ -209,6 +216,11 @@ test('electron shell boots, captures, routes and diagnoses', {
   assert.match(stdout, /"gates":true/);
   assert.match(stdout, /"frontendErrors":[1-9]/);
   assert.match(stdout, /"consoleDiagnose":\{"ok":true/);
+  assert.equal(smokeResult.elementUi?.overlay, true);
+  assert.equal(smokeResult.elementUi?.panel, true);
+  assert.equal(smokeResult.elementUi?.hasInput, true);
+  assert.match(smokeResult.elementUi?.runScenario ?? '', /^element-/);
+  assert.ok(smokeResult.elementUi?.runId, JSON.stringify(smokeResult.elementUi));
   assert.match(stdout, /"gates":true/);
   assert.ok(backendHits >= 1, `expected redirect to backend, got ${backendHits}`);
   // The tool answers local preflights itself; the backend must never see OPTIONS.
@@ -1067,20 +1079,22 @@ test('diagnoses multiple requests concurrently and keeps running ones when clear
       document.getElementById('request-title')?.textContent.includes('/api/one')
       && document.getElementById('diagnose-result')?.hidden === false
     ));
-    const toggle = document.getElementById('toggle-request-detail');
+    const toggle = document.getElementById('detail-overview-toggle');
+    const body = document.getElementById('detail-overview-body');
     const detail = document.getElementById('request-detail');
-    const beforeCollapse = detail?.hidden === false;
+    const beforeCollapse = body?.hidden === false;
     toggle?.click();
-    const collapsed = detail?.hidden === true;
-    const collapsedLabel = toggle?.textContent ?? '';
+    const collapsed = body?.hidden === true;
+    const collapsedChevron = toggle?.querySelector('.overview-chevron')?.textContent === '▸';
+    const collapsedClass = detail?.classList.contains('collapsed') === true;
     toggle?.click();
-    const expanded = detail?.hidden === false;
+    const expanded = body?.hidden === false;
     const first = {
       title: document.getElementById('request-title')?.textContent ?? '',
       hasResult: document.getElementById('diagnose-result')?.hidden === false,
       runId: runId(),
       progressHidden: document.getElementById('diagnose-progress')?.hidden === true,
-      overviewToggle: { beforeCollapse, collapsed, collapsedLabel, expanded },
+      overviewToggle: { beforeCollapse, collapsed, collapsedChevron, collapsedClass, expanded },
     };
 
     find('/api/two').click();
@@ -1142,7 +1156,8 @@ test('diagnoses multiple requests concurrently and keeps running ones when clear
   assert.deepEqual(result.first.overviewToggle, {
     beforeCollapse: true,
     collapsed: true,
-    collapsedLabel: '展开接口概览',
+    collapsedChevron: true,
+    collapsedClass: true,
     expanded: true,
   });
   assert.equal(result.second.hasResult, true);

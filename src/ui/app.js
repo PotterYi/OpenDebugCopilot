@@ -24,7 +24,6 @@ const browserUrlInput = $('browser-url');
 const browserSlot = $('browser-slot');
 const requestTitle = $('request-title');
 const requestMeta = $('request-meta');
-const toggleRequestDetailButton = $('toggle-request-detail');
 const configPath = $('config-path');
 const logPath = $('log-path');
 const logSource = $('log-source');
@@ -62,6 +61,7 @@ const modelNameCustomInput = $('model-name-custom');
 const modelMaxTurnsInput = $('model-max-turns');
 const modelMaxBudgetInput = $('model-max-budget');
 const modelTimeoutInput = $('model-timeout');
+const modelToolModeInput = $('model-tool-mode');
 const databaseListEl = $('database-list');
 const databaseMessageEl = $('database-message');
 const databaseStatusEl = $('database-status');
@@ -105,6 +105,7 @@ let databasesState = { activeId: null, connections: [] };
 let databaseEditingId = null;
 const diagnosisStates = new Map();
 let activeDiagnosisKey = null;
+let elementPicking = false;
 let followUpProgressContext = null;
 const MAX_DEV_LOG_LINES = 300;
 const DEV_STATUS_LABELS = {
@@ -680,6 +681,10 @@ function consoleDiagnosisKey(id) {
   return `console:${String(id)}`;
 }
 
+function elementDiagnosisKey(id) {
+  return `element:${String(id)}`;
+}
+
 function activeDiagnosisState() {
   return activeDiagnosisKey ? diagnosisStates.get(activeDiagnosisKey) : null;
 }
@@ -700,6 +705,41 @@ function renderRequests() {
     matchesRequestFilter(item, requestFilter)
     && (!errorsOnly || item.error || (item.status ?? 0) >= 400));
   requestsEl.textContent = '';
+  const elementStates = [...diagnosisStates.values()]
+    .filter((state) => state.element)
+    .sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0));
+  for (const state of elementStates) {
+    const li = document.createElement('li');
+    li.dataset.elementId = state.elementId;
+    li.classList.add('element-diagnosis-item');
+    if (activeDiagnosisKey === state.key) li.classList.add('selected');
+    const method = document.createElement('span');
+    method.className = 'method';
+    method.textContent = 'ELEM';
+    const urlCell = document.createElement('span');
+    urlCell.className = 'url-cell';
+    const url = document.createElement('span');
+    url.className = 'url';
+    url.textContent = state.element.framework?.componentName
+      || state.element.selector
+      || '页面元素';
+    url.title = state.element.selector ?? '';
+    urlCell.append(url);
+    const marker = document.createElement('span');
+    marker.className = `diagnose-state ${state.status}`;
+    marker.textContent = state.status === 'running'
+      ? '（诊断中）'
+      : state.status === 'done'
+        ? '（诊断完成）'
+        : '（诊断失败）';
+    urlCell.append(marker);
+    const type = document.createElement('span');
+    type.className = 'muted';
+    type.textContent = '元素';
+    li.append(method, urlCell, document.createElement('span'), document.createElement('span'), type);
+    li.addEventListener('click', () => showElementState(state.key));
+    requestsEl.append(li);
+  }
   for (const item of filtered) {
     const li = document.createElement('li');
     if (currentRequestId != null && String(item.id) === String(currentRequestId)) {
@@ -1065,7 +1105,7 @@ function renderFixCard(fix, view, fixIndex, { readOnly = false } = {}) {
       }
     });
     bar.append(copy);
-    if (!readOnly && api.isDesktop && fix.kind === 'edit') {
+    if (!readOnly && api.isDesktop && ['edit', 'create', 'delete'].includes(fix.kind)) {
       if (applied) {
         const verifyCmd = configCache?.workspace?.verifyCommand;
         if (verifyCmd) {
@@ -1090,6 +1130,9 @@ function renderFixCard(fix, view, fixIndex, { readOnly = false } = {}) {
       }
     }
     card.append(bar);
+    if (Array.isArray(preview.warnings) && preview.warnings.length > 0) {
+      card.append(el('p', 'error-text small', `静态告警（以编译结果为准）：${preview.warnings.join('；')}`));
+    }
 
     const diff = el('pre', 'fix-diff');
     for (const line of preview.patch.split('\n')) {
@@ -1374,8 +1417,26 @@ function renderRunBody(container, result, agent, view, { readOnly = false, showH
   if (result.databases?.notice && agent === result.agent) {
     container.append(el('p', 'error-text small', `⚠ ${result.databases.notice}`));
   }
+  if (result.element) {
+    const element = result.element;
+    container.append(section('元素信息', kv([
+      ['页面', element.page?.url ?? '—'],
+      ['选择器', element.selector ?? '—'],
+      ['文本', element.text || '—'],
+      ['组件', element.framework?.componentName ?? '—'],
+      ['组件文件', element.framework?.componentFile
+        ?? element.componentCandidates?.[0]?.file
+        ?? '未解析'],
+      ['尺寸', element.rect ? `${element.rect.width} × ${element.rect.height}` : '—'],
+      ['display', element.styles?.display ?? '—'],
+      ['color', element.styles?.color ?? '—'],
+      ['API 候选', (element.apiCandidates ?? []).map((api) => `${api.method ?? 'GET'} ${api.url}`).join('、') || '—'],
+      ['后端候选', (element.backendCandidates ?? []).map((candidate) => candidate.file).join('、') || '—'],
+      ['截图', element.screenshot ?? '—'],
+    ])));
+  }
 
-  if (result.request || result.response) {
+  if (!result.element && (result.request || result.response)) {
     container.append(section('请求 / 响应', kv([
       ['方法', result.request?.method ?? '-'],
       ['路径', result.request?.url ? requestPath(result.request.url) : '-'],
@@ -1463,7 +1524,7 @@ function renderRunBody(container, result, agent, view, { readOnly = false, showH
     if (!readOnly && api.isDesktop) {
       const applicable = fixes.filter((fix) => (
         typeof fix === 'object'
-        && fix.kind === 'edit'
+        && ['edit', 'create', 'delete'].includes(fix.kind)
         && fix.preview?.status === 'ready'
         && !(fix.applied && !fix.applied.revertedAt)
       )).length;
@@ -1496,20 +1557,19 @@ function renderRunBody(container, result, agent, view, { readOnly = false, showH
   }
 }
 
-function applyRequestDetailCollapsed() {
-  const hasRequest = currentRequestId != null;
-  detailEl.hidden = Boolean(hasRequest) && requestDetailCollapsed;
-  toggleRequestDetailButton.disabled = !hasRequest;
-  toggleRequestDetailButton.textContent = requestDetailCollapsed ? '展开接口概览' : '收起接口概览';
-  toggleRequestDetailButton.title = requestDetailCollapsed
-    ? '展开接口概览，查看完整请求详情'
-    : '收起接口概览，为诊断报告腾出更多空间';
+function applyRequestDetailCollapse() {
+  const body = detailEl.querySelector('.detail-overview-body');
+  const head = detailEl.querySelector('.detail-overview-head');
+  const chevron = head?.querySelector('.overview-chevron');
+  if (body) body.hidden = requestDetailCollapsed;
+  if (head) head.setAttribute('aria-expanded', String(!requestDetailCollapsed));
+  if (chevron) chevron.textContent = requestDetailCollapsed ? '▸' : '▾';
+  detailEl.classList.toggle('collapsed', Boolean(body) && requestDetailCollapsed);
 }
 
 async function showRequest(id) {
   currentRequestId = id;
   activeDiagnosisKey = requestDiagnosisKey(id);
-  applyRequestDetailCollapsed();
   const diagnosis = diagnosisStates.get(activeDiagnosisKey);
   diagnoseQuestion.value = diagnosis?.question ?? '';
   renderRequests();
@@ -1517,12 +1577,14 @@ async function showRequest(id) {
   requestTitle.textContent = '加载中…';
   requestMeta.textContent = '';
   detailEl.textContent = '加载中…';
+  detailEl.classList.remove('collapsed');
   try {
     const { request } = await api.capture('detail', { id });
     // Selection may have moved while the detail request was in flight.
     if (String(currentRequestId) !== String(id)) return;
     if (!request) {
       detailEl.textContent = '请求已被清空或不存在';
+      detailEl.classList.remove('collapsed');
       renderDiagnosisState();
       return;
     }
@@ -1532,15 +1594,29 @@ async function showRequest(id) {
       .filter(Boolean)
       .join(' · ');
     detailEl.textContent = '';
-    detailEl.append(
-      section('概览', kv([
+    const overviewHead = el('button', 'detail-overview-head');
+    overviewHead.type = 'button';
+    overviewHead.id = 'detail-overview-toggle';
+    overviewHead.setAttribute('aria-expanded', String(!requestDetailCollapsed));
+    overviewHead.append(
+      el('span', 'detail-overview-title', '概览'),
+      el('span', 'overview-chevron', '▾'),
+    );
+    overviewHead.addEventListener('click', () => {
+      requestDetailCollapsed = !requestDetailCollapsed;
+      applyRequestDetailCollapse();
+    });
+    const overviewBody = el('div', 'detail-overview-body');
+    overviewBody.id = 'detail-overview-body';
+    overviewBody.append(
+      kv([
         ['方法', request.method],
         ['URL', request.url],
         ['状态', request.status ?? '—'],
         ['类型', request.resourceType ?? '—'],
         ['耗时', request.durationMs != null ? `${request.durationMs} ms` : '—'],
         ['错误', request.error ?? '—'],
-      ])),
+      ]),
       section('请求头', preBlock(JSON.stringify(request.requestHeaders ?? {}, null, 2))),
       ...(request.postData
         ? [section('请求体', preBlock(formatBodyText(request.postData, requestContentType(request))))]
@@ -1548,9 +1624,12 @@ async function showRequest(id) {
       section('响应头', preBlock(JSON.stringify(request.responseHeaders ?? {}, null, 2))),
       buildBodySection(request),
     );
+    detailEl.append(overviewHead, overviewBody);
+    applyRequestDetailCollapse();
   } catch (err) {
     if (String(currentRequestId) !== String(id)) return;
     detailEl.textContent = `加载失败：${err.message}`;
+    detailEl.classList.remove('collapsed');
   }
 }
 
@@ -2043,6 +2122,163 @@ async function runDiagnosisPayload(payload, label) {
   }
 }
 
+function setElementPicking(active) {
+  elementPicking = Boolean(active);
+  const button = $('element-scan');
+  button.classList.toggle('active', elementPicking);
+  button.textContent = elementPicking ? '选择元素…' : '元素视野';
+}
+
+function renderElementDetail(state) {
+  const element = state?.element;
+  if (!element) return;
+  currentRequestId = null;
+  diagnoseQuestion.value = state.question ?? '';
+  requestTitle.textContent = '元素诊断';
+  requestMeta.textContent = [
+    element.framework?.componentName,
+    element.framework?.componentFile,
+    element.selector,
+  ].filter(Boolean).join(' · ');
+  detailEl.hidden = false;
+  detailEl.classList.remove('collapsed');
+  detailEl.textContent = '';
+  const styles = element.styles ?? {};
+  detailEl.append(
+    section('元素概览', kv([
+      ['页面', element.page?.url ?? '—'],
+      ['路由', element.page?.route ?? '—'],
+      ['选择器', element.selector ?? '—'],
+      ['标签', element.tag ?? '—'],
+      ['文本', element.text || '—'],
+      ['组件', element.framework?.componentName ?? '—'],
+      ['组件文件', element.framework?.componentFile ?? '未解析'],
+      ['尺寸', element.rect ? `${element.rect.width} × ${element.rect.height}` : '—'],
+      ['display', styles.display ?? '—'],
+      ['color', styles.color ?? '—'],
+      ['background', styles.backgroundColor ?? '—'],
+      ['font-size', styles.fontSize ?? '—'],
+      ...(element.frame?.url ? [['iframe', element.frame.url]] : []),
+      ...(element.shadowHost ? [['shadow host', element.shadowHost]] : []),
+    ])),
+    section('关键样式', preBlock(JSON.stringify({
+      display: styles.display,
+      visibility: styles.visibility,
+      position: styles.position,
+      width: styles.width,
+      height: styles.height,
+      overflow: styles.overflow,
+      color: styles.color,
+      backgroundColor: styles.backgroundColor,
+      fontSize: styles.fontSize,
+      fontWeight: styles.fontWeight,
+      lineHeight: styles.lineHeight,
+      margin: styles.margin,
+      padding: styles.padding,
+      flex: styles.flex,
+      gridTemplateColumns: styles.gridTemplateColumns,
+    }, null, 2))),
+    ...(element.componentCandidates?.length
+      ? [section('组件候选', preBlock(element.componentCandidates.map((candidate) => (
+        `${candidate.file}  (score ${candidate.score})${candidate.matches?.length ? ` · ${candidate.matches.join(', ')}` : ''}`
+      )).join('\n')))]
+      : []),
+    ...(element.apiCandidates?.length
+      ? [section('API 候选', preBlock(element.apiCandidates.map((api) => (
+        `${api.method ?? 'GET'} ${api.url} · ${api.apiFile}`
+      )).join('\n')))]
+      : []),
+    ...(element.backendCandidates?.length
+      ? [section('后端候选', preBlock(element.backendCandidates.map((candidate) => (
+        `${candidate.file}${candidate.matches?.length ? ` · ${candidate.matches.join(', ')}` : ''}`
+      )).join('\n')))]
+      : []),
+    ...(element.nearbyRequests?.length
+      ? [section('附近请求', preBlock(element.nearbyRequests.map((request) => (
+        `${request.method ?? ''} ${request.url ?? ''} · ${request.status ?? '—'}`
+      )).join('\n')))]
+      : []),
+    ...(element.html ? [section('HTML 片段', preBlock(element.html))] : []),
+  );
+  if (element.screenshotDataUrl) {
+    const image = document.createElement('img');
+    image.className = 'element-screenshot';
+    image.src = element.screenshotDataUrl;
+    image.alt = '元素截图';
+    detailEl.append(section('元素截图', image));
+  } else if (element.screenshot) {
+    detailEl.append(section('元素截图', el('p', 'muted small', `已保存：${element.screenshot}`)));
+  }
+}
+
+function showElementState(key) {
+  const state = diagnosisStates.get(key);
+  if (!state?.element) return;
+  activeDiagnosisKey = key;
+  renderElementDetail(state);
+  renderDiagnosisState();
+  renderRequests();
+}
+
+async function runElementDiagnosisPayload(element, question) {
+  if (!element) return;
+  const elementId = String(element.id ?? `element-${Date.now().toString(36)}`);
+  const key = elementDiagnosisKey(elementId);
+  if (diagnosisStates.get(key)?.status === 'running') return;
+  const state = {
+    key,
+    elementId,
+    element: { ...element, id: elementId },
+    label: '元素',
+    question: question ?? '',
+    status: 'running',
+    progressSteps: [],
+    response: null,
+    error: null,
+    startedAt: Date.now(),
+    endedAt: null,
+  };
+  diagnosisStates.set(key, state);
+  activeDiagnosisKey = key;
+  setTab('requests');
+  setElementPicking(false);
+  upsertProgressStep(state.progressSteps, {
+    id: 'client-start',
+    label: '元素诊断已开始',
+    status: 'start',
+  });
+  renderElementDetail(state);
+  renderDiagnosisState();
+  renderRequests();
+
+  try {
+    const response = await api.diagnose({
+      element: state.element,
+      question: state.question,
+      allowExtraSources: $('allow-extra-sources').checked,
+      mock: false,
+      recheck: 1,
+    });
+    state.status = 'done';
+    state.response = response;
+    state.endedAt = Date.now();
+    finalizeStateProgress(state, 'done', '诊断完成');
+    if (activeDiagnosisKey === key) {
+      renderElementDetail(state);
+      renderDiagnosisState();
+    }
+    renderRequests();
+    await loadRuns();
+  } catch (err) {
+    state.status = 'error';
+    state.error = err?.message ?? String(err);
+    state.endedAt = Date.now();
+    finalizeStateProgress(state, 'error', '诊断失败', state.error);
+    if (activeDiagnosisKey === key) renderDiagnosisState();
+    renderRequests();
+  }
+}
+
 async function runDiagnoseRequest() {
   if (!currentRequestId) {
     diagnoseMessage.textContent = '请先选择一条请求';
@@ -2338,6 +2574,9 @@ function openModelModal() {
   modelMaxTurnsInput.value = agent.maxTurns ?? '';
   modelMaxBudgetInput.value = agent.maxBudgetUsd ?? '';
   modelTimeoutInput.value = Math.round((agent.timeoutMs ?? 600000) / 1000);
+  modelToolModeInput.value = ['readonly', 'sandbox', 'full'].includes(agent.toolMode)
+    ? agent.toolMode
+    : (agent.sandbox === false ? 'readonly' : 'sandbox');
   modelModal.hidden = false;
   hideBrowserForModal();
   modelNameInput.focus();
@@ -2372,6 +2611,7 @@ async function saveModelSettings() {
     timeoutMs: Number.isFinite(timeoutSeconds) && timeoutSeconds > 0
       ? Math.floor(timeoutSeconds * 1000)
       : 600000,
+    toolMode: modelToolModeInput.value,
   };
   try {
     const saved = await api.saveConfig({
@@ -2470,6 +2710,48 @@ browserUrlInput.addEventListener('keydown', (event) => {
 });
 $('browser-reload').addEventListener('click', () => api.browser('reload').catch(() => {}));
 $('browser-devtools').addEventListener('click', () => api.browser('devtools').catch(() => {}));
+$('element-scan').addEventListener('click', async () => {
+  if (!api.isDesktop) {
+    setStatus('元素视野仅桌面版可用', 'error');
+    return;
+  }
+  try {
+    if (elementPicking) {
+      await api.element('cancel');
+      setElementPicking(false);
+      setStatus('已取消元素选择');
+      return;
+    }
+    setTab('browser');
+    await api.element('start');
+    setElementPicking(true);
+    setStatus('请在页面中选择一个元素');
+  } catch (error) {
+    setElementPicking(false);
+    setStatus(`元素视野启动失败：${error.message}`, 'error');
+  }
+});
+
+api.onElementEvent((event) => {
+  if (!event) return;
+  if (event.type === 'element-pick-start') {
+    setElementPicking(true);
+    setStatus('请在页面中选择一个元素');
+  } else if (event.type === 'element-picked') {
+    setStatus('已选中元素，请在页面浮层输入问题');
+  } else if (event.type === 'element-submit') {
+    setElementPicking(false);
+    setStatus('元素诊断已开始', 'ok');
+    runElementDiagnosisPayload(event.element, event.question).catch((error) => {
+      setStatus(`元素诊断启动失败：${error.message}`, 'error');
+    });
+  } else if (event.type === 'element-pick-cancel') {
+    setElementPicking(false);
+  } else if (event.type === 'element-error') {
+    setElementPicking(false);
+    setStatus(`元素选择失败：${event.message ?? '未知错误'}`, 'error');
+  }
+});
 async function clearCapturedData() {
   const runningRequestIds = [];
   const runningConsoleIds = [];
@@ -2508,7 +2790,7 @@ async function clearCapturedData() {
       requestTitle.textContent = '选择一条请求';
       requestMeta.textContent = '';
       detailEl.textContent = '选择一条请求查看详情';
-      applyRequestDetailCollapsed();
+      applyRequestDetailCollapse();
     }
     if (activeDiagnosisKey && !diagnosisStates.has(activeDiagnosisKey)) {
       activeDiagnosisKey = currentRequestId != null ? requestDiagnosisKey(currentRequestId) : null;
@@ -2555,12 +2837,6 @@ makeRuleButton.addEventListener('click', () => {
   addCandidateRules([currentRequest]).then(() => setTab('routing')).catch(() => {});
 });
 $('diagnose-request').addEventListener('click', runDiagnoseRequest);
-toggleRequestDetailButton.addEventListener('click', () => {
-  if (!currentRequestId) return;
-  requestDetailCollapsed = !requestDetailCollapsed;
-  applyRequestDetailCollapsed();
-});
-applyRequestDetailCollapsed();
 $('clear-console').addEventListener('click', async () => {
   const keep = new Set();
   for (const state of diagnosisStates.values()) {
@@ -2587,11 +2863,13 @@ for (const tab of document.querySelectorAll('.tab')) {
 }
 
 api.onDiagnoseProgress((progress) => {
-  const key = progress?.consoleId != null
-    ? consoleDiagnosisKey(progress.consoleId)
-    : progress?.requestId != null
-      ? requestDiagnosisKey(progress.requestId)
-      : null;
+  const key = progress?.elementId != null
+    ? elementDiagnosisKey(progress.elementId)
+    : progress?.consoleId != null
+      ? consoleDiagnosisKey(progress.consoleId)
+      : progress?.requestId != null
+        ? requestDiagnosisKey(progress.requestId)
+        : null;
   if (!key) return;
   const state = diagnosisStates.get(key);
   if (!state || state.status !== 'running') return;

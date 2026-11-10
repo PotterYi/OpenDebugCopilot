@@ -48,6 +48,19 @@ export function buildReport(result) {
       driver: result.target?.driver ?? '(unknown)',
     },
     symptom: scrubText(result.meta?.question?.trim() ? result.meta.question : '(未提供描述)'),
+    element: result.element
+      ? {
+          pageUrl: scrubText(result.element.page?.url ?? ''),
+          route: scrubText(result.element.page?.route ?? ''),
+          selector: scrubText(result.element.selector ?? ''),
+          tag: result.element.tag ?? '',
+          text: scrubText(result.element.text ?? ''),
+          componentName: result.element.framework?.componentName ?? '',
+          componentFile: scrubText(result.element.framework?.componentFile ?? ''),
+          screenshot: result.element.screenshot ?? null,
+          styles: result.element.styles ?? {},
+        }
+      : null,
     durationMs: result.meta?.durationMs ?? 0,
     conclusion: scrubText(agent.conclusion ?? ''),
     databaseNotice: result.databases?.notice ? scrubText(result.databases.notice) : null,
@@ -134,6 +147,13 @@ export function renderMarkdown(report) {
     `- 症状：${report.symptom}`,
     `- 耗时：${report.durationMs} ms`,
     `- Run ID：${report.meta.runId ?? '(unknown)'}`,
+    ...(report.element
+      ? [
+          `- 元素：${report.element.selector || '(unknown)'}`,
+          `- 页面：${report.element.pageUrl || '(unknown)'}`,
+          `- 组件：${report.element.componentFile || report.element.componentName || '(未解析)'}`,
+        ]
+      : []),
     ...(report.meta.incomplete
       ? [`- 状态：未完成（${report.meta.incompleteReason ?? 'unknown'}）`]
       : []),

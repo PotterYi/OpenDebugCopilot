@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from '../core/config.mjs';
 import { createDatabaseStore } from '../core/database-store.mjs';
@@ -17,6 +18,29 @@ import { log, setLogFile } from '../core/logger.mjs';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '../..');
 const CONFIG_PATH = path.join(ROOT, 'configs', 'default.json');
+
+function cliToolMode(workspace = {}) {
+  const mode = workspace.agent?.toolMode;
+  if (['readonly', 'sandbox', 'full'].includes(mode)) return mode;
+  return workspace.agent?.sandbox === false ? 'readonly' : 'sandbox';
+}
+
+/** Full-permission CLI mode asks before every built-in write/command. */
+function createCliToolApprover() {
+  return async ({ toolName, input }) => {
+    if (!process.stdin.isTTY) return false;
+    if (toolName === 'Bash' && !/^(?:\.\/)?(?:mvn|mvnw|gradle|gradlew|npm|pnpm|yarn|npx|python|pytest|go|dotnet|cargo)\b/i.test(String(input?.command ?? ''))) {
+      return false;
+    }
+    const rl = createInterface({ input: process.stdin, output: process.stderr });
+    try {
+      const answer = await rl.question(`[确认] 允许 ${toolName} ${toolName === 'Bash' ? input.command : input.file_path}? [y/N] `);
+      return /^y(?:es)?$/i.test(answer.trim());
+    } finally {
+      rl.close();
+    }
+  };
+}
 
 const HELP = `DebugCopilot CLI
 
@@ -306,6 +330,15 @@ export async function main(argv = process.argv.slice(2), { root = ROOT } = {}) {
     }
 
     const paths = resolveScenarioPaths(scenario);
+    const workspace = await createStore({ configDir: path.join(root, 'configs') }).getWorkspace();
+    const toolMode = cliToolMode(workspace);
+    const allowedRoots = [
+      paths.sourceRoot,
+      scenario.frontendSourceRoot,
+      ...(scenario.extraSourceRoots ?? []).map((entry) => entry.root),
+    ]
+      .filter(Boolean)
+      .map((entry) => (path.isAbsolute(entry) ? entry : path.resolve(scenario.dir ?? root, entry)));
     const agent = parsed.mock
       ? createMockAgent()
       : createClaudeAgent({
@@ -313,6 +346,9 @@ export async function main(argv = process.argv.slice(2), { root = ROOT } = {}) {
           maxTurns: parsed.maxTurns,
           cwd: paths.sourceRoot ?? undefined,
           maxBudgetUsd: parsed.budgetUsd,
+          allowedRoots,
+          toolMode: toolMode === 'full' ? 'full' : 'readonly',
+          approval: createCliToolApprover(),
         });
 
     // CLI has no safeStorage: encrypted passwords cannot be decrypted here.
@@ -320,7 +356,6 @@ export async function main(argv = process.argv.slice(2), { root = ROOT } = {}) {
     const databaseConfig = await createDatabaseStore({
       configDir: path.join(root, 'configs'),
     }).getRuntimeConfig();
-    const workspace = await createStore({ configDir: path.join(root, 'configs') }).getWorkspace();
 
     const { result, runDir } = await runDiagnosis(scenario, {
       runsDir: parsed.runsDir ? path.resolve(parsed.runsDir) : path.resolve(root, config.runsDir ?? 'runs'),
@@ -333,6 +368,7 @@ export async function main(argv = process.argv.slice(2), { root = ROOT } = {}) {
       activeDatabaseId: databaseConfig.activeId,
       verifyCommand: workspace.verifyCommand ?? '',
       workspace,
+      sandbox: toolMode === 'sandbox',
     });
 
     if (parsed.json) {

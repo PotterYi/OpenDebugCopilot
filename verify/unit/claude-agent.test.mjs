@@ -1,7 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { z } from 'zod';
-import { buildToolShapes, createClaudeAgent, usageFromResult } from '../../src/agent/claude.mjs';
+import {
+  buildFollowUpPrompt,
+  buildToolShapes,
+  createClaudeAgent,
+  usageFromResult,
+  validationStrategyPrompt,
+} from '../../src/agent/claude.mjs';
 import { toolSpecs } from '../../src/tools/index.mjs';
 
 test('creates the live Claude agent adapter without spawning', () => {
@@ -61,4 +67,45 @@ test('usageFromResult sums modelUsage tokens (including cache) and falls back to
     },
   });
   assert.equal(fallback.totalTokens, 18);
+});
+
+test('follow-up snapshot carries validation output, withheld fixes and sandbox skips', () => {
+  const prompt = buildFollowUpPrompt('继续修', {
+    agent: {
+      conclusion: '未通过编译',
+      fixes: [],
+      fixesWithheld: [{
+        summary: '修改订单服务',
+        root: 'backend',
+        file: 'OrderService.java',
+        risk: 'medium',
+        preview: { status: 'ready', patch: '+ log.info("x");' },
+      }],
+      fixesValidation: {
+        status: 'failed',
+        ok: false,
+        error: '编译自测失败：mvn compile',
+        commands: [{ command: 'mvn compile', ok: false, exitCode: 1 }],
+        output: 'ERROR OrderService.java:12 cannot find symbol log',
+      },
+      sandbox: {
+        changedFiles: ['backend/OrderService.java'],
+        skipped: [{ file: 'frontend/package.json', reason: '沙箱新增文件暂不支持自动提取' }],
+      },
+      needsMoreInfo: ['上次未通过编译'],
+    },
+  });
+  assert.match(prompt, /fixesValidation/);
+  assert.match(prompt, /cannot find symbol log/);
+  assert.match(prompt, /fixesWithheld/);
+  assert.match(prompt, /OrderService\.java/);
+  assert.match(prompt, /沙箱新增文件暂不支持自动提取/);
+  assert.match(prompt, /mvn compile/);
+});
+
+test('validation strategy is compile-first in sandbox/full and static in readonly', () => {
+  assert.match(validationStrategyPrompt('sandbox'), /编译优先/);
+  assert.match(validationStrategyPrompt('full'), /直到通过为止/);
+  assert.match(validationStrategyPrompt('readonly'), /静态兜底/);
+  assert.doesNotMatch(validationStrategyPrompt('readonly'), /编译优先/);
 });

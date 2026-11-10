@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tempDir } from './tmp.mjs';
 import {
   buildFixPreview,
@@ -315,4 +315,56 @@ test('allows a method added in the same patch', async (t) => {
     sourceRoot: dirs.backend,
   });
   assert.equal(issue, null);
+});
+
+test('warn mode keeps logger/method issues as warnings instead of blocking', async (t) => {
+  const dirs = await fixture(t);
+  const fix = await buildFixPreview({
+    summary: '加日志',
+    root: 'backend',
+    file: 'com/demo/OrderService.java',
+    search: '        if (order.getQty() <= 0) {',
+    replace: '        log.warn("qty invalid");\n        if (order.getQty() <= 0) {',
+    risk: 'low',
+  }, { ...roots(dirs), staticChecks: 'warn' });
+  assert.equal(fix.preview.status, 'ready');
+  assert.ok(fix.preview.warnings.some((warning) => /logger/.test(warning)));
+});
+
+test('previews and applies create/delete/baseHash fixes', async (t) => {
+  const dirs = await fixture(t);
+  const created = await buildFixPreview({
+    summary: '新增文件',
+    kind: 'create',
+    root: 'backend',
+    file: 'com/demo/NewService.java',
+    content: 'package com.demo;\n\npublic class NewService {\n}\n',
+  }, roots(dirs));
+  assert.equal(created.preview.status, 'ready');
+  assert.match(created.preview.patch, /^--- \/dev\/null\n\+\+\+ b\/com\/demo\/NewService\.java/m);
+  assert.match(created.preview.patch, /\+public class NewService/);
+
+  const { createHash } = await import('node:crypto');
+  const original = await readFile(path.join(dirs.backend, 'com/demo/OrderService.java'));
+  const hash = createHash('sha256').update(original).digest('hex');
+  const removed = await buildFixPreview({
+    summary: '删除文件',
+    kind: 'delete',
+    root: 'backend',
+    file: 'com/demo/OrderService.java',
+    baseHash: hash,
+  }, roots(dirs));
+  assert.equal(removed.preview.status, 'ready');
+  assert.match(removed.preview.patch, /^\+\+\+ \/dev\/null/m);
+
+  const stale = await buildFixPreview({
+    summary: '旧补丁',
+    root: 'backend',
+    file: 'com/demo/OrderService.java',
+    search: '        if (order.getQty() <= 0) {',
+    replace: '        if (order.getQty() < 0) {',
+    baseHash: 'stale',
+  }, roots(dirs));
+  assert.equal(stale.preview.status, 'error');
+  assert.match(stale.preview.message, /文件在诊断后已被修改/);
 });

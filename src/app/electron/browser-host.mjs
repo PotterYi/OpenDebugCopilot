@@ -46,6 +46,339 @@ function localTargetPatterns(rules) {
   return [...patterns];
 }
 
+const ELEMENT_BINDING = '__dcElementDiagnose';
+const ELEMENT_OVERLAY_ID = '__dc-element-diagnose__';
+const withTimeout = (promise, ms, message = 'operation timed out') => Promise.race([
+  promise,
+  new Promise((_, reject) => setTimeout(() => reject(new Error(message)), ms)),
+]);
+
+/**
+ * Extract a serializable snapshot of the inspected element. Runs inside the page
+ * through Runtime.callFunctionOn, so it must not reference outer variables.
+ */
+function elementInfoExtractor() {
+  const el = this;
+  const win = el.ownerDocument?.defaultView || window;
+  const escapeCss = (value) => (win.CSS && win.CSS.escape
+    ? win.CSS.escape(String(value))
+    : String(value).replace(/[^a-zA-Z0-9_-]/g, '\\$&'));
+
+  const selectorFor = (node, depthLevel = 0) => {
+    if (!node || node.nodeType !== 1) return '';
+    if (node.id) return `#${escapeCss(node.id)}`;
+    if (depthLevel > 6) return node.tagName.toLowerCase();
+    const parts = [];
+    let current = node;
+    for (let depth = 0; current && current.nodeType === 1 && depth < 4; depth += 1) {
+      let part = current.tagName.toLowerCase();
+      const classes = [...current.classList]
+        .filter((name) => !name.startsWith('data-v-'))
+        .slice(0, 2);
+      if (classes.length) part += `.${classes.map(escapeCss).join('.')}`;
+      const parent = current.parentElement;
+      if (parent) {
+        const siblings = [...parent.children].filter((child) => child.tagName === current.tagName);
+        if (siblings.length > 1) part += `:nth-of-type(${siblings.indexOf(current) + 1})`;
+      }
+      parts.unshift(part);
+      if (!parent) {
+        const root = current.getRootNode && current.getRootNode();
+        if (root && root.host) {
+          return `${selectorFor(root.host, depthLevel + 1)} >>> ${parts.join(' > ')}`;
+        }
+      }
+      current = parent;
+    }
+    return parts.join(' > ');
+  };
+
+  const SENSITIVE_ATTR = /^(?:value|password|token|secret|authorization|cookie|set-cookie)$/i;
+  const attributes = {};
+  for (const attr of [...(el.attributes ?? [])].slice(0, 30)) {
+    if (SENSITIVE_ATTR.test(attr.name)) continue;
+    attributes[attr.name] = String(attr.value ?? '').slice(0, 200);
+  }
+
+  const tag = String(el.tagName || '').toLowerCase();
+  const text = /^(?:input|textarea|select|option)$/.test(tag)
+    ? String(el.getAttribute('placeholder') || el.getAttribute('aria-label') || el.getAttribute('name') || '').trim().slice(0, 300)
+    : String(el.innerText || el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 300);
+
+  const computed = win.getComputedStyle(el);
+  const styleKeys = [
+    'display', 'visibility', 'position', 'width', 'height', 'overflow', 'overflowX', 'overflowY',
+    'color', 'backgroundColor', 'fontSize', 'fontWeight', 'lineHeight', 'margin', 'padding',
+    'zIndex', 'opacity', 'flex', 'gridTemplateColumns', 'textAlign', 'whiteSpace',
+  ];
+  const styles = {};
+  for (const key of styleKeys) styles[key] = computed[key];
+
+  const ancestors = [];
+  const nextAncestor = (node) => {
+    if (!node) return null;
+    if (node.parentElement) return node.parentElement;
+    const root = node.getRootNode && node.getRootNode();
+    return root?.host ?? null;
+  };
+  let parent = nextAncestor(el);
+  for (let depth = 0; parent && depth < 5; depth += 1) {
+    ancestors.push({
+      tag: parent.tagName.toLowerCase(),
+      id: parent.id || null,
+      classes: [...parent.classList].slice(0, 4),
+      selector: selectorFor(parent),
+    });
+    parent = nextAncestor(parent);
+  }
+
+  let frameworkNode = el;
+  for (let probe = el; probe;) {
+    const keys = Object.keys(probe);
+    if (probe.__vueParentComponent || probe.__vue__
+      || keys.some((key) => key.startsWith('__reactFiber$') || key.startsWith('__reactInternalInstance$'))
+      || probe.__svelte_meta) {
+      frameworkNode = probe;
+      break;
+    }
+    probe = nextAncestor(probe);
+  }
+
+  let framework = null;
+  try {
+    const vue3 = frameworkNode.__vueParentComponent;
+    if (vue3) {
+      let current = vue3;
+      let file = null;
+      let name = null;
+      const hierarchy = [];
+      for (let depth = 0; current && depth < 10; depth += 1) {
+        const type = current.type || {};
+        const candidate = type.__name || type.name || type.__file || '?';
+        hierarchy.push(candidate);
+        if (!file && type.__file) file = type.__file;
+        if (!name && (type.__name || type.name)) name = type.__name || type.name;
+        current = current.parent;
+      }
+      framework = {
+        name: 'vue3',
+        componentName: name,
+        componentFile: file,
+        hierarchy,
+        confidence: file ? 'high' : 'medium',
+      };
+    } else if (frameworkNode.__vue__) {
+      const options = frameworkNode.__vue__.$options || {};
+      framework = {
+        name: 'vue2',
+        componentName: options.name || frameworkNode.__vue__.$options?._componentTag || null,
+        componentFile: options.__file || null,
+        hierarchy: [options.name || options.__file || '?'].filter(Boolean),
+        confidence: options.__file ? 'high' : 'medium',
+      };
+    }
+    if (!framework) {
+      const fiberKey = Object.keys(frameworkNode).find((key) => (
+        key.startsWith('__reactFiber$') || key.startsWith('__reactInternalInstance$')
+      ));
+      let fiber = fiberKey ? frameworkNode[fiberKey] : null;
+      for (let depth = 0; fiber && depth < 20; depth += 1) {
+        const type = fiber.type;
+        if (typeof type === 'function' || (type && typeof type === 'object' && type.displayName)) {
+          const source = fiber._debugSource || null;
+          framework = {
+            name: 'react',
+            componentName: type.displayName || type.name || null,
+            componentFile: source?.fileName || null,
+            line: source?.lineNumber || null,
+            hierarchy: [],
+            confidence: source?.fileName ? 'high' : 'medium',
+          };
+          break;
+        }
+        fiber = fiber.return;
+      }
+    }
+    if (!framework && win.ng && typeof win.ng.getComponent === 'function') {
+      const component = win.ng.getComponent(el);
+      if (component) {
+        framework = {
+          name: 'angular',
+          componentName: component.constructor?.name || null,
+          componentFile: null,
+          hierarchy: [component.constructor?.name].filter(Boolean),
+          confidence: 'medium',
+        };
+      }
+    }
+    if (!framework && frameworkNode.__svelte_meta) {
+      const loc = frameworkNode.__svelte_meta.loc || {};
+      framework = {
+        name: 'svelte',
+        componentName: null,
+        componentFile: loc.file || null,
+        line: loc.line || loc.start?.line || null,
+        hierarchy: [],
+        confidence: loc.file ? 'high' : 'medium',
+      };
+    }
+  } catch {
+    framework = null;
+  }
+
+  const rawRect = el.getBoundingClientRect();
+  let offsetX = 0;
+  let offsetY = 0;
+  let frameUrl = null;
+  try {
+    let frameWindow = win;
+    while (frameWindow && frameWindow.frameElement) {
+      const frameRect = frameWindow.frameElement.getBoundingClientRect();
+      offsetX += frameRect.left;
+      offsetY += frameRect.top;
+      frameWindow = frameWindow.parent;
+    }
+    if (win !== window) frameUrl = win.location.href;
+  } catch {
+    // cross-origin frame; keep the local coordinates
+  }
+  let pageUrl = window.location.href;
+  let route = `${window.location.pathname}${window.location.search}`;
+  let title = document.title;
+  try {
+    pageUrl = win.location.href;
+    route = `${win.location.pathname}${win.location.search}`;
+    title = win.document.title || title;
+  } catch {
+    // keep parent values
+  }
+  return {
+    page: {
+      url: pageUrl,
+      topUrl: window.location.href,
+      frameUrl,
+      title,
+      route,
+    },
+    selector: selectorFor(el),
+    tag,
+    id: el.id || null,
+    classes: [...el.classList].slice(0, 12),
+    attributes,
+    text,
+    html: String(el.outerHTML || '').slice(0, 2000),
+    rect: {
+      x: Math.round(rawRect.x + offsetX), y: Math.round(rawRect.y + offsetY),
+      width: Math.round(rawRect.width), height: Math.round(rawRect.height),
+      top: Math.round(rawRect.top + offsetY), left: Math.round(rawRect.left + offsetX),
+      bottom: Math.round(rawRect.bottom + offsetY), right: Math.round(rawRect.right + offsetX),
+    },
+    scroll: {
+      x: Math.round(window.scrollX || 0),
+      y: Math.round(window.scrollY || 0),
+      innerWidth: Math.round(window.innerWidth || 0),
+      innerHeight: Math.round(window.innerHeight || 0),
+    },
+    frame: { url: frameUrl, offsetX: Math.round(offsetX), offsetY: Math.round(offsetY) },
+    styles,
+    ancestors,
+    framework,
+    shadowHost: el.getRootNode && el.getRootNode().host ? selectorFor(el.getRootNode().host) : null,
+  };
+}
+
+const ELEMENT_EXTRACT_SOURCE = elementInfoExtractor.toString();
+
+function elementOverlayScript(info) {
+  const payload = JSON.stringify(info).replace(/</g, '\\u003c');
+  return `(() => {
+    const existing = document.getElementById(${JSON.stringify(ELEMENT_OVERLAY_ID)});
+    if (existing) existing.remove();
+    const info = ${payload};
+    const rect = info.rect || {};
+    const host = document.createElement('div');
+    host.id = ${JSON.stringify(ELEMENT_OVERLAY_ID)};
+    host.style.cssText = 'position:fixed;z-index:2147483647;left:0;top:0;width:0;height:0;';
+    const shadow = host.attachShadow({ mode: 'open' });
+    const style = document.createElement('style');
+    style.textContent = \`
+      .panel { position: fixed; width: 320px; box-sizing: border-box; padding: 10px; border-radius: 10px;
+        background: #1f2430; color: #e8edf5; border: 1px solid #4a5568;
+        box-shadow: 0 12px 32px rgba(0,0,0,.45); font: 13px/1.45 system-ui, sans-serif; }
+      .title { font-weight: 600; margin-bottom: 6px; color: #fbbf24; }
+      .meta { font-size: 11px; color: #9aa6b8; margin-bottom: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      textarea { width: 100%; box-sizing: border-box; resize: vertical; min-height: 52px; padding: 7px 8px;
+        border-radius: 6px; border: 1px solid #4a5568; background: #141922; color: #e8edf5; font: inherit; outline: none; }
+      .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+      button { border: 0; border-radius: 6px; padding: 6px 12px; font: inherit; cursor: pointer; }
+      .go { background: #f59e0b; color: #1a1a1a; font-weight: 600; }
+      .cancel { background: #2b3342; color: #cbd5e1; }
+    \`;
+    shadow.append(style);
+    const panel = document.createElement('div');
+    panel.className = 'panel';
+    const title = document.createElement('div');
+    title.className = 'title';
+    title.textContent = '元素视野诊断';
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    meta.textContent = (info.framework && (info.framework.componentFile || info.framework.componentName)) || info.selector || '';
+    const input = document.createElement('textarea');
+    input.placeholder = '这个元素哪里不对劲？例如：字段显示不完整、样式错位、数据不合理…';
+    const actions = document.createElement('div');
+    actions.className = 'actions';
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'cancel';
+    cancel.textContent = '取消';
+    const go = document.createElement('button');
+    go.type = 'button';
+    go.className = 'go';
+    go.textContent = '诊断';
+    actions.append(cancel, go);
+    panel.append(title, meta, input, actions);
+    shadow.append(panel);
+
+    const left = Math.min(Math.max(8, rect.left || 8), Math.max(8, window.innerWidth - 328));
+    let top = (rect.bottom || 80) + 8;
+    if (top + 190 > window.innerHeight) top = Math.max(8, (rect.top || 80) - 200);
+    panel.style.left = left + 'px';
+    panel.style.top = top + 'px';
+
+    const cleanup = () => {
+      window.removeEventListener('keydown', onKey, true);
+      host.remove();
+    };
+    const send = (payload) => {
+      try {
+        if (typeof window[${JSON.stringify(ELEMENT_BINDING)}] === 'function') {
+          window[${JSON.stringify(ELEMENT_BINDING)}](JSON.stringify(payload));
+        }
+      } catch {}
+      cleanup();
+    };
+    const onKey = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        send({ cancelled: true });
+      }
+    };
+    go.addEventListener('click', () => {
+      const question = input.value.trim();
+      if (!question) {
+        input.style.borderColor = '#ef4444';
+        input.focus();
+        return;
+      }
+      send({ element: info, question });
+    });
+    cancel.addEventListener('click', () => send({ cancelled: true }));
+    window.addEventListener('keydown', onKey, true);
+    document.documentElement.append(host);
+    setTimeout(() => input.focus(), 0);
+  })();`;
+}
+
 /**
  * Embedded browser host: WebContentsView + CDP capture.
  * Routing redirects live in routing.mjs; this module only answers local CORS preflights
@@ -79,6 +412,12 @@ export class BrowserHost {
     this.headersByUrl = new Map();
     this.visible = false;
     this.bounds = { x: 0, y: 0, width: 0, height: 0 };
+    this.elementPicking = false;
+    this.elementOverlay = false;
+    this.elementBindingAdded = false;
+    this.elementLastError = null;
+    this.elementLastScreenshotError = null;
+    this.elementScreenshots = new Map();
 
     this.view = new WebContentsView({
       webPreferences: {
@@ -120,6 +459,14 @@ export class BrowserHost {
     });
     contents.on('did-navigate', (_event, url) => {
       this.pendingUrl = null;
+      if (this.elementPicking || this.elementOverlay) {
+        this.elementPicking = false;
+        this.elementOverlay = false;
+        this.elementScreenshots.clear();
+        this.emit({ type: 'element-pick-cancel' });
+      }
+      // Runtime bindings belong to the page's JS context; re-add after navigation.
+      this.elementBindingAdded = false;
       this.emit({ type: 'navigation', url });
     });
     contents.on('did-navigate-in-page', (_event, url) => this.emit({ type: 'navigation', url }));
@@ -193,6 +540,206 @@ export class BrowserHost {
       return Promise.reject(new Error('CDP is not attached'));
     }
     return debuggerApi.sendCommand(method, params);
+  }
+
+  async removeElementOverlay() {
+    this.elementOverlay = false;
+    await this.view.webContents.executeJavaScript(`(() => {
+      const node = document.getElementById(${JSON.stringify(ELEMENT_OVERLAY_ID)});
+      if (node) node.remove();
+      return true;
+    })()`).catch(() => false);
+  }
+
+  async startElementPick() {
+    this.elementLastError = null;
+    this.elementLastScreenshotError = null;
+    await this.sendCdp('DOM.enable');
+    await this.sendCdp('Overlay.enable');
+    if (!this.elementBindingAdded) {
+      try {
+        await this.sendCdp('Runtime.addBinding', { name: ELEMENT_BINDING });
+        this.elementBindingAdded = true;
+      } catch (error) {
+        log.warn('[element] Runtime.addBinding failed:', error?.message ?? error);
+      }
+    }
+    await this.removeElementOverlay();
+    this.elementPicking = true;
+    await this.sendCdp('Overlay.setInspectMode', {
+      mode: 'searchForNode',
+      highlightConfig: {
+        showInfo: true,
+        contentColor: { r: 245, g: 158, b: 11, a: 0.35 },
+        paddingColor: { r: 245, g: 158, b: 11, a: 0.2 },
+        borderColor: { r: 245, g: 158, b: 11, a: 0.9 },
+        marginColor: { r: 245, g: 158, b: 11, a: 0.15 },
+      },
+    });
+    this.emit({ type: 'element-pick-start' });
+  }
+
+  async cancelElementPick() {
+    this.elementPicking = false;
+    this.elementScreenshots.clear();
+    await this.sendCdp('Overlay.setInspectMode', { mode: 'none' }).catch(() => {});
+    await this.removeElementOverlay();
+    this.emit({ type: 'element-pick-cancel' });
+  }
+
+  async handleElementPicked(backendNodeId) {
+    if (!this.elementPicking) return;
+    this.elementPicking = false;
+    await this.sendCdp('Overlay.setInspectMode', { mode: 'none' }).catch(() => {});
+    try {
+      const resolved = await this.sendCdp('DOM.resolveNode', { backendNodeId });
+      const objectId = resolved?.object?.objectId;
+      if (!objectId) throw new Error('无法解析选中的元素');
+      const extracted = await this.sendCdp('Runtime.callFunctionOn', {
+        objectId,
+        functionDeclaration: ELEMENT_EXTRACT_SOURCE,
+        returnByValue: true,
+      });
+      const info = extracted?.result?.value;
+      if (!info || typeof info !== 'object') throw new Error('元素信息提取失败');
+      info.id = `element-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+      info.capturedAt = Date.now();
+      info.nearbyRequests = this.list({ limit: 10 }).map((record) => ({
+        method: record.method,
+        url: record.url,
+        status: record.status,
+        durationMs: record.durationMs,
+      }));
+      try {
+        const rect = info.rect ?? {};
+        if (rect.width > 0 && rect.height > 0) {
+          const padding = 24;
+          const bounds = {
+            x: Math.max(0, Math.round((rect.left ?? rect.x ?? 0) - padding)),
+            y: Math.max(0, Math.round((rect.top ?? rect.y ?? 0) - padding)),
+            width: Math.max(16, Math.round(rect.width + padding * 2)),
+            height: Math.max(16, Math.round(rect.height + padding * 2)),
+          };
+          const scroll = info.scroll ?? {};
+          const maxWidth = Math.max(80, scroll.innerWidth || 1200);
+          const maxHeight = Math.max(80, scroll.innerHeight || 800);
+          const clipBounds = {
+            x: bounds.x,
+            y: bounds.y,
+            width: Math.min(bounds.width, maxWidth),
+            height: Math.min(bounds.height, maxHeight),
+          };
+          let dataUrl = null;
+          try {
+            await withTimeout(this.sendCdp('Page.enable'), 500).catch(() => {});
+            const shot = await withTimeout(this.sendCdp('Page.captureScreenshot', {
+              format: 'png',
+              fromSurface: true,
+              clip: {
+                x: clipBounds.x + (scroll.x ?? 0),
+                y: clipBounds.y + (scroll.y ?? 0),
+                width: clipBounds.width,
+                height: clipBounds.height,
+                scale: 1,
+              },
+            }), 2000, 'screenshot timeout');
+            if (shot?.data) {
+              const size = Buffer.from(shot.data, 'base64').length;
+              if (size <= 2 * 1024 * 1024) {
+                dataUrl = `data:image/png;base64,${shot.data}`;
+              } else {
+                this.elementLastScreenshotError = `screenshot too large: ${size}`;
+              }
+            }
+          } catch (error) {
+            this.elementLastScreenshotError = error?.message ?? String(error);
+          }
+          if (!dataUrl) {
+            try {
+              const image = await withTimeout(this.view.webContents.capturePage(clipBounds), 1500, 'capturePage timeout');
+              if (!image.isEmpty()) {
+                const png = image.toPNG();
+                if (png.length <= 2 * 1024 * 1024) {
+                  dataUrl = `data:image/png;base64,${png.toString('base64')}`;
+                } else {
+                  this.elementLastScreenshotError = `screenshot too large: ${png.length}`;
+                }
+              } else if (!this.elementLastScreenshotError) {
+                this.elementLastScreenshotError = 'capturePage returned an empty image';
+              }
+            } catch (error) {
+              if (!this.elementLastScreenshotError) {
+                this.elementLastScreenshotError = error?.message ?? String(error);
+              }
+            }
+          }
+          if (dataUrl) {
+            info.screenshotDataUrl = dataUrl;
+            info.screenshotRect = bounds;
+            this.elementLastScreenshotError = null;
+          }
+        } else {
+          this.elementLastScreenshotError = 'selected element has no visible size';
+        }
+      } catch (error) {
+        this.elementLastScreenshotError = error?.message ?? String(error);
+        log.warn('[element] screenshot failed:', this.elementLastScreenshotError);
+      }
+      if (info.screenshotDataUrl) {
+        this.elementScreenshots.set(info.id, {
+          dataUrl: info.screenshotDataUrl,
+          rect: info.screenshotRect ?? null,
+        });
+      }
+      const overlayInfo = { ...info };
+      delete overlayInfo.screenshotDataUrl;
+      await this.view.webContents.executeJavaScript(elementOverlayScript(overlayInfo), true);
+      this.elementOverlay = true;
+      const picked = { ...overlayInfo };
+      this.emit({ type: 'element-picked', element: picked });
+    } catch (error) {
+      this.elementLastError = error?.message ?? String(error);
+      log.warn('[element] extract failed:', this.elementLastError, error?.stack ?? '');
+      this.emit({ type: 'element-error', message: this.elementLastError });
+    }
+  }
+
+  handleElementBinding({ name, payload } = {}) {
+    if (name !== ELEMENT_BINDING) return;
+    let data = null;
+    try {
+      data = JSON.parse(payload);
+    } catch {
+      data = null;
+    }
+    this.elementPicking = false;
+    this.elementOverlay = false;
+    this.sendCdp('Overlay.setInspectMode', { mode: 'none' }).catch(() => {});
+    if (!data || data.cancelled) {
+      this.elementScreenshots.clear();
+      this.emit({ type: 'element-pick-cancel' });
+      return;
+    }
+    if (!data.element) {
+      this.elementScreenshots.clear();
+      this.emit({ type: 'element-error', message: '未收到元素信息' });
+      return;
+    }
+    let element = data.element;
+    const screenshot = element.id ? this.elementScreenshots.get(element.id) : null;
+    if (screenshot) {
+      element = {
+        ...element,
+        screenshotDataUrl: screenshot.dataUrl,
+        screenshotRect: screenshot.rect,
+      };
+      this.elementScreenshots.delete(element.id);
+    }
+    this.emit({
+      type: 'element-submit',
+      element,
+      question: String(data.question ?? '').trim(),
+    });
   }
 
   /**
@@ -293,6 +840,18 @@ export class BrowserHost {
   handleCdp(method, params) {
     if (method === 'Fetch.requestPaused') {
       this.handlePreflightRequest(params);
+      return;
+    }
+
+    if (method === 'Overlay.inspectNodeRequested') {
+      this.handleElementPicked(params.backendNodeId).catch((error) => {
+        log.warn('[element] pick failed:', error?.message ?? error);
+      });
+      return;
+    }
+
+    if (method === 'Runtime.bindingCalled') {
+      this.handleElementBinding(params);
       return;
     }
 

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { readdir, rm } from 'node:fs/promises';
+import { mkdir, readdir, rm, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { createStore, DEFAULT_WORKSPACE } from '../../src/core/store.mjs';
 import { tempDir } from './tmp.mjs';
@@ -44,6 +44,7 @@ test('saves workspace atomically and reads it back', async (t) => {
     maxTurns: null,
     maxBudgetUsd: 1.5,
     timeoutMs: 60000,
+    toolMode: 'sandbox',
   });
   const reloaded = await createStore({ configDir: TMP }).getWorkspace();
   assert.deepEqual(reloaded, saved);
@@ -224,4 +225,25 @@ test('saving a profile with an existing name overwrites it', async (t) => {
   assert.equal(overwritten.profiles[0].name, 'Same name');
   assert.equal(overwritten.profiles[0].frontendUrl, 'http://localhost:6000');
   assert.equal((await store.getWorkspace()).frontendUrl, 'http://localhost:6000');
+});
+
+test('migrates legacy agent.sandbox to toolMode', async (t) => {
+  await rm(TMP, { recursive: true, force: true });
+  await mkdir(TMP, { recursive: true });
+  t.after(async () => { await rm(TMP, { recursive: true, force: true }); });
+  const store = createStore({ configDir: TMP });
+  const defaults = await store.getWorkspace();
+  assert.equal(defaults.agent.toolMode, 'sandbox');
+
+  await writeFile(path.join(TMP, 'workspace.json'), JSON.stringify({
+    agent: { sandbox: false },
+  }), 'utf8');
+  const legacy = await store.getWorkspace();
+  assert.equal(legacy.agent.toolMode, 'readonly');
+
+  await writeFile(path.join(TMP, 'workspace.json'), JSON.stringify({
+    agent: { toolMode: 'full' },
+  }), 'utf8');
+  const full = await store.getWorkspace();
+  assert.equal(full.agent.toolMode, 'full');
 });
