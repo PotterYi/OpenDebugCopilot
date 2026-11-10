@@ -1076,7 +1076,8 @@ function renderFixCard(fix, view, fixIndex, { readOnly = false } = {}) {
   if (typeof fix === 'string') return el('li', 'fix-card', fix);
   const runId = view.response?.runId ?? view.response?.result?.meta?.runId;
   const card = el('li', 'fix-card');
-  const applied = Boolean(fix.applied) && !fix.applied.revertedAt;
+  const workspaceApplied = Boolean(fix.workspaceApplied);
+  const applied = (Boolean(fix.applied) && !fix.applied.revertedAt) || workspaceApplied;
   const reverted = Boolean(fix.applied?.revertedAt);
   const head = el('div', 'fix-head');
   head.append(el('span', 'fix-summary', fix.summary ?? '(无摘要)'));
@@ -1105,7 +1106,7 @@ function renderFixCard(fix, view, fixIndex, { readOnly = false } = {}) {
       }
     });
     bar.append(copy);
-    if (!readOnly && api.isDesktop && ['edit', 'create', 'delete'].includes(fix.kind)) {
+    if (!readOnly && api.isDesktop && !workspaceApplied && ['edit', 'create', 'delete'].includes(fix.kind)) {
       if (applied) {
         const verifyCmd = configCache?.workspace?.verifyCommand;
         if (verifyCmd) {
@@ -1388,6 +1389,86 @@ function renderFixValidation(validation) {
   return block;
 }
 
+function renderWorkspaceSession(session, view, runId, { readOnly = false } = {}) {
+  const block = el('section', 'card-section workspace-session');
+  const summary = el('div', 'verify-summary');
+  const status = session.status ?? 'pending';
+  const badge = status === 'kept'
+    ? '工作区修改已保留'
+    : status === 'discarded'
+      ? '工作区修改已丢弃'
+      : '本次诊断已修改工作区';
+  summary.append(el(
+    'span',
+    `badge ${status === 'kept' ? 'ok' : status === 'pending' ? 'error' : ''}`,
+    badge,
+  ));
+  summary.append(el('span', 'muted small', `${session.changedFiles?.length ?? 0} 个文件`));
+  if (session.selfCheck) {
+    summary.append(el(
+      'span',
+      `badge ${session.selfCheck.status === 'passed' ? 'ok' : session.selfCheck.status === 'failed' ? 'error' : ''}`,
+      session.selfCheck.status === 'passed'
+        ? '编译自测通过'
+        : session.selfCheck.status === 'failed'
+          ? '编译自测失败'
+          : '未执行编译自测',
+    ));
+    if (session.selfCheck.durationMs) {
+      summary.append(el('span', 'muted small', `${session.selfCheck.durationMs} ms`));
+    }
+  }
+  block.append(summary);
+
+  if (session.changedFiles?.length) {
+    const list = el('ul', 'evidence-list');
+    for (const file of session.changedFiles.slice(0, 20)) list.append(el('li', null, file));
+    block.append(list);
+  }
+  if (session.conflicts?.length) {
+    block.append(el('p', 'error-text small', `冲突：${session.conflicts.map((item) => `${item.file}（${item.reason}）`).join('；')}`));
+  }
+  if (session.selfCheck?.error) {
+    block.append(el('p', 'error-text small', session.selfCheck.error));
+  }
+  if (session.selfCheck?.output && session.selfCheck.status === 'failed') {
+    block.append(el('pre', 'verify-log', String(session.selfCheck.output).slice(-8000)));
+  }
+
+  if (status === 'pending' && !readOnly && runId) {
+    const actions = el('div', 'modal-actions');
+    const keep = el('button', null, '保留修改');
+    keep.type = 'button';
+    keep.addEventListener('click', () => runWorkspaceAction(view, 'keep'));
+    const discard = el('button', 'secondary', '丢弃修改');
+    discard.type = 'button';
+    discard.addEventListener('click', () => runWorkspaceAction(view, 'discard'));
+    actions.append(keep, discard);
+    block.append(actions);
+  }
+  return block;
+}
+
+async function runWorkspaceAction(view, action) {
+  const response = view.response;
+  const runId = response?.runId ?? response?.result?.meta?.runId;
+  if (!runId) return;
+  showMessage(view, action === 'keep' ? '正在保留工作区修改…' : '正在丢弃工作区修改…');
+  try {
+    const result = await api.workspace(action, { runId });
+    if (result?.ok === false) {
+      showMessage(view, result.error ?? '操作失败', 'message error');
+      return;
+    }
+    const run = await api.getRun(runId);
+    view.response.result = run.result;
+    renderRunInto(view);
+    showMessage(view, action === 'keep' ? '已保留工作区修改' : '已丢弃工作区修改', 'message ok');
+  } catch (error) {
+    showMessage(view, `操作失败：${error.message}`, 'message error');
+  }
+}
+
 function renderRunBody(container, result, agent, view, { readOnly = false, showHeader = true } = {}) {
   const runId = view.response?.runId ?? result.meta?.runId;
   const correlationInfo = describeCorrelation(result);
@@ -1512,6 +1593,14 @@ function renderRunBody(container, result, agent, view, { readOnly = false, showH
     ])));
   }
 
+  if (agent?.workspaceSession) {
+    container.append(renderWorkspaceSession(
+      agent.workspaceSession,
+      view,
+      result.meta?.runId ?? view.response?.runId,
+      { readOnly },
+    ));
+  }
   if (agent?.fixesValidation) {
     container.append(renderFixValidation(agent.fixesValidation));
   }
@@ -1526,6 +1615,7 @@ function renderRunBody(container, result, agent, view, { readOnly = false, showH
         typeof fix === 'object'
         && ['edit', 'create', 'delete'].includes(fix.kind)
         && fix.preview?.status === 'ready'
+        && !fix.workspaceApplied
         && !(fix.applied && !fix.applied.revertedAt)
       )).length;
       const appliedCount = fixes.filter((fix) => fix?.applied && !fix.applied.revertedAt).length;
@@ -2716,19 +2806,14 @@ $('element-scan').addEventListener('click', async () => {
     return;
   }
   try {
-    if (elementPicking) {
-      await api.element('cancel');
-      setElementPicking(false);
-      setStatus('已取消元素选择');
-      return;
-    }
     setTab('browser');
-    await api.element('start');
-    setElementPicking(true);
-    setStatus('请在页面中选择一个元素');
+    const result = await api.element('toggle');
+    const picking = Boolean(result?.picking);
+    setElementPicking(picking);
+    setStatus(picking ? '请在页面中选择一个元素' : '已取消元素选择', picking ? '' : 'ok');
   } catch (error) {
     setElementPicking(false);
-    setStatus(`元素视野启动失败：${error.message}`, 'error');
+    setStatus(`元素视野操作失败：${error.message}`, 'error');
   }
 });
 

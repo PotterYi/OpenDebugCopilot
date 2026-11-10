@@ -780,6 +780,54 @@ export async function buildFixPreview(item, {
   };
 }
 
+/** Build a preview directly from baseline/current text, without reading the file. */
+export function previewFixFromTexts(fixItem, original, updated) {
+  const fix = normalizeFix(fixItem);
+  if (!fix) return null;
+  const file = fix.file.replace(/\\/g, '/');
+  if (fix.kind === 'create') {
+    return {
+      ...fix,
+      preview: {
+        status: 'ready',
+        line: 1,
+        patch: buildCreatePatch(file, updated ?? fix.content ?? ''),
+        message: '可预览（新建文件）',
+      },
+    };
+  }
+  if (fix.kind === 'delete') {
+    return {
+      ...fix,
+      preview: {
+        status: 'ready',
+        line: 1,
+        patch: buildDeletePatch(file, original ?? ''),
+        message: '可预览（删除文件）',
+      },
+    };
+  }
+  if (fix.kind !== 'edit') {
+    return { ...fix, preview: { status: 'no-edit', message: '仅文字建议，未提供可预览的代码修改' } };
+  }
+  return {
+    ...fix,
+    preview: {
+      status: 'ready',
+      line: 1,
+      occurrences: 1,
+      patch: buildPatch({
+        file,
+        line: 1,
+        search: original ?? '',
+        replace: updated ?? '',
+        text: original ?? '',
+      }),
+      message: '可预览',
+    },
+  };
+}
+
 /**
  * Normalize and preview a list of fixes. Previewing is capped to avoid reading many files.
  *

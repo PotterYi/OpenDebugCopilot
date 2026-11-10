@@ -1,0 +1,64 @@
+<!doctype html>
+<html><head><meta charset="utf-8" />
+<style>
+  html, body { margin: 0; background: transparent; }
+  body {
+    padding: 10px; box-sizing: border-box; border-radius: 10px;
+    background: #1f2430; color: #e8edf5; border: 1px solid #4a5568;
+    font: 13px/1.45 system-ui, sans-serif; overflow: hidden;
+    box-shadow: 0 12px 32px rgba(0,0,0,.45);
+  }
+  .title { font-weight: 600; margin-bottom: 4px; color: #fbbf24; }
+  .meta { font-size: 11px; color: #9aa6b8; margin-bottom: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  textarea {
+    width: 100%; box-sizing: border-box; resize: none; height: 56px;
+    padding: 7px 8px; border-radius: 6px; border: 1px solid #4a5568;
+    background: #141922; color: #e8edf5; font: inherit; outline: none;
+  }
+  .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+  button { border: 0; border-radius: 6px; padding: 6px 12px; font: inherit; cursor: pointer; }
+  .go { background: #f59e0b; color: #1a1a1a; font-weight: 600; }
+  .cancel { background: #2b3342; color: #cbd5e1; }
+  .message { min-height: 16px; margin-top: 6px; font-size: 11px; color: #f87171; }
+</style></head>
+<body>
+  <div class="title">元素视野诊断</div>
+  <div class="meta" id="meta"></div>
+  <textarea id="question" placeholder="这个元素哪里不对劲？例如：字段显示不完整、样式错位、数据不合理…"></textarea>
+  <div class="message" id="message"></div>
+  <div class="actions">
+    <button class="cancel" id="cancel" type="button">取消</button>
+    <button class="go" id="go" type="button">诊断</button>
+  </div>
+  <script>
+    const question = document.getElementById('question');
+    const message = document.getElementById('message');
+    window.setComposerData = (data) => {
+      document.getElementById('meta').textContent = data?.label ?? '';
+      question.focus();
+    };
+    const submit = async () => {
+      const text = question.value.trim();
+      if (!text) {
+        message.textContent = '请先输入问题';
+        question.focus();
+        return;
+      }
+      const result = await window.dcComposer.submit(text);
+      if (!result?.ok) message.textContent = result?.message ?? '提交失败';
+    };
+    const cancel = () => window.dcComposer.cancel();
+    document.getElementById('go').addEventListener('click', submit);
+    document.getElementById('cancel').addEventListener('click', cancel);
+    question.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+        event.preventDefault();
+        submit();
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        cancel();
+      }
+    });
+  </script>
+</body></html>

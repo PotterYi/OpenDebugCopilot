@@ -25,7 +25,7 @@ export function sandboxPromptFor(sandbox) {
     const label = entry.key === 'extra' ? `extra/${entry.extraRoot}` : entry.key;
     return `  - ${label}: ${entry.sandboxRoot}`;
   });
-  return `${SANDBOX_SYSTEM_PROMPT}\n\n沙箱源码根：\n${roots.join('\n')}\nrun_command 的 cwd 可传这些目录或其子目录。`;
+  return `${SANDBOX_SYSTEM_PROMPT}\n\n沙箱源码根：\n${roots.join('\n')}\nrun_command 的 cwd 可传这些目录或其子目录。\n其他后端源码目录只读，不能 Edit/Write。`;
 }
 
 export const SANDBOX_SYSTEM_PROMPT = `
@@ -358,10 +358,13 @@ export function createSandboxCommandRunner({
   };
 
   function assertInside(target) {
-    const relative = path.relative(sandbox.dir, target);
-    if (relative.startsWith('..') || path.isAbsolute(relative)) {
-      throw new AppError('COMMAND_CWD_DENIED', `命令目录不在沙箱内：${target}`, { exitCode: 2 });
-    }
+    const isInside = (root) => {
+      const relative = path.relative(root, target);
+      return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+    };
+    if (isInside(sandbox.dir)) return;
+    if ((sandbox.roots ?? []).some((entry) => isInside(entry.sandboxRoot))) return;
+    throw new AppError('COMMAND_CWD_DENIED', `命令目录不在工作区内：${target}`, { exitCode: 2 });
   }
 
   return async function runCommand({ command, cwd } = {}) {

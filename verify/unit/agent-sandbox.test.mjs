@@ -117,10 +117,12 @@ test('diagnosis edits a sandbox, runs a tool command, and extracts fixes', async
       assert.equal(ran.ok, true, JSON.stringify(ran));
       const target = path.join(this.scope.allowedRoots[0], 'com/demo/OrderService.java');
       const text = await readFile(target, 'utf8');
+      await this.scope.onBeforeWrite({ filePath: target });
       await writeFile(target, text.replace(
         '            throw new IllegalArgumentException',
         '            // sandbox fix\n            throw new IllegalArgumentException',
       ), 'utf8');
+      await this.scope.onAfterWrite({ filePath: target });
       return {
         conclusion: '沙箱中已修复并验证',
         evidenceRefs: [{ type: 'request', ref: 'request' }],
@@ -131,7 +133,7 @@ test('diagnosis edits a sandbox, runs a tool command, and extracts fixes', async
     },
   };
 
-  const { result, runDir } = await runCaptureDiagnosis({
+  const outcome = await runCaptureDiagnosis({
     request: { method: 'POST', url: 'http://localhost/api/order', headers: {}, body: '{}', startedAt: Date.now() },
     response: { status: 500, statusText: 'Error', ok: false, headers: {}, body: '{}', durationMs: 1 },
     firedAt: Date.now(),
@@ -143,10 +145,14 @@ test('diagnosis edits a sandbox, runs a tool command, and extracts fixes', async
     verifyCommand,
     sandbox: true,
   });
+  const { result, runDir } = outcome;
 
   assert.equal(result.agent.fixes.length, 1);
   assert.equal(result.agent.fixes[0].preview.status, 'ready');
   assert.match(result.agent.fixes[0].replace, /sandbox fix/);
+  assert.ok(outcome.workspaceSession, 'expected an in-place workspace session');
+  assert.equal(result.agent.workspaceSession.status, 'pending');
+  await outcome.workspaceSession.discard();
   assert.equal(await readFile(file, 'utf8'), original);
   await assert.rejects(access(path.join(runDir, 'sandbox')));
 });

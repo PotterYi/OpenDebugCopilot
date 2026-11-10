@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, safeStorage, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, safeStorage, screen, shell } from 'electron';
 import path from 'node:path';
 import { access, appendFile, mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
@@ -32,6 +32,10 @@ import { getLogFile, log, setLogFile } from '../../core/logger.mjs';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '../../..');
 const HOST = '127.0.0.1';
+const ELEMENT_COMPOSER_HTML = path.join(ROOT, 'src/ui/element-composer.html');
+const ELEMENT_COMPOSER_PRELOAD = path.join(HERE, 'element-composer-preload.cjs');
+let elementComposer = null;
+const workspaceSessions = new Map();
 
 app.disableHardwareAcceleration();
 app.setName('DebugCopilot');
@@ -141,6 +145,44 @@ async function loadRunFix(service, runId, fixIndex) {
   return { ...context, fix: context.fixes[fixIndex] };
 }
 
+async function finalizeWorkspaceSession(service, runId, action) {
+  const session = workspaceSessions.get(runId);
+  if (!session) throw new Error('工作区会话已失效；如果应用重启过，请重新诊断。');
+  const outcome = action === 'keep'
+    ? await session.keep()
+    : await session.discard();
+  if (action === 'discard' && outcome?.conflicts?.length) {
+    return {
+      ok: false,
+      error: '部分文件在诊断期间被外部修改，未自动回滚',
+      conflicts: outcome.conflicts,
+    };
+  }
+  workspaceSessions.delete(runId);
+  const runDir = path.join(service.runsRoot, runId);
+  const file = path.join(runDir, 'result.json');
+  let result = null;
+  try {
+    result = JSON.parse(await readFile(file, 'utf8'));
+  } catch {
+    result = null;
+  }
+  if (result?.agent?.workspaceSession) {
+    result.agent.workspaceSession.status = action === 'keep' ? 'kept' : 'discarded';
+    for (const fix of result.agent.fixes ?? []) {
+      fix.workspaceApplied = action === 'keep';
+      fix.pendingDecision = false;
+    }
+    await writeJsonAtomic(file, result);
+  }
+  return {
+    ok: true,
+    status: action === 'keep' ? 'kept' : 'discarded',
+    restored: outcome?.restored ?? [],
+    workspaceSession: result?.agent?.workspaceSession ?? null,
+  };
+}
+
 function agentToolMode(workspace = {}) {
   const mode = workspace.agent?.toolMode;
   if (['readonly', 'sandbox', 'full'].includes(mode)) return mode;
@@ -150,19 +192,26 @@ function agentToolMode(workspace = {}) {
 function agentOptionsFromWorkspace(workspace = {}, { extraSourceRoots = [] } = {}) {
   const agent = workspace.agent ?? {};
   const roots = new Set();
+  const writeRoots = new Set();
   const addRoot = (value) => {
     const text = String(value ?? '').trim();
-    if (text) roots.add(path.resolve(ROOT, text));
+    if (!text) return null;
+    const resolved = path.resolve(ROOT, text);
+    roots.add(resolved);
+    return resolved;
   };
-  addRoot(workspace.sourceRoot);
-  addRoot(workspace.frontendSourceRoot);
-  addRoot(workspace.frontendProjectRoot);
+  const primaryRoot = addRoot(workspace.sourceRoot) ?? undefined;
+  const frontendRoot = addRoot(workspace.frontendSourceRoot);
+  const frontendProject = addRoot(workspace.frontendProjectRoot);
+  if (primaryRoot) writeRoots.add(primaryRoot);
+  if (frontendRoot) writeRoots.add(frontendRoot);
+  else if (frontendProject) writeRoots.add(frontendProject);
   for (const root of extraSourceRoots) addRoot(root?.root ?? root);
-  const sourceRoot = workspace.sourceRoot ? path.resolve(ROOT, workspace.sourceRoot) : undefined;
   const fallbackRoot = [...roots][0];
   return {
-    cwd: sourceRoot ?? fallbackRoot,
+    cwd: primaryRoot ?? fallbackRoot,
     allowedRoots: [...roots],
+    writeRoots: [...writeRoots],
     model: agent.model || undefined,
     maxTurns: agent.maxTurns,
     maxBudgetUsd: agent.maxBudgetUsd ?? undefined,
@@ -258,6 +307,143 @@ function createToolApprover(event) {
   };
 }
 
+function closeElementComposer({ clearScreenshots = true } = {}) {
+  const composer = elementComposer;
+  elementComposer = null;
+  if (clearScreenshots) composer?.host?.clearElementScreenshots?.();
+  if (composer?.window && !composer.window.isDestroyed()) {
+    composer.window.destroy();
+  }
+}
+
+function elementComposerBounds(host, owner, element) {
+  const rect = element?.rect ?? {};
+  const viewBounds = typeof host?.view?.getBounds === 'function'
+    ? host.view.getBounds()
+    : (host?.bounds ?? { x: 0, y: 0 });
+  const content = owner.getContentBounds();
+  const width = 340;
+  const height = 200;
+  let x = content.x + (viewBounds.x ?? 0) + (rect.left ?? rect.x ?? 0);
+  let y = content.y + (viewBounds.y ?? 0) + (rect.bottom ?? rect.y ?? 0) + 8;
+  const display = screen.getDisplayNearestPoint({
+    x: Math.round(x + width / 2),
+    y: Math.round(y + height / 2),
+  });
+  const area = display.workArea;
+  x = Math.min(Math.max(area.x + 8, x), area.x + area.width - width - 8);
+  if (y + height > area.y + area.height - 8) {
+    y = content.y + (viewBounds.y ?? 0) + (rect.top ?? rect.y ?? 0) - height - 8;
+  }
+  y = Math.min(Math.max(area.y + 8, y), area.y + area.height - height - 8);
+  return {
+    x: Math.round(x),
+    y: Math.round(y),
+    width,
+    height,
+  };
+}
+
+async function showElementComposer({ owner, host, element }) {
+  closeElementComposer({ clearScreenshots: false });
+  if (!owner || owner.isDestroyed()) return;
+  const bounds = elementComposerBounds(host, owner, element);
+  const composerWindow = new BrowserWindow({
+    ...bounds,
+    show: false,
+    frame: false,
+    resizable: false,
+    movable: true,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    parent: owner,
+    backgroundColor: '#1f2430',
+    webPreferences: {
+      preload: ELEMENT_COMPOSER_PRELOAD,
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+    },
+  });
+  elementComposer = {
+    window: composerWindow,
+    owner,
+    host,
+    element,
+  };
+  composerWindow.once('closed', () => {
+    if (elementComposer?.window === composerWindow) {
+      elementComposer = null;
+      host?.clearElementScreenshots?.();
+    }
+  });
+  try {
+    await composerWindow.loadFile(ELEMENT_COMPOSER_HTML);
+    const label = element?.framework?.componentFile
+      || element?.framework?.componentName
+      || element?.selector
+      || '';
+    await composerWindow.webContents.executeJavaScript(
+      `window.setComposerData(${JSON.stringify({ label })})`,
+    ).catch(() => {});
+    composerWindow.show();
+    composerWindow.focus();
+  } catch (error) {
+    log.warn('[element] composer failed:', error?.message ?? error);
+    closeElementComposer();
+    if (!owner.isDestroyed()) {
+      owner.webContents.send('dc:element:event', {
+        type: 'element-error',
+        message: `元素诊断输入框打开失败：${error?.message ?? error}`,
+      });
+    }
+  }
+}
+
+function registerElementComposerIpc() {
+  ipcMain.handle('dc:element-composer:submit', async (event, payload = {}) => {
+    const composer = elementComposer;
+    if (!composer || event.sender !== composer.window.webContents) {
+      return { ok: false, message: '元素诊断窗口已关闭' };
+    }
+    const question = String(payload.question ?? '').trim();
+    if (!question) return { ok: false, message: '请先输入问题' };
+    const element = { ...composer.element };
+    const screenshot = composer.host.consumeElementScreenshot(element.id);
+    if (screenshot) {
+      element.screenshotDataUrl = screenshot.dataUrl;
+      element.screenshotRect = screenshot.rect ?? null;
+    }
+    const { window: composerWindow, owner } = composer;
+    elementComposer = null;
+    if (!composerWindow.isDestroyed()) composerWindow.destroy();
+    if (owner && !owner.isDestroyed()) {
+      owner.webContents.send('dc:element:event', {
+        type: 'element-submit',
+        element,
+        question,
+      });
+    }
+    return { ok: true };
+  });
+
+  ipcMain.handle('dc:element-composer:cancel', async (event) => {
+    const composer = elementComposer;
+    if (!composer || event.sender !== composer.window.webContents) {
+      return { ok: false };
+    }
+    const { owner } = composer;
+    closeElementComposer();
+    if (owner && !owner.isDestroyed()) {
+      owner.webContents.send('dc:element:event', { type: 'element-pick-cancel' });
+    }
+    return { ok: true };
+  });
+}
+
 function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
   const handle = (channel, fn) => ipcMain.handle(channel, async (event, payload) => {
     try {
@@ -338,8 +524,29 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
   handle('dc:runs', async (_event, payload = {}) => {
     if (payload.action === 'list') return { runs: await service.listRuns() };
     if (payload.action === 'get') return service.getRun(payload.runId);
-    if (payload.action === 'delete') return service.deleteRun(payload.runId);
+    if (payload.action === 'delete') {
+      if (workspaceSessions.has(payload.runId)) {
+        throw new Error('该诊断仍有未决定的工作区修改，请先保留或丢弃');
+      }
+      return service.deleteRun(payload.runId);
+    }
     throw new Error(`dc:runs: unknown action ${payload.action}`);
+  });
+
+  handle('dc:workspace', async (_event, payload = {}) => {
+    const runId = String(payload.runId ?? '');
+    if (!runId) throw new Error('runId 不能为空');
+    if (payload.action === 'keep' || payload.action === 'discard') {
+      return finalizeWorkspaceSession(service, runId, payload.action);
+    }
+    if (payload.action === 'status') {
+      const run = await service.getRun(runId);
+      return {
+        session: run.result?.agent?.workspaceSession ?? null,
+        active: workspaceSessions.has(runId),
+      };
+    }
+    throw new Error(`dc:workspace: unknown action ${payload.action}`);
   });
 
   handle('dc:fixes', async (event, payload = {}) => {
@@ -352,6 +559,7 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
           .map((fix, index) => ({ fix, index }))
           .filter(({ fix }) => ['edit', 'create', 'delete'].includes(fix?.kind)
             && fix.preview?.status === 'ready'
+            && !fix.workspaceApplied
             && !(fix.applied && !fix.applied.revertedAt));
         if (targets.length === 0) return { ok: true, applied: 0, fixes };
         if (!smoke) {
@@ -442,6 +650,7 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
 
     if (payload.action === 'apply') {
       if (fix.preview?.status !== 'ready') throw new Error('该建议没有可应用的 diff 预览');
+      if (fix.workspaceApplied) throw new Error('该修改已在工作区中，无需重复应用');
       if (fix.applied && !fix.applied.revertedAt) throw new Error('该修改已应用，请先撤销');
       if (!smoke) {
         const ok = await confirmFixDialog(parent, {
@@ -630,11 +839,24 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
     if (!host) throw new Error('browser host is not ready');
     switch (payload.action) {
       case 'start':
+        closeElementComposer();
         await host.startElementPick();
         return { ok: true };
       case 'cancel':
+        closeElementComposer();
         await host.cancelElementPick();
         return { ok: true };
+      case 'toggle':
+        if (elementComposer) {
+          const { window: owner } = elementComposer;
+          closeElementComposer();
+          host.clearElementScreenshots();
+          if (owner && !owner.isDestroyed()) {
+            owner.webContents.send('dc:element:event', { type: 'element-pick-cancel' });
+          }
+          return { picking: false };
+        }
+        return host.toggleElementPick();
       default:
         throw new Error(`dc:element: unknown action ${payload.action}`);
     }
@@ -806,9 +1028,14 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
         sandbox: toolMode === 'sandbox',
         onProgress: sendProgress,
       };
-      return element
+      const outcome = element
         ? await runElementDiagnosis(element, options)
         : await runCaptureDiagnosis(observation, { ...options, frontendErrors });
+      if (outcome.workspaceSession) {
+        workspaceSessions.set(outcome.runId ?? outcome.result?.meta?.runId, outcome.workspaceSession);
+      }
+      const { workspaceSession: _session, ...response } = outcome;
+      return response;
     } catch (error) {
       sendProgress({
         id: 'error',
@@ -831,6 +1058,9 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
       const question = String(payload.question ?? '').trim();
       if (!question) throw new Error('请输入继续诊断的内容');
       const { runId, result } = await service.getRun(String(payload.runId ?? ''));
+      if (result.agent?.workspaceSession?.status === 'pending') {
+        throw new Error('该诊断仍有未决定的工作区修改，请先保留或丢弃');
+      }
       if (result.agent?.fixes?.some((fix) => fix?.applied && !fix.applied.revertedAt)) {
         throw new Error('请先撤销已应用的修改，再继续诊断');
       }
@@ -1441,28 +1671,20 @@ async function runSmoke(window, host) {
         });
         const described = await host.sendCdp('DOM.describeNode', { nodeId: queried.nodeId });
         await host.handleElementPicked(described.node.backendNodeId);
-        elementUi = await host.view.webContents.executeJavaScript(`(() => {
-          const host = document.getElementById('__dc-element-diagnose__');
-          return {
-            overlay: Boolean(host),
-            panel: Boolean(host?.shadowRoot?.querySelector('.panel')),
-            hasInput: Boolean(host?.shadowRoot?.querySelector('textarea')),
-          };
-        })()`);
-        if (!elementUi?.overlay && host.elementLastError) elementUi.error = host.elementLastError;
-        elementUi.screenshot = host.elementScreenshots.size > 0;
-        elementUi.screenshotError = host.elementLastScreenshotError;
-        if (elementUi?.overlay) {
-          await host.view.webContents.executeJavaScript(`(() => {
-            const host = document.getElementById('__dc-element-diagnose__');
-            const shadow = host?.shadowRoot;
-            const input = shadow?.querySelector('textarea');
-            if (!input) return false;
-            input.value = '元素显示异常';
-            shadow.querySelector('.go')?.click();
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        elementUi = {
+          composerOpen: Boolean(elementComposer && !elementComposer.window.isDestroyed()),
+          screenshot: host.elementScreenshots.size > 0,
+          screenshotError: host.elementLastScreenshotError,
+        };
+        if (!elementUi.composerOpen && host.elementLastError) elementUi.error = host.elementLastError;
+        if (elementUi.composerOpen) {
+          await elementComposer.window.webContents.executeJavaScript(`(() => {
+            document.getElementById('question').value = '元素显示异常';
+            document.getElementById('go').click();
             return true;
           })()`);
-          await new Promise((resolve) => setTimeout(resolve, 800));
+          await new Promise((resolve) => setTimeout(resolve, 900));
           const runs = await window.webContents.executeJavaScript(
             `window.dc.invoke('dc:runs', { action: 'list' })`,
           );
@@ -1710,6 +1932,7 @@ async function bootstrap() {
     // file logging is optional
   }
   installApplicationMenu();
+  registerElementComposerIpc();
   const userData = app.getPath('userData');
   const effectiveConfigDir = configDir ? path.resolve(configDir) : app.isPackaged ? path.join(userData, 'configs') : path.join(ROOT, 'configs');
   const effectiveRunsDir = runsDir ? path.resolve(runsDir) : app.isPackaged ? path.join(userData, 'runs') : path.join(ROOT, 'runs');
@@ -1805,6 +2028,12 @@ async function bootstrap() {
         }
       }
       if (!window.isDestroyed()) {
+        if (event.type === 'element-picked') {
+          showElementComposer({ owner: window, host, element: event.element })
+            .catch((error) => log.warn('[element] composer:', error?.message ?? error));
+        } else if (event.type === 'element-pick-cancel') {
+          closeElementComposer();
+        }
         if (String(event.type).startsWith('element-')) {
           window.webContents.send('dc:element:event', event);
         }

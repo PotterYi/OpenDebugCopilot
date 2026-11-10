@@ -10,6 +10,10 @@ export const FULL_BUILTIN_TOOLS = Object.freeze(['Read', 'Grep', 'Glob', 'Edit',
 
 const SENSITIVE_NAME = /^(?:\.env(?:\..*)?|.*\.(?:pem|key|p12|pfx)|id_(?:rsa|dsa|ecdsa|ed25519).*|\.npmrc|\.pypirc|credentials|secrets?)$/i;
 const SENSITIVE_PATH = /(?:^|[\\/])\.git[\\/]config$|(?:^|[\\/])\.ssh[\\/]|(?:^|[\\/])\.aws[\\/]|(?:^|[\\/])\.kube[\\/]|(?:^|[\\/])\.docker[\\/]config\.json$/i;
+const WRITE_DENY_SEGMENTS = new Set([
+  'target', 'dist', 'build', 'out', 'node_modules', '.git', 'logs', 'runs',
+  'coverage', '.next', '.nuxt', '.idea', '.vscode', 'vendor',
+]);
 
 function inside(root, target) {
   const relative = path.relative(root, target);
@@ -33,25 +37,35 @@ function isSensitive(target) {
 export function createToolPermission(allowedRoots = [], {
   cwd = process.cwd(),
   allowWrite = false,
+  writeRoots = null,
   allowBash = false,
   approve = null,
   requireApproval = false,
+  onBeforeWrite = null,
 } = {}) {
   const roots = [...new Set((allowedRoots.length > 0 ? allowedRoots : [cwd])
     .map((root) => path.resolve(root)))];
+  const writableRoots = [...new Set(((writeRoots ?? allowedRoots).length > 0
+    ? (writeRoots ?? allowedRoots)
+    : [cwd]).map((root) => path.resolve(root)))];
 
   async function resolveTarget(raw) {
     const resolved = path.resolve(cwd, raw || '.');
     return realpath(resolved).catch(() => resolved);
   }
 
-  async function insideAny(target) {
+  async function insideAny(target, rootList = roots) {
     const realTarget = await realpath(target).catch(() => target);
-    for (const root of roots) {
+    for (const root of rootList) {
       const realRoot = await realpath(root).catch(() => root);
       if (inside(realRoot, realTarget)) return true;
     }
     return false;
+  }
+
+  function hasDeniedWriteSegment(target) {
+    const segments = target.replace(/\\/g, '/').split('/');
+    return segments.some((segment) => WRITE_DENY_SEGMENTS.has(segment.toLowerCase()));
   }
 
   async function askApproval(toolName, input) {
@@ -92,11 +106,32 @@ export function createToolPermission(allowedRoots = [], {
     }
     const rawPath = toolName === 'Read' || isWrite ? input.file_path : input.path;
     const target = await resolveTarget(rawPath);
-    if (!await insideAny(target)) {
-      return { behavior: 'deny', message: `路径不在授权目录内：${target}` };
+    if (!await insideAny(target, isWrite ? writableRoots : roots)) {
+      return {
+        behavior: 'deny',
+        message: isWrite
+          ? `路径不在可写源码目录内：${target}`
+          : `路径不在授权目录内：${target}`,
+      };
     }
     if (isSensitive(target)) {
       return { behavior: 'deny', message: `拒绝访问敏感文件：${target}` };
+    }
+    if (isWrite && hasDeniedWriteSegment(target)) {
+      return {
+        behavior: 'deny',
+        message: `禁止修改构建产物、依赖或版本控制目录：${target}`,
+      };
+    }
+    if (isWrite && typeof onBeforeWrite === 'function') {
+      try {
+        await onBeforeWrite({ toolName, input, filePath: target });
+      } catch (error) {
+        return {
+          behavior: 'deny',
+          message: `无法保存修改前快照：${error?.message ?? error}`,
+        };
+      }
     }
     if (isWrite && (requireApproval || typeof approve === 'function')) {
       return askApproval(toolName, input);
@@ -331,6 +366,22 @@ export function buildFollowUpPrompt(question, previous = {}) {
             file: entry.file,
             reason: entry.reason,
           })),
+        }
+      : null,
+    workspaceSession: agent.workspaceSession
+      ? {
+          mode: agent.workspaceSession.mode,
+          status: agent.workspaceSession.status,
+          changedFiles: (agent.workspaceSession.changedFiles ?? []).slice(0, 20),
+          conflicts: (agent.workspaceSession.conflicts ?? []).slice(0, 10),
+          selfCheck: agent.workspaceSession.selfCheck
+            ? {
+                status: agent.workspaceSession.selfCheck.status,
+                error: agent.workspaceSession.selfCheck.error,
+                commands: (agent.workspaceSession.selfCheck.commands ?? []).slice(0, 5),
+                output: clip(agent.workspaceSession.selfCheck.output, 4000),
+              }
+            : null,
         }
       : null,
     toolCalls: summarizeToolCalls(agent.toolCalls),
@@ -584,14 +635,20 @@ export function createClaudeAgent({
   cwd,
   maxBudgetUsd,
   allowedRoots = [],
+  writeRoots = null,
   toolMode = 'readonly',
   approval = null,
+  onBeforeWrite = null,
+  onAfterWrite = null,
 } = {}) {
   let scope = {
     cwd: cwd ?? process.cwd(),
     allowedRoots: [...allowedRoots],
+    writeRoots: writeRoots ? [...writeRoots] : null,
     toolMode,
     approval,
+    onBeforeWrite,
+    onAfterWrite,
     systemPromptSuffix: '',
   };
   const configureScope = (next = {}) => {
@@ -599,6 +656,7 @@ export function createClaudeAgent({
       ...scope,
       ...next,
       allowedRoots: next.allowedRoots ? [...next.allowedRoots] : scope.allowedRoots,
+      writeRoots: next.writeRoots ? [...next.writeRoots] : scope.writeRoots,
     };
   };
 
@@ -611,9 +669,11 @@ export function createClaudeAgent({
       const permission = createToolPermission(scope.allowedRoots, {
         cwd: scope.cwd,
         allowWrite: scope.toolMode !== 'readonly',
+        writeRoots: scope.writeRoots,
         allowBash: scope.toolMode === 'full',
         approve: scope.toolMode === 'full' ? (scope.approval ?? (async () => false)) : null,
         requireApproval: scope.toolMode === 'full',
+        onBeforeWrite: scope.onBeforeWrite,
       });
       const builtinTools = scope.toolMode === 'full'
         ? FULL_BUILTIN_TOOLS
@@ -660,6 +720,7 @@ export function createClaudeAgent({
 
       let resultMessage = null;
       let partialText = '';
+      const toolUses = new Map();
       const timer = setTimeout(() => {
         try {
           session.close();
@@ -673,14 +734,34 @@ export function createClaudeAgent({
           if (message.type === 'assistant') {
             for (const block of message.message?.content ?? []) {
               if (block?.type === 'text' && block.text) partialText += block.text;
-              if (block?.type === 'tool_use' && onToolUse) {
-                onToolUse({ stage: 'start', id: block.id, name: block.name, input: block.input });
+              if (block?.type === 'tool_use') {
+                toolUses.set(block.id, { name: block.name, input: block.input });
+                if (onToolUse) {
+                  onToolUse({ stage: 'start', id: block.id, name: block.name, input: block.input });
+                }
               }
             }
           }
-          if (message.type === 'user' && onToolUse) {
+          if (message.type === 'user') {
             for (const block of message.message?.content ?? []) {
-              if (block?.type === 'tool_result') {
+              if (block?.type !== 'tool_result') continue;
+              const used = toolUses.get(block.tool_use_id);
+              if (used && !block.is_error && typeof scope.onAfterWrite === 'function'
+                && (used.name === 'Edit' || used.name === 'Write')) {
+                try {
+                  await scope.onAfterWrite({
+                    toolName: used.name,
+                    input: used.input,
+                    filePath: used.input?.file_path
+                      ? path.resolve(scope.cwd, String(used.input.file_path))
+                      : undefined,
+                  });
+                } catch {
+                  // after-write snapshot must not break the agent loop
+                }
+              }
+              toolUses.delete(block.tool_use_id);
+              if (onToolUse) {
                 onToolUse({ stage: 'done', id: block.tool_use_id, isError: Boolean(block.is_error) });
               }
             }
@@ -732,9 +813,11 @@ export function createClaudeAgent({
       const permission = createToolPermission(scope.allowedRoots, {
         cwd: scope.cwd,
         allowWrite: scope.toolMode !== 'readonly',
+        writeRoots: scope.writeRoots,
         allowBash: scope.toolMode === 'full',
         approve: scope.toolMode === 'full' ? (scope.approval ?? (async () => false)) : null,
         requireApproval: scope.toolMode === 'full',
+        onBeforeWrite: scope.onBeforeWrite,
       });
       const builtinTools = scope.toolMode === 'full'
         ? FULL_BUILTIN_TOOLS
@@ -787,6 +870,7 @@ export function createClaudeAgent({
 
       let resultMessage = null;
       let partialText = '';
+      const toolUses = new Map();
       const timer = setTimeout(() => {
         try {
           session.close();
@@ -800,14 +884,34 @@ export function createClaudeAgent({
           if (message.type === 'assistant') {
             for (const block of message.message?.content ?? []) {
               if (block?.type === 'text' && block.text) partialText += block.text;
-              if (block?.type === 'tool_use' && onToolUse) {
-                onToolUse({ stage: 'start', id: block.id, name: block.name, input: block.input });
+              if (block?.type === 'tool_use') {
+                toolUses.set(block.id, { name: block.name, input: block.input });
+                if (onToolUse) {
+                  onToolUse({ stage: 'start', id: block.id, name: block.name, input: block.input });
+                }
               }
             }
           }
-          if (message.type === 'user' && onToolUse) {
+          if (message.type === 'user') {
             for (const block of message.message?.content ?? []) {
-              if (block?.type === 'tool_result') {
+              if (block?.type !== 'tool_result') continue;
+              const used = toolUses.get(block.tool_use_id);
+              if (used && !block.is_error && typeof scope.onAfterWrite === 'function'
+                && (used.name === 'Edit' || used.name === 'Write')) {
+                try {
+                  await scope.onAfterWrite({
+                    toolName: used.name,
+                    input: used.input,
+                    filePath: used.input?.file_path
+                      ? path.resolve(scope.cwd, String(used.input.file_path))
+                      : undefined,
+                  });
+                } catch {
+                  // after-write snapshot must not break the agent loop
+                }
+              }
+              toolUses.delete(block.tool_use_id);
+              if (onToolUse) {
                 onToolUse({ stage: 'done', id: block.tool_use_id, isError: Boolean(block.is_error) });
               }
             }

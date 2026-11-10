@@ -48,6 +48,13 @@ function localTargetPatterns(rules) {
 
 const ELEMENT_BINDING = '__dcElementDiagnose';
 const ELEMENT_OVERLAY_ID = '__dc-element-diagnose__';
+const ELEMENT_HIGHLIGHT_CONFIG = {
+  showInfo: true,
+  contentColor: { r: 245, g: 158, b: 11, a: 0.35 },
+  paddingColor: { r: 245, g: 158, b: 11, a: 0.2 },
+  borderColor: { r: 245, g: 158, b: 11, a: 0.9 },
+  marginColor: { r: 245, g: 158, b: 11, a: 0.15 },
+};
 const withTimeout = (promise, ms, message = 'operation timed out') => Promise.race([
   promise,
   new Promise((_, reject) => setTimeout(() => reject(new Error(message)), ms)),
@@ -551,6 +558,27 @@ export class BrowserHost {
     })()`).catch(() => false);
   }
 
+  consumeElementScreenshot(id) {
+    const key = String(id ?? '');
+    const screenshot = this.elementScreenshots.get(key);
+    if (screenshot) this.elementScreenshots.delete(key);
+    return screenshot ?? null;
+  }
+
+  clearElementScreenshots() {
+    this.elementScreenshots.clear();
+  }
+
+  async stopElementInspectMode() {
+    // CDP requires highlightConfig even for mode:'none'. Omitting it makes the
+    // command fail silently and leaves the page in inspect mode.
+    await this.sendCdp('Overlay.setInspectMode', {
+      mode: 'none',
+      highlightConfig: ELEMENT_HIGHLIGHT_CONFIG,
+    }).catch(() => {});
+    await this.sendCdp('Overlay.disable').catch(() => {});
+  }
+
   async startElementPick() {
     this.elementLastError = null;
     this.elementLastScreenshotError = null;
@@ -568,13 +596,7 @@ export class BrowserHost {
     this.elementPicking = true;
     await this.sendCdp('Overlay.setInspectMode', {
       mode: 'searchForNode',
-      highlightConfig: {
-        showInfo: true,
-        contentColor: { r: 245, g: 158, b: 11, a: 0.35 },
-        paddingColor: { r: 245, g: 158, b: 11, a: 0.2 },
-        borderColor: { r: 245, g: 158, b: 11, a: 0.9 },
-        marginColor: { r: 245, g: 158, b: 11, a: 0.15 },
-      },
+      highlightConfig: ELEMENT_HIGHLIGHT_CONFIG,
     });
     this.emit({ type: 'element-pick-start' });
   }
@@ -582,15 +604,24 @@ export class BrowserHost {
   async cancelElementPick() {
     this.elementPicking = false;
     this.elementScreenshots.clear();
-    await this.sendCdp('Overlay.setInspectMode', { mode: 'none' }).catch(() => {});
+    await this.stopElementInspectMode();
     await this.removeElementOverlay();
     this.emit({ type: 'element-pick-cancel' });
+  }
+
+  async toggleElementPick() {
+    if (this.elementPicking || this.elementOverlay) {
+      await this.cancelElementPick();
+      return { picking: false };
+    }
+    await this.startElementPick();
+    return { picking: true };
   }
 
   async handleElementPicked(backendNodeId) {
     if (!this.elementPicking) return;
     this.elementPicking = false;
-    await this.sendCdp('Overlay.setInspectMode', { mode: 'none' }).catch(() => {});
+    await this.stopElementInspectMode();
     try {
       const resolved = await this.sendCdp('DOM.resolveNode', { backendNodeId });
       const objectId = resolved?.object?.objectId;
@@ -691,11 +722,11 @@ export class BrowserHost {
           rect: info.screenshotRect ?? null,
         });
       }
-      const overlayInfo = { ...info };
-      delete overlayInfo.screenshotDataUrl;
-      await this.view.webContents.executeJavaScript(elementOverlayScript(overlayInfo), true);
-      this.elementOverlay = true;
-      const picked = { ...overlayInfo };
+      const picked = { ...info };
+      delete picked.screenshotDataUrl;
+      // The prompt is a separate always-on-top window owned by main; keeping it
+      // out of the page means the element picker can never swallow its clicks.
+      this.elementOverlay = false;
       this.emit({ type: 'element-picked', element: picked });
     } catch (error) {
       this.elementLastError = error?.message ?? String(error);
@@ -714,7 +745,7 @@ export class BrowserHost {
     }
     this.elementPicking = false;
     this.elementOverlay = false;
-    this.sendCdp('Overlay.setInspectMode', { mode: 'none' }).catch(() => {});
+    this.stopElementInspectMode().catch(() => {});
     if (!data || data.cancelled) {
       this.elementScreenshots.clear();
       this.emit({ type: 'element-pick-cancel' });

@@ -14,6 +14,7 @@ import {
   extractSandboxFixes,
   sandboxPromptFor,
 } from '../core/agent-sandbox.mjs';
+import { createInPlaceSession } from '../core/inplace-session.mjs';
 import { resolveFrontendProjectRoot } from '../core/frontend-service.mjs';
 import { fireScenario } from '../driver/index.mjs';
 import { readLogs, listThreads } from '../evidence/logs.mjs';
@@ -339,42 +340,84 @@ async function diagnoseWithFired({
   let sandboxContext = null;
   let sandboxRunCommand = null;
   let sandboxUsed = false;
+  let inPlaceUsed = false;
   if (sandbox && agent.id !== 'mock' && typeof agent.configureScope === 'function') {
-    const sandboxRoots = [
+    const writableRoots = [
       paths.sourceRoot ? { key: 'backend', name: 'backend', root: paths.sourceRoot } : null,
       frontendFixRoot ? { key: 'frontend', name: 'frontend', root: frontendFixRoot } : null,
-      ...extraSourceRoots.map((entry) => ({
-        key: 'extra',
-        extraRoot: entry.id,
-        name: `extra-${entry.id}`,
-        root: entry.root,
-      })),
     ].filter(Boolean);
-    progress('sandbox', '创建隔离沙箱', 'start');
+    const readOnlyRoots = extraSourceRoots.map((entry) => ({
+      key: 'extra',
+      extraRoot: entry.id,
+      name: `extra-${entry.id}`,
+      root: entry.root,
+    }));
+    progress('sandbox', '准备工作区', 'start');
+    let inPlace = null;
     try {
-      sandboxContext = await createAgentSandbox({ runDir, roots: sandboxRoots });
-      sandboxUsed = true;
-      agent.configureScope({
-        cwd: sandboxContext.dir,
-        allowedRoots: sandboxContext.roots.map((entry) => entry.sandboxRoot),
-        toolMode: 'sandbox',
-        systemPromptSuffix: sandboxPromptFor(sandboxContext),
-      });
-      sandboxRunCommand = createSandboxCommandRunner({
-        sandbox: sandboxContext,
-        verifyCommand,
+      inPlace = await createInPlaceSession({
+        runDir,
+        roots: writableRoots.map(({ key, root }) => ({ key, root })),
+        readOnlyRoots,
+        runId,
         workspace,
+        verifyCommand,
+        projectRoot: scenario.dir ?? process.cwd(),
       });
-      progress('sandbox', '沙箱已就绪，开放编辑与测试', 'done', sandboxContext.dir);
-      await runLog.info(`sandbox roots=${sandboxContext.roots.length} files=${sandboxContext.fileCount}`);
     } catch (error) {
+      inPlace = { ok: false, reason: 'baseline-error', error };
+    }
+    if (inPlace?.ok) {
+      sandboxContext = inPlace;
+      sandboxUsed = true;
+      inPlaceUsed = true;
+      agent.configureScope({
+        cwd: inPlace.cwd,
+        allowedRoots: inPlace.allowedRoots,
+        writeRoots: inPlace.writeRoots,
+        toolMode: 'sandbox',
+        systemPromptSuffix: inPlace.systemPromptSuffix,
+        onBeforeWrite: inPlace.onBeforeWrite,
+        onAfterWrite: inPlace.onAfterWrite,
+      });
+      sandboxRunCommand = inPlace.runCommand;
+      progress('sandbox', '原地工作区已就绪，开放编辑与测试', 'done', inPlace.cwd);
+      await runLog.info(`in-place session repos=${inPlace.repos.length}`);
+    } else if (inPlace?.reason === 'not-git') {
+      try {
+        sandboxContext = await createAgentSandbox({ runDir, roots: writableRoots });
+        sandboxUsed = true;
+        const sandboxWriteRoots = sandboxContext.roots.map((entry) => entry.sandboxRoot);
+        agent.configureScope({
+          cwd: sandboxContext.dir,
+          allowedRoots: [...sandboxWriteRoots, ...readOnlyRoots.map((entry) => entry.root)],
+          writeRoots: sandboxWriteRoots,
+          toolMode: 'sandbox',
+          systemPromptSuffix: sandboxPromptFor(sandboxContext),
+        });
+        sandboxRunCommand = createSandboxCommandRunner({
+          sandbox: sandboxContext,
+          verifyCommand,
+          workspace,
+        });
+        progress('sandbox', '非 Git 项目，使用隔离副本', 'done', sandboxContext.dir);
+        await runLog.info(`copy sandbox files=${sandboxContext.fileCount}`);
+      } catch (error) {
+        sandboxContext = null;
+        sandboxRunCommand = null;
+        agent.configureScope({ toolMode: 'readonly', systemPromptSuffix: '' });
+        progress('sandbox', '工作区过大或无法创建副本，退回只读模式', 'error', error?.message ?? String(error));
+        await runLog.error(`copy sandbox failed: ${error?.message ?? error}`);
+      }
+    } else {
       sandboxContext = null;
       sandboxRunCommand = null;
-      // Fail closed: never leave the agent in sandbox/write mode against the
-      // real workspace when the isolated copy could not be created.
       agent.configureScope({ toolMode: 'readonly', systemPromptSuffix: '' });
-      progress('sandbox', '沙箱创建失败，退回只读模式', 'error', error?.message ?? String(error));
-      await runLog.error(`sandbox failed: ${error?.message ?? error}`);
+      const reason = inPlace?.reason === 'busy'
+        ? '工作区正被其他诊断占用，本次使用只读模式'
+        : `无法建立工作区基线，本次使用只读模式：${inPlace?.error?.message ?? inPlace?.reason ?? 'unknown'}`;
+      progress('sandbox', reason, 'error');
+      await runLog.warn(`workspace session degraded to readonly: ${reason}`);
     }
   }
 
@@ -510,7 +553,8 @@ async function diagnoseWithFired({
   } catch (error) {
     progress('agent', 'AI 分析失败', 'error');
     if (sandboxContext) {
-      await cleanupAgentSandbox(sandboxContext);
+      if (sandboxContext.mode === 'in-place') await sandboxContext.discard();
+      else await cleanupAgentSandbox(sandboxContext);
       sandboxContext = null;
     }
     throw error;
@@ -533,72 +577,86 @@ async function diagnoseWithFired({
   }
 
   if (sandboxContext) {
-    try {
-      const extracted = await extractSandboxFixes(sandboxContext);
-      agentResult.fixes = extracted.fixes;
-      agentResult.sandbox = {
-        changedFiles: extracted.changedFiles,
-        skipped: extracted.skipped,
-      };
-      if (extracted.skipped.length > 0) {
+    if (sandboxContext.mode === 'in-place') {
+      try {
+        const extracted = await sandboxContext.extract();
+        agentResult.fixes = (extracted.fixes ?? []).map((fix) => ({
+          ...fix,
+          workspaceApplied: true,
+          pendingDecision: true,
+        }));
+        const selfCheck = await sandboxContext.runSelfCheck();
+        agentResult.workspaceSession = {
+          mode: 'in-place',
+          status: 'pending',
+          runId,
+          baselineDir: sandboxContext.baselineDir,
+          repos: sandboxContext.repos,
+          changedFiles: extracted.changedFiles,
+          skipped: extracted.skipped,
+          conflicts: extracted.conflicts,
+          selfCheck,
+        };
+        if (extracted.skipped.length > 0 || extracted.conflicts.length > 0) {
+          agentResult.needsMoreInfo = [
+            ...(agentResult.needsMoreInfo ?? []),
+            `原地修改中有 ${extracted.skipped.length} 个跳过、${extracted.conflicts.length} 个冲突，请在保留/丢弃前检查。`,
+          ];
+        }
+        progress(
+          'selfcheck',
+          selfCheck.status === 'passed' ? '编译自测通过，等待保留/丢弃' : '编译自测失败，等待保留/丢弃',
+          selfCheck.status === 'failed' ? 'error' : 'done',
+          selfCheck.error,
+        );
+        await runLog.info(`in-place extracted=${extracted.fixes.length} selfCheck=${selfCheck.status}`);
+      } catch (error) {
+        agentResult.fixes = [];
         agentResult.needsMoreInfo = [
           ...(agentResult.needsMoreInfo ?? []),
-          `沙箱中有 ${extracted.skipped.length} 个变更未能自动提取（新增/删除/大文件），请手动检查。`,
+          `原地修改提取失败，已恢复工作区：${error?.message ?? error}`,
         ];
+        await sandboxContext.discard();
+        sandboxContext = null;
+        progress('sandbox', '原地修改提取失败，已恢复工作区', 'error', error?.message ?? String(error));
+        await runLog.error(`in-place extract failed: ${error?.message ?? error}`);
       }
-      progress('sandbox', `沙箱修改 ${extracted.changedFiles.length} 个文件`, 'done');
-      await runLog.info(`sandbox extracted=${extracted.fixes.length} skipped=${extracted.skipped.length}`);
-    } catch (error) {
-      agentResult.fixes = [];
-      agentResult.needsMoreInfo = [
-        ...(agentResult.needsMoreInfo ?? []),
-        `沙箱修改提取失败，已隐藏修改建议：${error?.message ?? error}`,
-      ];
-      progress('sandbox', '沙箱修改提取失败', 'error', error?.message ?? String(error));
-      await runLog.error(`sandbox extract failed: ${error?.message ?? error}`);
-    } finally {
-      await cleanupAgentSandbox(sandboxContext);
-      sandboxContext = null;
+    } else {
+      try {
+        const extracted = await extractSandboxFixes(sandboxContext);
+        agentResult.fixes = extracted.fixes;
+        agentResult.sandbox = {
+          changedFiles: extracted.changedFiles,
+          skipped: extracted.skipped,
+        };
+        if (extracted.skipped.length > 0) {
+          agentResult.needsMoreInfo = [
+            ...(agentResult.needsMoreInfo ?? []),
+            `沙箱中有 ${extracted.skipped.length} 个变更未能自动提取（新增/删除/大文件），请手动检查。`,
+          ];
+        }
+        progress('sandbox', `沙箱修改 ${extracted.changedFiles.length} 个文件`, 'done');
+        await runLog.info(`sandbox extracted=${extracted.fixes.length} skipped=${extracted.skipped.length}`);
+      } catch (error) {
+        agentResult.fixes = [];
+        agentResult.needsMoreInfo = [
+          ...(agentResult.needsMoreInfo ?? []),
+          `沙箱修改提取失败，已隐藏修改建议：${error?.message ?? error}`,
+        ];
+        progress('sandbox', '沙箱修改提取失败', 'error', error?.message ?? String(error));
+        await runLog.error(`sandbox extract failed: ${error?.message ?? error}`);
+      } finally {
+        await cleanupAgentSandbox(sandboxContext);
+        sandboxContext = null;
+      }
     }
   }
 
-  // 2a: attach read-only diff previews; never write the working tree here.
-  let staticChecks = 'strict';
-  if (sandboxUsed || workspace.agent?.toolMode === 'full') {
-    const commands = await detectCompileCommands({
-      roots: {
-        sourceRoot: paths.sourceRoot,
-        frontendSourceRoot: frontendFixRoot,
-        extraSourceRoots,
-      },
-      verifyCommand,
-      workspace,
-      projectRoot: scenario.dir ?? process.cwd(),
-    }).catch(() => []);
-    if (commands.length > 0) staticChecks = 'warn';
-  }
-  progress('preview', '生成修复预览', 'start');
-  try {
-    agentResult.fixes = await buildFixPreviews(agentResult.fixes, {
-      sourceRoot: paths.sourceRoot,
-      frontendSourceRoot: frontendFixRoot,
-      extraSourceRoots,
-      staticChecks,
-    });
-    progress('preview', '生成修复预览', 'done');
-  } catch (error) {
-    progress('preview', '生成修复预览失败', 'error');
-    await runLog.error(`fix preview failed: ${error?.message ?? error}`);
-  }
-
-  const editableFixes = (agentResult.fixes ?? [])
-    .filter((fix) => ['edit', 'create', 'delete'].includes(fix?.kind) && fix?.preview?.status === 'ready');
-  if (editableFixes.length > 0) {
-    progress('selfcheck', '编译自测修改后的代码', 'start');
-    let validation;
-    try {
-      validation = await validateFixes({
-        fixes: agentResult.fixes,
+  if (!inPlaceUsed) {
+    // 2a: attach read-only diff previews; never write the working tree here.
+    let staticChecks = 'strict';
+    if (sandboxUsed || workspace.agent?.toolMode === 'full') {
+      const commands = await detectCompileCommands({
         roots: {
           sourceRoot: paths.sourceRoot,
           frontendSourceRoot: frontendFixRoot,
@@ -607,17 +665,50 @@ async function diagnoseWithFired({
         verifyCommand,
         workspace,
         projectRoot: scenario.dir ?? process.cwd(),
-        runDir,
-      });
-    } catch (error) {
-      validation = {
-        status: 'failed',
-        ok: false,
-        error: `编译自测执行失败：${error?.message ?? error}`,
-        commands: [],
-        applied: 0,
-      };
+      }).catch(() => []);
+      if (commands.length > 0) staticChecks = 'warn';
     }
+    progress('preview', '生成修复预览', 'start');
+    try {
+      agentResult.fixes = await buildFixPreviews(agentResult.fixes, {
+        sourceRoot: paths.sourceRoot,
+        frontendSourceRoot: frontendFixRoot,
+        extraSourceRoots,
+        staticChecks,
+      });
+      progress('preview', '生成修复预览', 'done');
+    } catch (error) {
+      progress('preview', '生成修复预览失败', 'error');
+      await runLog.error(`fix preview failed: ${error?.message ?? error}`);
+    }
+
+    const editableFixes = (agentResult.fixes ?? [])
+      .filter((fix) => ['edit', 'create', 'delete'].includes(fix?.kind) && fix?.preview?.status === 'ready');
+    if (editableFixes.length > 0) {
+      progress('selfcheck', '编译自测修改后的代码', 'start');
+      let validation;
+      try {
+        validation = await validateFixes({
+          fixes: agentResult.fixes,
+          roots: {
+            sourceRoot: paths.sourceRoot,
+            frontendSourceRoot: frontendFixRoot,
+            extraSourceRoots,
+          },
+          verifyCommand,
+          workspace,
+          projectRoot: scenario.dir ?? process.cwd(),
+          runDir,
+        });
+      } catch (error) {
+        validation = {
+          status: 'failed',
+          ok: false,
+          error: `编译自测执行失败：${error?.message ?? error}`,
+          commands: [],
+          applied: 0,
+        };
+      }
     agentResult.fixesValidation = validation;
     if (validation.status === 'failed') {
       agentResult.fixesWithheld = agentResult.fixes;
@@ -631,6 +722,7 @@ async function diagnoseWithFired({
     } else {
       progress('selfcheck', validation.status === 'passed' ? '编译自测通过' : '未执行编译自测', 'done', validation.reason);
       await runLog.info(`fix self-check ${validation.status} commands=${(validation.commands ?? []).length}`);
+    }
     }
   }
 
@@ -787,7 +879,13 @@ async function diagnoseWithFired({
   await runLog.info(`done durationMs=${Date.now() - startedAt} result=${runDir}`);
   progress('done', '诊断完成', 'done');
 
-  return { result, runDir, runId, report };
+  return {
+    result,
+    runDir,
+    runId,
+    report,
+    workspaceSession: inPlaceUsed ? sandboxContext : null,
+  };
 }
 
 export async function runDiagnosis(scenario, options = {}) {

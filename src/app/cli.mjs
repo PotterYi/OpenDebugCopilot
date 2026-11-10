@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
@@ -332,13 +332,19 @@ export async function main(argv = process.argv.slice(2), { root = ROOT } = {}) {
     const paths = resolveScenarioPaths(scenario);
     const workspace = await createStore({ configDir: path.join(root, 'configs') }).getWorkspace();
     const toolMode = cliToolMode(workspace);
+    const frontendRoot = scenario.frontendSourceRoot
+      ? (path.isAbsolute(scenario.frontendSourceRoot)
+        ? scenario.frontendSourceRoot
+        : path.resolve(scenario.dir ?? root, scenario.frontendSourceRoot))
+      : null;
     const allowedRoots = [
       paths.sourceRoot,
-      scenario.frontendSourceRoot,
+      frontendRoot,
       ...(scenario.extraSourceRoots ?? []).map((entry) => entry.root),
     ]
       .filter(Boolean)
       .map((entry) => (path.isAbsolute(entry) ? entry : path.resolve(scenario.dir ?? root, entry)));
+    const writeRoots = [paths.sourceRoot, frontendRoot].filter(Boolean);
     const agent = parsed.mock
       ? createMockAgent()
       : createClaudeAgent({
@@ -347,6 +353,7 @@ export async function main(argv = process.argv.slice(2), { root = ROOT } = {}) {
           cwd: paths.sourceRoot ?? undefined,
           maxBudgetUsd: parsed.budgetUsd,
           allowedRoots,
+          writeRoots,
           toolMode: toolMode === 'full' ? 'full' : 'readonly',
           approval: createCliToolApprover(),
         });
@@ -357,7 +364,7 @@ export async function main(argv = process.argv.slice(2), { root = ROOT } = {}) {
       configDir: path.join(root, 'configs'),
     }).getRuntimeConfig();
 
-    const { result, runDir } = await runDiagnosis(scenario, {
+    const outcome = await runDiagnosis(scenario, {
       runsDir: parsed.runsDir ? path.resolve(parsed.runsDir) : path.resolve(root, config.runsDir ?? 'runs'),
       question: parsed.question,
       recheck: parsed.recheck,
@@ -370,6 +377,35 @@ export async function main(argv = process.argv.slice(2), { root = ROOT } = {}) {
       workspace,
       sandbox: toolMode === 'sandbox',
     });
+    const { result, runDir, workspaceSession } = outcome;
+    if (workspaceSession) {
+      let keep = false;
+      if (process.stdin.isTTY) {
+        const rl = createInterface({ input: process.stdin, output: process.stderr });
+        try {
+          const answer = await rl.question('本次诊断已修改工作区，是否保留这些修改？[y/N] ');
+          keep = /^y(?:es)?$/i.test(answer.trim());
+        } finally {
+          rl.close();
+        }
+      }
+      if (keep) {
+        await workspaceSession.keep();
+      } else {
+        const discarded = await workspaceSession.discard();
+        if (discarded?.conflicts?.length) {
+          log.error(`[workspace] 部分文件未回滚：${discarded.conflicts.map((item) => item.file).join('、')}`);
+        }
+      }
+      if (result.agent?.workspaceSession) {
+        result.agent.workspaceSession.status = keep ? 'kept' : 'discarded';
+        for (const fix of result.agent.fixes ?? []) {
+          fix.workspaceApplied = keep;
+          fix.pendingDecision = false;
+        }
+        await writeFile(path.join(runDir, 'result.json'), JSON.stringify(result, null, 2), 'utf8');
+      }
+    }
 
     if (parsed.json) {
       console.log(JSON.stringify(result, null, 2));

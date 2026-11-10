@@ -1,0 +1,407 @@
+import { createHash } from 'node:crypto';
+import { mkdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import path from 'node:path';
+import { promisify } from 'node:util';
+import { AppError } from './errors.mjs';
+import { acquireWorkspaceLocks } from './workspace-lock.mjs';
+import { detectCompileCommands } from './fix-validation.mjs';
+import { previewFixFromTexts } from './fixes.mjs';
+import { createSandboxCommandRunner } from './agent-sandbox.mjs';
+import { runVerifyCommand } from '../app/electron/verify-command.mjs';
+
+const execFileAsync = promisify(execFile);
+const MAX_FILE_BYTES = 2 * 1024 * 1024;
+
+async function git(repo, args, { allowFail = false } = {}) {
+  try {
+    const { stdout } = await execFileAsync('git', ['-C', repo, ...args], {
+      windowsHide: true,
+      maxBuffer: 16 * 1024 * 1024,
+      encoding: 'utf8',
+    });
+    return stdout;
+  } catch (error) {
+    if (allowFail) return null;
+    throw error;
+  }
+}
+
+export async function detectGitRepo(root) {
+  const inside = await git(root, ['rev-parse', '--is-inside-work-tree'], { allowFail: true });
+  if (String(inside ?? '').trim() !== 'true') return null;
+  const top = await git(root, ['rev-parse', '--show-toplevel'], { allowFail: true });
+  return top ? path.resolve(String(top).trim()) : null;
+}
+
+function hashBuffer(buffer) {
+  return createHash('sha256').update(buffer).digest('hex');
+}
+
+function normalizeText(value) {
+  return String(value).replace(/\r\n/g, '\n');
+}
+
+async function pathKind(target) {
+  try {
+    const info = await stat(target);
+    if (info.isDirectory()) return 'dir';
+    if (info.isFile()) return 'file';
+    return 'other';
+  } catch {
+    return null;
+  }
+}
+
+async function readTextFile(target) {
+  const kind = await pathKind(target);
+  if (kind !== 'file') return { exists: false, buffer: null, text: null, hash: null };
+  const info = await stat(target);
+  if (info.size > MAX_FILE_BYTES) return { exists: true, tooLarge: true, buffer: null, text: null, hash: null };
+  const buffer = await readFile(target);
+  if (buffer.includes(0)) return { exists: true, binary: true, buffer, text: null, hash: hashBuffer(buffer) };
+  return {
+    exists: true,
+    buffer,
+    text: normalizeText(buffer.toString('utf8')),
+    hash: hashBuffer(buffer),
+  };
+}
+
+async function writeBackup(target, dest) {
+  await mkdir(path.dirname(dest), { recursive: true });
+  if (target.exists) {
+    await writeFile(dest, target.buffer);
+  }
+}
+
+function inside(root, target) {
+  const relative = path.relative(path.resolve(root), path.resolve(target));
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function splitZ(value) {
+  return String(value ?? '').split('\0').map((item) => item.trim()).filter(Boolean);
+}
+
+function createBaseline({ runDir, roots }) {
+  const baselineDir = path.join(runDir, 'baseline');
+  const startEntries = new Map();
+  const touched = new Map();
+
+  const rootFor = (absPath) => roots.find((entry) => inside(entry.root, absPath)) ?? null;
+
+  function backupPath(kind, repo, relative) {
+    const repoKey = createHash('sha256').update(path.resolve(repo)).digest('hex').slice(0, 12);
+    return path.join(baselineDir, kind, repoKey, relative);
+  }
+
+  async function snapshotStart() {
+    const repos = [...new Set(roots.map((entry) => entry.repo))];
+    for (const repo of repos) {
+      const changed = splitZ(await git(repo, ['diff', 'HEAD', '--name-only', '-z'], { allowFail: true }));
+      const untracked = splitZ(await git(repo, ['ls-files', '--others', '--exclude-standard', '-z'], { allowFail: true }));
+      for (const relative of new Set([...changed, ...untracked])) {
+        const absPath = path.join(repo, relative);
+        if (!rootFor(absPath)) continue;
+        if (startEntries.has(absPath)) continue;
+        const current = await readTextFile(absPath);
+        if (current.tooLarge) {
+          throw new AppError('BASELINE_TOO_LARGE', `脏文件过大，无法保存基线：${relative}`, { exitCode: 3 });
+        }
+        const backup = backupPath('start', repo, relative);
+        if (current.exists) await writeBackup(current, backup);
+        startEntries.set(absPath, {
+          repo,
+          relative,
+          backup: current.exists ? backup : null,
+          exists: current.exists,
+          hash: current.hash,
+        });
+      }
+    }
+  }
+
+  async function snapshotBeforeWrite(filePath) {
+    const absPath = await realpath(String(filePath ?? '')).catch(() => path.resolve(String(filePath ?? '')));
+    const descriptor = rootFor(absPath);
+    if (!descriptor) {
+      throw new Error('目标文件不在可写源码目录内');
+    }
+    if (touched.has(absPath)) return;
+    const current = await readTextFile(absPath);
+    if (current.tooLarge) throw new Error('文件过大，无法保存修改前快照');
+    const relative = path.relative(descriptor.repo, absPath);
+    const backup = backupPath('prewrite', descriptor.repo, relative);
+    if (current.exists) await writeBackup(current, backup);
+    touched.set(absPath, {
+      descriptor,
+      repo: descriptor.repo,
+      relative,
+      backup: current.exists ? backup : null,
+      exists: current.exists,
+      preHash: current.hash,
+      lastHash: current.hash,
+      lastExists: current.exists,
+    });
+  }
+
+  async function recordAfterWrite(filePath) {
+    const absPath = await realpath(String(filePath ?? '')).catch(() => path.resolve(String(filePath ?? '')));
+    const entry = touched.get(absPath);
+    if (!entry) return;
+    const current = await readTextFile(absPath);
+    entry.lastHash = current.hash;
+    entry.lastExists = current.exists;
+  }
+
+  async function extract() {
+    const fixes = [];
+    const skipped = [];
+    const conflicts = [];
+    const changedFiles = [];
+    for (const [absPath, entry] of touched) {
+      const current = await readTextFile(absPath);
+      if (current.tooLarge) {
+        skipped.push({ file: entry.relative, reason: '文件超过预览上限' });
+        continue;
+      }
+      if (current.binary) {
+        skipped.push({ file: entry.relative, reason: '二进制文件不生成代码修复' });
+        continue;
+      }
+      if (entry.lastHash && current.exists && current.hash !== entry.lastHash) {
+        const file = path.relative(entry.descriptor.root, absPath).split(path.sep).join('/');
+        conflicts.push({ file, reason: '文件在诊断期间被外部修改' });
+        continue;
+      }
+      if (!entry.exists && !current.exists) continue;
+      let originalText = null;
+      if (entry.exists) {
+        const backup = await readTextFile(entry.backup);
+        if (backup.tooLarge || backup.binary) {
+          skipped.push({ file: entry.relative, reason: '基线内容不可用' });
+          continue;
+        }
+        originalText = backup.text ?? '';
+      }
+      const file = path.relative(entry.descriptor.root, absPath).split(path.sep).join('/');
+      let fix = null;
+      if (!entry.exists && current.exists) {
+        fix = {
+          summary: `新增文件：${file}`,
+          kind: 'create',
+          root: entry.descriptor.key,
+          extraRoot: entry.descriptor.extraRoot ?? null,
+          file,
+          content: current.text,
+        };
+      } else if (entry.exists && !current.exists) {
+        fix = {
+          summary: `删除文件：${file}`,
+          kind: 'delete',
+          root: entry.descriptor.key,
+          extraRoot: entry.descriptor.extraRoot ?? null,
+          file,
+          baseHash: entry.preHash,
+        };
+      } else {
+        if (originalText === current.text) continue;
+        fix = {
+          summary: `修改文件：${file}`,
+          kind: 'edit',
+          root: entry.descriptor.key,
+          extraRoot: entry.descriptor.extraRoot ?? null,
+          file,
+          search: originalText,
+          replace: current.text,
+          baseHash: entry.preHash,
+        };
+      }
+      fixes.push(previewFixFromTexts(fix, originalText, current.text));
+      changedFiles.push(`${entry.descriptor.key}/${file}`);
+    }
+    return { fixes, skipped, conflicts, changedFiles };
+  }
+
+  async function discard() {
+    const restored = [];
+    const conflicts = [];
+    for (const [absPath, entry] of touched) {
+      const current = await readTextFile(absPath);
+      if (entry.lastHash && current.exists && current.hash !== entry.lastHash) {
+        conflicts.push({
+          file: path.relative(entry.descriptor.root, absPath).split(path.sep).join('/'),
+          reason: '文件在诊断期间被外部修改，拒绝回滚',
+        });
+        continue;
+      }
+      if (entry.exists) {
+        const backup = await readFile(entry.backup);
+        await mkdir(path.dirname(absPath), { recursive: true });
+        await writeFile(absPath, backup);
+      } else {
+        await rm(absPath, { force: true });
+      }
+      restored.push(path.relative(entry.descriptor.root, absPath).split(path.sep).join('/'));
+    }
+    return { restored, conflicts };
+  }
+
+  return {
+    baselineDir,
+    startEntries,
+    touched,
+    snapshotStart,
+    snapshotBeforeWrite,
+    recordAfterWrite,
+    extract,
+    discard,
+  };
+}
+
+const INPLACE_PROMPT = `
+
+# 原地工作区模式
+你正在真实工程中工作，修改会直接写入用户工作区；诊断结束后用户可以选择保留或丢弃。
+- 只能修改后端源码根、前端源码根；其他后端源码目录只读。
+- 禁止 Edit/Write：target、dist、build、out、node_modules、.git、logs、runs、.tmp 等目录。
+- 可以用 run_command 编译/测试；修改后请自己运行验证。
+- 不要把最终修改重复写进 fixes；系统会从工作区提取补丁，并由用户决定保留或丢弃。`;
+
+/**
+ * In-place workspace session for Git projects. The agent edits real files;
+ * every write is snapshotted first, and keep/discard is left to the user.
+ */
+export async function createInPlaceSession({
+  runDir,
+  roots = [],
+  readOnlyRoots = [],
+  runId = '',
+  workspace = {},
+  verifyCommand = '',
+  projectRoot = process.cwd(),
+} = {}) {
+  if (roots.length === 0) return { ok: false, reason: 'no-roots' };
+  const detected = [];
+  for (const entry of roots) {
+    const repo = await detectGitRepo(entry.root);
+    if (!repo) return { ok: false, reason: 'not-git' };
+    detected.push({ ...entry, repo });
+  }
+  const repos = [...new Set(detected.map((entry) => entry.repo))];
+  const locks = await acquireWorkspaceLocks(repos, { runId });
+  if (!locks.ok) {
+    return { ok: false, reason: 'busy', busyRepo: locks.busyRepo, owner: locks.owner };
+  }
+
+  let baseline = null;
+  try {
+    baseline = createBaseline({ runDir, roots: detected });
+    await baseline.snapshotStart();
+  } catch (error) {
+    await locks.release();
+    return { ok: false, reason: 'baseline-error', error };
+  }
+
+  const cwd = detected[0].root;
+  const allowedRoots = [
+    ...detected.map((entry) => entry.root),
+    ...readOnlyRoots.map((entry) => entry.root),
+  ];
+  const writeRoots = detected.map((entry) => entry.root);
+  const commandRoots = {
+    dir: cwd,
+    roots: detected.map((entry) => ({
+      key: entry.key,
+      extraRoot: entry.extraRoot ?? null,
+      realRoot: entry.root,
+      sandboxRoot: entry.root,
+    })),
+  };
+  const runCommand = createSandboxCommandRunner({
+    sandbox: commandRoots,
+    verifyCommand,
+    workspace,
+  });
+
+  async function runSelfCheck() {
+    const validationRoots = {
+      sourceRoot: detected.find((entry) => entry.key === 'backend')?.root ?? null,
+      frontendSourceRoot: detected.find((entry) => entry.key === 'frontend')?.root ?? null,
+      extraSourceRoots: [],
+    };
+    const commands = await detectCompileCommands({
+      roots: validationRoots,
+      verifyCommand,
+      workspace,
+      projectRoot: cwd,
+    }).catch(() => []);
+    if (commands.length === 0) {
+      return {
+        status: 'skipped',
+        ok: true,
+        reason: '未配置验证命令，且未识别到可用的编译命令',
+        commands: [],
+      };
+    }
+    const results = [];
+    for (const target of commands) {
+      const result = await runVerifyCommand({
+        command: target.command,
+        cwd: target.cwd,
+        timeoutMs: 180_000,
+      });
+      results.push(result);
+      if (!result.ok) break;
+    }
+    const failed = results.find((result) => !result.ok) ?? null;
+    const error = failed
+      ? (failed.timedOut ? `编译自测超时：${failed.command}` : `编译自测失败：${failed.command}`)
+      : null;
+    return {
+      status: error ? 'failed' : 'passed',
+      ok: !error,
+      error,
+      commands: results.map((result) => ({
+        command: result.command,
+        cwd: result.cwd,
+        ok: result.ok,
+        exitCode: result.exitCode,
+        timedOut: result.timedOut,
+        durationMs: result.durationMs,
+      })),
+      durationMs: results.reduce((sum, result) => sum + (result.durationMs ?? 0), 0),
+      output: results.map((result) => result.output).join('\n\n').slice(-12_000),
+    };
+  }
+
+  return {
+    ok: true,
+    mode: 'in-place',
+    cwd,
+    allowedRoots,
+    writeRoots,
+    readOnlyRoots: readOnlyRoots.map((entry) => entry.root),
+    repos,
+    baselineDir: baseline.baselineDir,
+    systemPromptSuffix: INPLACE_PROMPT,
+    onBeforeWrite: (input) => baseline.snapshotBeforeWrite(input.filePath),
+    onAfterWrite: (input) => baseline.recordAfterWrite(input.filePath),
+    runCommand,
+    extract: () => baseline.extract(),
+    runSelfCheck,
+    async discard() {
+      const result = await baseline.discard();
+      await locks.release();
+      return result;
+    },
+    async keep() {
+      await locks.release();
+      return { ok: true };
+    },
+    async release() {
+      await locks.release();
+    },
+  };
+}

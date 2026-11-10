@@ -107,3 +107,23 @@ test('full mode denies Edit/Write/Bash when the user declines', async (t) => {
   assert.equal((await canUseTool('Edit', { file_path: path.join(root, 'src', 'app.js') })).behavior, 'deny');
   assert.equal((await canUseTool('Write', { file_path: path.join(root, 'src', 'new.js') })).behavior, 'deny');
 });
+
+test('in-place write roots exclude extra roots and build directories', async (t) => {
+  const { root, outside } = await fixture(t);
+  const extra = path.join(TMP, 'extra-backend');
+  await mkdir(path.join(extra), { recursive: true });
+  await mkdir(path.join(root, 'target'), { recursive: true });
+  const snapshots = [];
+  const canUseTool = createToolPermission([root, extra], {
+    cwd: root,
+    allowWrite: true,
+    writeRoots: [root],
+    onBeforeWrite: async (input) => { snapshots.push(input.filePath); },
+  });
+  const behavior = (toolName, input) => canUseTool(toolName, input).then((result) => result.behavior);
+
+  assert.equal(await behavior('Write', { file_path: path.join(root, 'src', 'ok.js'), content: 'x' }), 'allow');
+  assert.deepEqual(snapshots, [path.join(root, 'src', 'ok.js')]);
+  assert.equal(await behavior('Write', { file_path: path.join(extra, 'x.js'), content: 'x' }), 'deny');
+  assert.equal(await behavior('Edit', { file_path: path.join(root, 'target', 'x.js') }), 'deny');
+});

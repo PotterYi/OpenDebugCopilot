@@ -9,6 +9,7 @@ const CHANNELS = new Set([
   'dc:logs',
   'dc:diagnose',
   'dc:runs',
+  'dc:workspace',
   'dc:devserver',
   'dc:fixes',
   'dc:verify',

@@ -216,9 +216,7 @@ test('electron shell boots, captures, routes and diagnoses', {
   assert.match(stdout, /"gates":true/);
   assert.match(stdout, /"frontendErrors":[1-9]/);
   assert.match(stdout, /"consoleDiagnose":\{"ok":true/);
-  assert.equal(smokeResult.elementUi?.overlay, true);
-  assert.equal(smokeResult.elementUi?.panel, true);
-  assert.equal(smokeResult.elementUi?.hasInput, true);
+  assert.equal(smokeResult.elementUi?.composerOpen, true);
   assert.match(smokeResult.elementUi?.runScenario ?? '', /^element-/);
   assert.ok(smokeResult.elementUi?.runId, JSON.stringify(smokeResult.elementUi));
   assert.match(stdout, /"gates":true/);
