@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, safeStorage, shell } from 'electron';
 import path from 'node:path';
-import { access, appendFile, mkdir, rename, rm, writeFile } from 'node:fs/promises';
+import { access, appendFile, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createService } from '../service.mjs';
@@ -11,7 +11,12 @@ import { startLocalProxy } from './local-proxy.mjs';
 import { createDevServerManager, killProcessTreeSync } from './dev-server.mjs';
 import { applyFix, revertFix } from '../../core/fix-apply.mjs';
 import { buildFixPreviews } from '../../core/fixes.mjs';
-import { detectCompileCommands, validateFixes } from '../../core/fix-validation.mjs';
+import {
+  applyVerificationGate,
+  detectCompileCommands,
+  runWorkspaceCheck,
+  validateFixes,
+} from '../../core/fix-validation.mjs';
 import {
   cleanupAgentSandbox,
   createAgentSandbox,
@@ -1092,12 +1097,23 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
         Edit: '修改沙箱文件',
         Write: '写入沙箱文件',
       };
+      let followWroteWorkspace = false;
+      if (toolMode === 'full' && !followSandbox && typeof agent.configureScope === 'function') {
+        agent.configureScope({
+          onBeforeWrite: () => { followWroteWorkspace = true; },
+          onAfterWrite: () => { followWroteWorkspace = true; },
+        });
+      }
       const follow = await agent.followUp({
         question,
         previous: result,
         tools: followTools,
         onToolUse: (tool) => {
           if (!tool?.id) return;
+          if (tool.stage === 'start' && toolMode === 'full'
+            && ['Edit', 'Write', 'Bash'].includes(tool.name)) {
+            followWroteWorkspace = true;
+          }
           const label = builtinToolLabels[tool.name] ?? tool.name;
           sendProgress({
             id: `builtin-${tool.id}`,
@@ -1213,6 +1229,60 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
           });
         }
       }
+
+      // Full-permission follow-ups edit the real workspace directly and have
+      // no sandbox baseline, so compile/test the current state independently.
+      if (toolMode === 'full' && !usedFollowSandbox) {
+        if (!followWroteWorkspace) {
+          followAgent.verification = {
+            scope: 'workspace',
+            mode: 'full',
+            status: 'skipped',
+            ok: true,
+            reason: '本轮没有直接写入工作区的操作',
+            commands: [],
+            durationMs: 0,
+            output: '',
+          };
+        } else {
+          sendProgress({ id: 'selfcheck', label: '编译/测试验证工作区修改', status: 'start' });
+          const verification = await runWorkspaceCheck({
+            roots: result.meta?.fixRoots ?? {},
+            verifyCommand: workspace.verifyCommand ?? '',
+            workspace,
+            projectRoot: ROOT,
+            runDir: path.join(service.runsRoot, runId),
+          });
+          followAgent.verification = { scope: 'workspace', mode: 'full', ...verification };
+          const level = verification.status === 'failed'
+            ? 'error'
+            : (verification.status === 'skipped' && verification.detectionError ? 'error' : 'done');
+          sendProgress({
+            id: 'selfcheck',
+            label: verification.status === 'passed'
+              ? '编译/测试验证通过'
+              : verification.status === 'failed'
+                ? '编译/测试验证失败，工作区修改可能未修复问题'
+                : '未执行编译/测试验证',
+            status: level,
+            detail: verification.error ?? verification.reason,
+          });
+          if (verification.status === 'failed') {
+            followAgent.needsMoreInfo = [
+              ...(followAgent.needsMoreInfo ?? []),
+              `工作区修改未通过编译/测试：${verification.error ?? ''}`.trim(),
+            ];
+          } else if (verification.detectionError) {
+            followAgent.needsMoreInfo = [
+              ...(followAgent.needsMoreInfo ?? []),
+              `未能验证工作区修改：${verification.reason ?? '命令探测失败'}`,
+            ];
+          }
+          result.gates = applyVerificationGate(result.gates, followAgent.verification, {
+            name: 'compile-self-check-followup',
+          });
+        }
+      }
     if (!Array.isArray(followAgent.evidenceRefs) || followAgent.evidenceRefs.length === 0) {
       followAgent.evidenceRefs = result.agent?.evidenceRefs ?? [{ type: 'request', ref: 'request' }];
     }
@@ -1267,9 +1337,22 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
     result.followUps = Array.isArray(result.followUps) ? result.followUps : [];
     result.followUps.push({ question, at, agent: followAgent });
     result.agent = followAgent;
+    if (followAgent.verification && ['passed', 'failed'].includes(followAgent.verification.status)) {
+      result.meta = { ...(result.meta ?? {}), verificationStatus: followAgent.verification.status };
+    }
 
     await writeJsonAtomic(path.join(runDir, 'result.json'), result);
     await writeFile(path.join(runDir, 'report.md'), renderMarkdown(buildReport(result)), 'utf8');
+    if (result.meta?.verificationStatus) {
+      try {
+        const metaFile = path.join(runDir, 'meta.json');
+        const meta = JSON.parse(await readFile(metaFile, 'utf8'));
+        meta.verificationStatus = result.meta.verificationStatus;
+        await writeJsonAtomic(metaFile, meta);
+      } catch {
+        // meta.json is optional
+      }
+    }
     await appendFile(
       path.join(runDir, 'run.log'),
       `${new Date().toISOString()} followup question=${question.slice(0, 200)}\n`,
@@ -1348,7 +1431,7 @@ async function waitForCapture(host, timeoutMs) {
   return false;
 }
 
-async function runSmoke(window, host) {
+async function runSmoke(window, host, service) {
   const timeout = setTimeout(() => {
     log.error('SMOKE_TIMEOUT');
     app.exit(1);
@@ -1680,6 +1763,55 @@ async function runSmoke(window, host) {
       hasRecoveryModal: Boolean(document.getElementById('workspace-recovery-modal')),
       hasRecoveryList: Boolean(document.getElementById('workspace-recovery-list')),
     }))()`).catch((error) => ({ error: String(error?.message ?? error) }));
+
+    // Exercise the on-disk journal keep path (no live session), including the
+    // result.json/meta.json status update that the renderer relies on.
+    const smokeRunId = '20261110-000000-smoke1';
+    const smokeRunDir = path.join(service.runsRoot, smokeRunId);
+    let workspaceKeep = null;
+    try {
+      await mkdir(smokeRunDir, { recursive: true });
+      await writeFile(path.join(smokeRunDir, 'result.json'), JSON.stringify({
+        meta: { runId: smokeRunId },
+        agent: {
+          workspaceSession: { mode: 'in-place', status: 'pending' },
+          fixes: [{ summary: 'smoke', workspaceApplied: true, pendingDecision: true }],
+        },
+      }, null, 2), 'utf8');
+      await writeFile(path.join(smokeRunDir, 'meta.json'), JSON.stringify({
+        runId: smokeRunId,
+        workspaceSessionStatus: 'pending',
+      }, null, 2), 'utf8');
+      await writeFile(path.join(smokeRunDir, 'workspace-journal.json'), JSON.stringify({
+        version: 1,
+        runId: smokeRunId,
+        mode: 'in-place',
+        status: 'pending',
+        pid: process.pid,
+        startedAt: Date.now(),
+        repos: [],
+        touched: [],
+        changedFiles: [],
+        skipped: [],
+        conflicts: [],
+        selfCheck: { status: 'failed', error: '编译/测试验证失败：smoke' },
+      }, null, 2), 'utf8');
+      const keep = await window.webContents.executeJavaScript(
+        `window.dc.invoke('dc:workspace', { action: 'keep', runId: ${JSON.stringify(smokeRunId)} })`,
+      );
+      const updatedResult = JSON.parse(await readFile(path.join(smokeRunDir, 'result.json'), 'utf8'));
+      const updatedMeta = JSON.parse(await readFile(path.join(smokeRunDir, 'meta.json'), 'utf8'));
+      workspaceKeep = {
+        ok: keep?.ok === true,
+        status: keep?.status ?? null,
+        resultStatus: updatedResult?.agent?.workspaceSession?.status ?? null,
+        fixPending: updatedResult?.agent?.fixes?.[0]?.pendingDecision ?? null,
+        metaStatus: updatedMeta?.workspaceSessionStatus ?? null,
+      };
+      await rm(smokeRunDir, { recursive: true, force: true }).catch(() => {});
+    } catch (error) {
+      workspaceKeep = { error: String(error?.message ?? error) };
+    }
     const result = {
       ...ui,
       captured,
@@ -1698,6 +1830,7 @@ async function runSmoke(window, host) {
       databaseUi,
       modelUi,
       workspaceUi,
+      workspaceKeep,
       url: host.status().url,
       evalResult,
       uiEvalResult,
@@ -2027,7 +2160,7 @@ async function bootstrap() {
   }
 
   if (smoke) {
-    const ok = await runSmoke(window, host);
+    const ok = await runSmoke(window, host, service);
     if (smokeQuit) {
       // Exercise the normal before-quit cleanup path (used by closing the window).
       app.quit();

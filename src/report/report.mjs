@@ -72,6 +72,17 @@ export function buildReport(result) {
           commands: (agent.fixesValidation.commands ?? []).map((entry) => entry.command).filter(Boolean),
         }
       : null,
+    verification: agent.verification
+      ? {
+          status: agent.verification.status ?? 'unknown',
+          mode: agent.verification.mode ?? null,
+          scope: agent.verification.scope ?? null,
+          error: scrubText(agent.verification.error ?? ''),
+          reason: scrubText(agent.verification.reason ?? ''),
+          durationMs: agent.verification.durationMs ?? null,
+          commands: (agent.verification.commands ?? []).map((entry) => entry.command).filter(Boolean),
+        }
+      : null,
     fixes: normalizeFixList(agent.fixes).map((fix) => scrubText(formatFix(fix))),
     needsMoreInfo: (agent.needsMoreInfo ?? []).map((item) => scrubText(item)),
     request: {
@@ -216,6 +227,25 @@ export function renderMarkdown(report) {
     '',
     ...report.selfCheck.map((check) => `- ${check.name}：${yesNo(check.ok)}`),
   );
+
+  if (report.verification) {
+    const verification = report.verification;
+    const statusLabel = verification.status === 'passed'
+      ? '通过'
+      : verification.status === 'failed'
+        ? '失败'
+        : '未执行';
+    lines.push(
+      '',
+      '## 编译/测试验证',
+      '',
+      `- 状态：${statusLabel}${verification.mode ? `（${verification.mode}）` : ''}`,
+      ...(verification.commands?.length ? [`- 命令：${verification.commands.join('；')}`] : []),
+      ...(verification.durationMs ? [`- 耗时：${verification.durationMs} ms`] : []),
+      ...(verification.error ? [`- 错误：${verification.error}`] : []),
+      ...(verification.reason ? [`- 说明：${verification.reason}`] : []),
+    );
+  }
 
   if (report.recheck) {
     lines.push(

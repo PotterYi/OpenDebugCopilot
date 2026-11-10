@@ -247,6 +247,13 @@ function printDiagnosis(result, runDir, root) {
     `  Conclusion : ${result.agent.conclusion}`,
     `  Logs       : ${logs.count} record(s), marker ${logs.markerMatched ? 'matched' : `not matched (${logs.waitedMs}ms)`}`,
     `  Recheck    : ${result.recheck ? `${result.recheck.verdict} (${result.recheck.runs} runs, 一致不等于正确)` : 'off'}`,
+    ...(result.agent?.verification
+      ? [
+          `  Verify     : ${result.agent.verification.status}${result.agent.verification.mode ? ` (${result.agent.verification.mode})` : ''}`,
+          ...(result.agent.verification.error ? [`  VerifyErr  : ${result.agent.verification.error}`] : []),
+          ...(result.agent.verification.reason ? [`  VerifyInfo : ${result.agent.verification.reason}`] : []),
+        ]
+      : []),
     `  Result     : ${relative}/result.json`,
     `  Report     : ${relative}/report.md`,
   ];
@@ -379,11 +386,21 @@ export async function main(argv = process.argv.slice(2), { root = ROOT } = {}) {
     });
     const { result, runDir, workspaceSession } = outcome;
     if (workspaceSession) {
+      const verification = result.agent?.verification;
+      if (verification) {
+        const detail = verification.error ?? verification.reason;
+        const line = `[verify] ${verification.status}${verification.mode ? ` (${verification.mode})` : ''}${detail ? `: ${detail}` : ''}`;
+        if (verification.status === 'failed') log.error(line);
+        else log.info(line);
+      }
       let keep = false;
       if (process.stdin.isTTY) {
         const rl = createInterface({ input: process.stdin, output: process.stderr });
         try {
-          const answer = await rl.question('本次诊断已修改工作区，是否保留这些修改？[y/N] ');
+          const question = verification?.status === 'failed'
+            ? '编译/测试验证失败，仍要保留这些修改？[y/N] '
+            : '本次诊断已修改工作区，是否保留这些修改？[y/N] ';
+          const answer = await rl.question(question);
           keep = /^y(?:es)?$/i.test(answer.trim());
         } finally {
           rl.close();

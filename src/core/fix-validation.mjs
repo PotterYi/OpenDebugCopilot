@@ -170,7 +170,7 @@ export async function detectCompileCommands({
   if (roots.sourceRoot) {
     fixes.push({ kind: 'edit', preview: { status: 'ready' }, root: 'backend', file: 'placeholder' });
   }
-  if (roots.frontendSourceRoot) {
+  if (roots.frontendSourceRoot || workspace.frontendProjectRoot) {
     fixes.push({ kind: 'edit', preview: { status: 'ready' }, root: 'frontend', file: 'placeholder' });
   }
   for (const entry of roots.extraSourceRoots ?? []) {
@@ -195,6 +195,107 @@ export async function detectCompileCommands({
 function tail(text, max = MAX_RESULT_OUTPUT) {
   const value = String(text ?? '');
   return value.length > max ? value.slice(value.length - max) : value;
+}
+
+/**
+ * Compile/test the current workspace as-is. Used after modes that write real
+ * files directly (in-place Git sessions, full-permission edits), where there
+ * is no patch to apply and revert.
+ */
+export async function runWorkspaceCheck({
+  roots = {},
+  verifyCommand = '',
+  workspace = {},
+  projectRoot = process.cwd(),
+  runDir = null,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+} = {}) {
+  let commands;
+  try {
+    commands = await detectCompileCommands({
+      roots,
+      verifyCommand,
+      workspace,
+      projectRoot,
+    });
+  } catch (error) {
+    return {
+      status: 'skipped',
+      ok: false,
+      reason: `编译/测试命令探测失败：${error?.message ?? error}`,
+      detectionError: true,
+      commands: [],
+      durationMs: 0,
+      output: '',
+    };
+  }
+  if (commands.length === 0) {
+    return {
+      status: 'skipped',
+      ok: true,
+      reason: '未配置验证命令，且未识别到可用的编译/测试命令',
+      commands: [],
+      durationMs: 0,
+      output: '',
+    };
+  }
+
+  const results = [];
+  const logParts = [];
+  for (const target of commands) {
+    const result = await runVerifyCommand({
+      command: target.command,
+      cwd: target.cwd,
+      timeoutMs,
+    });
+    results.push(result);
+    logParts.push(`$ ${result.command}\n(cwd: ${result.cwd})\n${result.output ?? ''}`);
+    if (!result.ok) break;
+  }
+
+  const failed = results.find((result) => !result.ok) ?? null;
+  const error = failed
+    ? (failed.timedOut ? `编译/测试验证超时：${failed.command}` : `编译/测试验证失败：${failed.command}`)
+    : null;
+  const status = error ? 'failed' : 'passed';
+  if (runDir) {
+    await writeFile(path.join(runDir, 'self-check.log'), `${status}\n\n${logParts.join('\n\n')}`, 'utf8')
+      .catch(() => {});
+  }
+  return {
+    status,
+    ok: !error,
+    error,
+    commands: results.map((result) => ({
+      command: result.command,
+      cwd: result.cwd,
+      ok: result.ok,
+      exitCode: result.exitCode,
+      timedOut: result.timedOut,
+      durationMs: result.durationMs,
+    })),
+    durationMs: results.reduce((sum, result) => sum + (result.durationMs ?? 0), 0),
+    output: tail(logParts.join('\n\n')),
+  };
+}
+
+/**
+ * Add a real compile/test failure to the existing evidence gates so that the
+ * result header, CLI status and report self-check section cannot stay green.
+ */
+export function applyVerificationGate(gates, verification, { name = 'compile-self-check' } = {}) {
+  if (!gates || !verification || !['passed', 'failed'].includes(verification.status)) return gates;
+  const check = {
+    name,
+    ok: verification.status === 'passed',
+    detail: verification.status === 'passed'
+      ? ((verification.commands ?? []).map((entry) => entry.command).filter(Boolean).join('；') || 'passed')
+      : (verification.error ?? 'failed'),
+  };
+  gates.checks = (Array.isArray(gates.checks) ? gates.checks : []).filter((item) => item?.name !== name);
+  gates.checks.push(check);
+  gates.ok = gates.checks.every((item) => item.ok !== false || item.severity === 'warn');
+  return gates;
 }
 
 async function runValidation(options) {

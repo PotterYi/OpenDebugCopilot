@@ -5,10 +5,9 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { AppError } from './errors.mjs';
 import { acquireWorkspaceLocks } from './workspace-lock.mjs';
-import { detectCompileCommands } from './fix-validation.mjs';
+import { runWorkspaceCheck } from './fix-validation.mjs';
 import { previewFixFromTexts } from './fixes.mjs';
 import { createSandboxCommandRunner } from './agent-sandbox.mjs';
-import { runVerifyCommand } from '../app/electron/verify-command.mjs';
 
 const execFileAsync = promisify(execFile);
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
@@ -383,52 +382,13 @@ export async function createInPlaceSession({
       frontendSourceRoot: detected.find((entry) => entry.key === 'frontend')?.root ?? null,
       extraSourceRoots: [],
     };
-    const commands = await detectCompileCommands({
+    const validation = await runWorkspaceCheck({
       roots: validationRoots,
       verifyCommand,
       workspace,
       projectRoot: cwd,
-    }).catch(() => []);
-    if (commands.length === 0) {
-      const validation = {
-        status: 'skipped',
-        ok: true,
-        reason: '未配置验证命令，且未识别到可用的编译命令',
-        commands: [],
-      };
-      journal.selfCheck = validation;
-      await flushJournal();
-      return validation;
-    }
-    const results = [];
-    for (const target of commands) {
-      const result = await runVerifyCommand({
-        command: target.command,
-        cwd: target.cwd,
-        timeoutMs: 180_000,
-      });
-      results.push(result);
-      if (!result.ok) break;
-    }
-    const failed = results.find((result) => !result.ok) ?? null;
-    const error = failed
-      ? (failed.timedOut ? `编译自测超时：${failed.command}` : `编译自测失败：${failed.command}`)
-      : null;
-    const validation = {
-      status: error ? 'failed' : 'passed',
-      ok: !error,
-      error,
-      commands: results.map((result) => ({
-        command: result.command,
-        cwd: result.cwd,
-        ok: result.ok,
-        exitCode: result.exitCode,
-        timedOut: result.timedOut,
-        durationMs: result.durationMs,
-      })),
-      durationMs: results.reduce((sum, result) => sum + (result.durationMs ?? 0), 0),
-      output: results.map((result) => result.output).join('\n\n').slice(-12_000),
-    };
+      runDir,
+    });
     journal.selfCheck = validation;
     await flushJournal();
     return validation;
@@ -508,6 +468,8 @@ export async function listPendingWorkspaceJournals(runsRoot) {
         changedFiles: (journal.changedFiles ?? []).length,
         touchedFiles: (journal.touched ?? []).length,
         files: files.slice(0, 20),
+        selfCheckStatus: journal.selfCheck?.status ?? null,
+        selfCheckError: journal.selfCheck?.error ?? null,
         journalPath,
       });
     } catch {

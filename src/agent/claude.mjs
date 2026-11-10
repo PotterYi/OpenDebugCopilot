@@ -408,6 +408,15 @@ export function buildFollowUpPrompt(question, previous = {}) {
             : null,
         }
       : null,
+    verification: agent.verification
+      ? {
+          status: agent.verification.status,
+          mode: agent.verification.mode,
+          error: agent.verification.error,
+          reason: agent.verification.reason,
+          commands: (agent.verification.commands ?? []).slice(0, 5).map((entry) => entry.command).filter(Boolean),
+        }
+      : null,
     toolCalls: summarizeToolCalls(agent.toolCalls),
     evidenceRefs: agent.evidenceRefs ?? [],
     needsMoreInfo: agent.needsMoreInfo ?? [],

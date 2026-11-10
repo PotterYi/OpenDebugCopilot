@@ -597,6 +597,9 @@ async function loadRuns() {
       if (run.workspaceSessionStatus === 'pending') {
         head.append(el('span', 'badge error', '待决定'));
       }
+      if (run.verificationStatus === 'failed') {
+        head.append(el('span', 'badge error', '验证失败'));
+      }
       head.append(meta);
       main.append(head);
       const questionText = String(run.question ?? '').trim();
@@ -1408,6 +1411,35 @@ function renderFixValidation(validation) {
   return block;
 }
 
+function renderWorkspaceVerification(verification) {
+  if (!verification || verification.mode === 'in-place') return null;
+  const block = el('section', 'card-section verification');
+  const summary = el('div', 'verify-summary');
+  if (verification.status === 'passed') {
+    summary.append(el('span', 'badge ok', '编译/测试验证通过'));
+  } else if (verification.status === 'failed') {
+    summary.append(el('span', 'badge error', '编译/测试验证失败'));
+  } else {
+    summary.append(el(
+      'span',
+      `badge ${verification.detectionError ? 'error' : ''}`,
+      verification.detectionError ? '未能执行验证' : '未执行编译/测试验证',
+    ));
+  }
+  const commands = (verification.commands ?? []).map((entry) => entry.command).filter(Boolean);
+  if (commands.length) summary.append(el('span', 'muted small', commands.join('；')));
+  if (verification.durationMs) summary.append(el('span', 'muted small', `${verification.durationMs} ms`));
+  if (verification.reason) summary.append(el('span', 'muted small', verification.reason));
+  block.append(summary);
+  if (verification.error) block.append(el('p', 'error-text small', verification.error));
+  if (verification.output && verification.status === 'failed') {
+    const output = String(verification.output);
+    const tail = output.length > 8000 ? output.slice(-8000) : output;
+    block.append(el('pre', 'verify-log', tail));
+  }
+  return block;
+}
+
 function renderWorkspaceNotice(notice, view) {
   if (!notice || notice.code === 'ok' || notice.mode === 'in-place') return null;
   const block = el('section', 'card-section workspace-notice');
@@ -1452,6 +1484,11 @@ function retryWorkspaceDiagnosis(state) {
     return runDiagnosisPayload(state.payload, state.label);
   }
   return undefined;
+}
+
+function confirmKeepAfterFailedCheck(error = null) {
+  if (typeof window.confirm !== 'function') return true;
+  return window.confirm(`编译/测试验证失败${error ? `：${error}` : ''}。仍要保留这些修改吗？`);
 }
 
 function renderWorkspaceSession(session, view, runId, { readOnly = false } = {}) {
@@ -1504,7 +1541,11 @@ function renderWorkspaceSession(session, view, runId, { readOnly = false } = {})
     const actions = el('div', 'modal-actions');
     const keep = el('button', null, '保留修改');
     keep.type = 'button';
-    keep.addEventListener('click', () => runWorkspaceAction(view, 'keep'));
+    keep.addEventListener('click', () => {
+      if (session.selfCheck?.status === 'failed'
+        && !confirmKeepAfterFailedCheck(session.selfCheck.error)) return;
+      runWorkspaceAction(view, 'keep');
+    });
     const discard = el('button', 'secondary', '丢弃修改');
     discard.type = 'button';
     discard.addEventListener('click', () => runWorkspaceAction(view, 'discard'));
@@ -1580,7 +1621,8 @@ function renderWorkspaceRecovery() {
     const meta = el('div', 'workspace-recovery-meta');
     const startedAt = session.startedAt ? new Date(session.startedAt).toLocaleString() : '未知时间';
     const statusLabel = session.status === 'pending' ? '待决定' : '编辑中（可能未生成诊断结果）';
-    const detail = el('span', null, `${statusLabel} · 改动 ${session.changedFiles ?? 0} 个文件 · 已快照 ${session.touchedFiles ?? 0} 个 · ${session.repoCount ?? 0} 个仓库 · ${startedAt}`);
+    const verifyLabel = session.selfCheckStatus === 'failed' ? ' · 编译/测试验证失败' : '';
+    const detail = el('span', null, `${statusLabel}${verifyLabel} · 改动 ${session.changedFiles ?? 0} 个文件 · 已快照 ${session.touchedFiles ?? 0} 个 · ${session.repoCount ?? 0} 个仓库 · ${startedAt}`);
     meta.append(el('strong', null, session.runId), detail);
     if (Array.isArray(session.files) && session.files.length > 0) {
       const shown = session.files.length > 6 ? `${session.files.slice(0, 6).join('、')} …` : session.files.join('、');
@@ -1590,7 +1632,11 @@ function renderWorkspaceRecovery() {
     const actions = el('div', 'workspace-recovery-actions');
     const keep = el('button', null, '保留修改');
     keep.type = 'button';
-    keep.addEventListener('click', () => finalizeRecoveredWorkspace(session.runId, 'keep'));
+    keep.addEventListener('click', () => {
+      if (session.selfCheckStatus === 'failed'
+        && !confirmKeepAfterFailedCheck(session.selfCheckError)) return;
+      finalizeRecoveredWorkspace(session.runId, 'keep');
+    });
     const discard = el('button', 'secondary', '丢弃并恢复');
     discard.type = 'button';
     discard.addEventListener('click', () => finalizeRecoveredWorkspace(session.runId, 'discard'));
@@ -1665,6 +1711,11 @@ function renderRunBody(container, result, agent, view, { readOnly = false, showH
     );
     if (agent?.incomplete || result.meta?.incomplete) {
       head.append(el('span', 'badge error', '未完成'));
+    }
+    if (agent?.verification?.status === 'failed') {
+      head.append(el('span', 'badge error', '验证失败'));
+    } else if (agent?.verification?.detectionError) {
+      head.append(el('span', 'badge error', '未能验证'));
     }
     container.append(head);
   }
@@ -1777,6 +1828,8 @@ function renderRunBody(container, result, agent, view, { readOnly = false, showH
     ])));
   }
 
+  const verificationBlock = renderWorkspaceVerification(agent?.verification);
+  if (verificationBlock) container.append(verificationBlock);
   const workspaceNoticeBlock = renderWorkspaceNotice(result.meta?.workspaceNotice, view);
   if (workspaceNoticeBlock) container.append(workspaceNoticeBlock);
   if (agent?.workspaceSession) {

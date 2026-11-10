@@ -94,6 +94,12 @@ test('follow-up snapshot carries validation output, withheld fixes and sandbox s
         changedFiles: ['backend/OrderService.java'],
         skipped: [{ file: 'frontend/package.json', reason: '沙箱新增文件暂不支持自动提取' }],
       },
+      verification: {
+        status: 'failed',
+        mode: 'full',
+        error: '编译/测试验证失败：mvn compile',
+        commands: [{ command: 'mvn compile', ok: false }],
+      },
       needsMoreInfo: ['上次未通过编译'],
     },
   });
@@ -102,6 +108,8 @@ test('follow-up snapshot carries validation output, withheld fixes and sandbox s
   assert.match(prompt, /fixesWithheld/);
   assert.match(prompt, /OrderService\.java/);
   assert.match(prompt, /沙箱新增文件暂不支持自动提取/);
+  assert.match(prompt, /"verification"/);
+  assert.match(prompt, /编译\/测试验证失败：mvn compile/);
   assert.match(prompt, /mvn compile/);
 });
 

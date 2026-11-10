@@ -70,6 +70,7 @@ export function createService({ root = process.cwd(), configDir, runsDir, secret
           durationMs: meta.durationMs ?? null,
           question: meta.question ?? '',
           workspaceSessionStatus: meta.workspaceSessionStatus ?? null,
+          verificationStatus: meta.verificationStatus ?? null,
         });
       } catch {
         // skip incomplete runs

@@ -157,3 +157,33 @@ test('reports the actual correlation method and flags time-window fallback', () 
   const injectedMarkdown = renderMarkdown(buildReport(injected));
   assert.match(injectedMarkdown, /marker：已注入但未匹配/);
 });
+
+test('report shows compile/test verification and a failed gate', () => {
+  const withFailure = {
+    ...result,
+    agent: {
+      ...result.agent,
+      verification: {
+        status: 'failed',
+        mode: 'full',
+        scope: 'workspace',
+        error: '编译/测试验证失败：mvn -q -DskipTests compile',
+        commands: [{ command: 'mvn -q -DskipTests compile', ok: false, exitCode: 1 }],
+        durationMs: 321,
+      },
+    },
+    gates: {
+      ok: false,
+      checks: [...result.gates.checks, { name: 'compile-self-check', ok: false }],
+    },
+  };
+  const report = buildReport(withFailure);
+  assert.equal(report.verification.status, 'failed');
+  assert.equal(report.verification.mode, 'full');
+
+  const markdown = renderMarkdown(report);
+  assert.match(markdown, /## 编译\/测试验证/);
+  assert.match(markdown, /状态：失败（full）/);
+  assert.match(markdown, /mvn -q -DskipTests compile/);
+  assert.match(markdown, /compile-self-check：失败/);
+});

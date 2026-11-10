@@ -6,7 +6,12 @@ import { resolveScenarioPaths } from '../core/scenario.mjs';
 import { resolveFrontendSources } from '../evidence/frontend.mjs';
 import { collectElementEvidence } from '../evidence/element.mjs';
 import { buildFixPreviews } from '../core/fixes.mjs';
-import { detectCompileCommands, validateFixes } from '../core/fix-validation.mjs';
+import {
+  applyVerificationGate,
+  detectCompileCommands,
+  runWorkspaceCheck,
+  validateFixes,
+} from '../core/fix-validation.mjs';
 import {
   cleanupAgentSandbox,
   createAgentSandbox,
@@ -540,6 +545,16 @@ async function diagnoseWithFired({
   };
 
   await runLog.info(`agent=${agent.id} mode=${agent.id === 'mock' ? 'mock' : 'live'}`);
+  const toolMode = workspace.agent?.toolMode;
+  let wroteWorkspace = false;
+  if (!sandbox && toolMode === 'full' && agent.id !== 'mock' && typeof agent.configureScope === 'function') {
+    // Full-permission mode has no sandbox session to introspect; record writes
+    // so the post-run compile gate can skip a check when nothing changed.
+    agent.configureScope({
+      onBeforeWrite: () => { wroteWorkspace = true; },
+      onAfterWrite: () => { wroteWorkspace = true; },
+    });
+  }
   const BUILTIN_TOOL_LABELS = {
     Read: '读取文件',
     Grep: '搜索项目引用',
@@ -555,6 +570,10 @@ async function diagnoseWithFired({
         tools: toolsBundle,
         onToolUse: (tool) => {
           if (!tool?.id) return;
+          if (tool.stage === 'start' && toolMode === 'full'
+            && ['Edit', 'Write', 'Bash'].includes(tool.name)) {
+            wroteWorkspace = true;
+          }
           const label = BUILTIN_TOOL_LABELS[tool.name] ?? tool.name;
           progress(
             `builtin-${tool.id}`,
@@ -613,7 +632,16 @@ async function diagnoseWithFired({
           workspaceApplied: true,
           pendingDecision: true,
         }));
-        const selfCheck = await sandboxContext.runSelfCheck();
+        const selfCheck = (extracted.changedFiles?.length ?? 0) > 0
+          ? await sandboxContext.runSelfCheck()
+          : {
+              status: 'skipped',
+              ok: true,
+              reason: '本轮没有修改工作区文件',
+              commands: [],
+              durationMs: 0,
+              output: '',
+            };
         agentResult.workspaceSession = {
           mode: 'in-place',
           status: 'pending',
@@ -625,17 +653,28 @@ async function diagnoseWithFired({
           conflicts: extracted.conflicts,
           selfCheck,
         };
+        agentResult.verification = { scope: 'workspace', mode: 'in-place', ...selfCheck };
         if (extracted.skipped.length > 0 || extracted.conflicts.length > 0) {
           agentResult.needsMoreInfo = [
             ...(agentResult.needsMoreInfo ?? []),
             `原地修改中有 ${extracted.skipped.length} 个跳过、${extracted.conflicts.length} 个冲突，请在保留/丢弃前检查。`,
           ];
         }
+        if (selfCheck.status === 'skipped' && selfCheck.detectionError) {
+          agentResult.needsMoreInfo = [
+            ...(agentResult.needsMoreInfo ?? []),
+            `未能验证原地修改：${selfCheck.reason ?? '命令探测失败'}`,
+          ];
+        }
         progress(
           'selfcheck',
-          selfCheck.status === 'passed' ? '编译自测通过，等待保留/丢弃' : '编译自测失败，等待保留/丢弃',
-          selfCheck.status === 'failed' ? 'error' : 'done',
-          selfCheck.error,
+          selfCheck.status === 'passed'
+            ? '编译自测通过，等待保留/丢弃'
+            : selfCheck.status === 'failed'
+              ? '编译自测失败，等待保留/丢弃'
+              : '未执行编译自测，等待保留/丢弃',
+          selfCheck.status === 'failed' || selfCheck.detectionError ? 'error' : 'done',
+          selfCheck.error ?? selfCheck.reason,
         );
         await runLog.info(`in-place extracted=${extracted.fixes.length} selfCheck=${selfCheck.status}`);
       } catch (error) {
@@ -676,6 +715,63 @@ async function diagnoseWithFired({
       } finally {
         await cleanupAgentSandbox(sandboxContext);
         sandboxContext = null;
+      }
+    }
+  }
+
+  // Full-permission edits land in the real workspace with no sandbox session.
+  // Run an independent compile/test pass so an unverified edit cannot pass as
+  // a fix. No command detected means the result is explicitly "skipped".
+  if (!inPlaceUsed && !sandboxUsed && toolMode === 'full' && agent.id !== 'mock') {
+    if (!wroteWorkspace) {
+      agentResult.verification = {
+        scope: 'workspace',
+        mode: 'full',
+        status: 'skipped',
+        ok: true,
+        reason: '本轮没有直接写入工作区的操作',
+        commands: [],
+        durationMs: 0,
+        output: '',
+      };
+    } else {
+      progress('selfcheck', '编译/测试验证工作区修改', 'start');
+      const verification = await runWorkspaceCheck({
+        roots: {
+          sourceRoot: paths.sourceRoot,
+          frontendSourceRoot: frontendFixRoot,
+          extraSourceRoots,
+        },
+        verifyCommand,
+        workspace,
+        projectRoot: scenario.dir ?? process.cwd(),
+        runDir,
+      });
+      agentResult.verification = { scope: 'workspace', mode: 'full', ...verification };
+      const level = verification.status === 'failed'
+        ? 'error'
+        : (verification.status === 'skipped' && verification.detectionError ? 'error' : 'done');
+      progress(
+        'selfcheck',
+        verification.status === 'passed'
+          ? '编译/测试验证通过'
+          : verification.status === 'failed'
+            ? '编译/测试验证失败，工作区修改可能未修复问题'
+            : '未执行编译/测试验证',
+        level,
+        verification.error ?? verification.reason,
+      );
+      await runLog.info(`workspace self-check ${verification.status} commands=${(verification.commands ?? []).length}`);
+      if (verification.status === 'failed') {
+        agentResult.needsMoreInfo = [
+          ...(agentResult.needsMoreInfo ?? []),
+          `工作区修改未通过编译/测试：${verification.error ?? ''}`.trim(),
+        ];
+      } else if (verification.detectionError) {
+        agentResult.needsMoreInfo = [
+          ...(agentResult.needsMoreInfo ?? []),
+          `未能验证工作区修改：${verification.reason ?? '命令探测失败'}`,
+        ];
       }
     }
   }
@@ -754,7 +850,7 @@ async function diagnoseWithFired({
     }
   }
 
-  const gates = evaluateGates(fired, agentResult, elementContext);
+  const gates = applyVerificationGate(evaluateGates(fired, agentResult, elementContext), agentResult.verification);
   const recheckInfo = recheck > 1
     ? (() => {
         const evaluation = evaluateRecheck(agentRuns, { responseStatus: fired.response?.status ?? null });
@@ -843,6 +939,7 @@ async function diagnoseWithFired({
       incompleteReason: agentResult.incompleteReason ?? null,
       agentErrors: agentResult.errors ?? [],
       workspaceSessionStatus: agentResult.workspaceSession?.status ?? null,
+      verificationStatus: agentResult.verification?.status ?? null,
       workspaceNotice,
       // Needed by 2b apply/undo to re-resolve fix files safely.
       fixRoots: {
