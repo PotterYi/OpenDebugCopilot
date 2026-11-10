@@ -16,6 +16,11 @@
     <div id="status" class="status">连接中…</div>
   </header>
 
+  <div id="workspace-pending" class="workspace-pending" hidden>
+    <span id="workspace-pending-text"></span>
+    <button id="workspace-pending-open" type="button" class="secondary">前往历史处理</button>
+  </div>
+
   <main class="layout">
     <section class="panel">
       <h2>工作区</h2>
@@ -114,6 +119,12 @@
 
       <div id="tab-browser" class="tab-pane active">
         <div id="browser-slot" class="browser-slot"></div>
+        <div id="element-composer" class="element-composer" hidden>
+          <div id="element-composer-meta" class="element-composer-meta"></div>
+          <input id="element-composer-input" class="element-composer-input" placeholder="这个元素哪里不对劲？例如：字段显示不完整、样式错位、数据不合理…" />
+          <button id="element-composer-submit" type="button">诊断</button>
+          <button id="element-composer-cancel" type="button" class="secondary">取消</button>
+        </div>
       </div>
 
       <div id="tab-requests" class="tab-pane">
@@ -295,6 +306,18 @@
       <div class="modal-actions">
         <button id="profile-modal-save" type="button">保存</button>
         <button id="profile-modal-cancel" type="button" class="secondary">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="workspace-recovery-modal" class="modal-backdrop" hidden>
+    <div class="modal workspace-recovery-modal" role="dialog" aria-modal="true" aria-labelledby="workspace-recovery-title">
+      <h2 id="workspace-recovery-title">未收尾的工作区修改</h2>
+      <p class="muted small">以下诊断修改了真实工作区，但退出前没有选择保留或丢弃。请逐条处理；文件在诊断后被外部修改时不会自动覆盖。</p>
+      <div id="workspace-recovery-list" class="workspace-recovery-list"></div>
+      <p id="workspace-recovery-message" class="message"></p>
+      <div class="modal-actions">
+        <button id="workspace-recovery-close" type="button" class="secondary">关闭</button>
       </div>
     </div>
   </div>

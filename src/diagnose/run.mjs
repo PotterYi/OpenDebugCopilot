@@ -814,6 +814,7 @@ async function diagnoseWithFired({
       incomplete: Boolean(agentResult.incomplete),
       incompleteReason: agentResult.incompleteReason ?? null,
       agentErrors: agentResult.errors ?? [],
+      workspaceSessionStatus: agentResult.workspaceSession?.status ?? null,
       // Needed by 2b apply/undo to re-resolve fix files safely.
       fixRoots: {
         sourceRoot: paths.sourceRoot ?? null,

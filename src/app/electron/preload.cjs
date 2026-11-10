@@ -23,6 +23,7 @@ const EVENTS = new Set([
   'dc:followup:progress',
   'dc:devserver:event',
   'dc:element:event',
+  'dc:workspace:event',
   'dc:database:open',
   'dc:model:open',
 ]);

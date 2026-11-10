@@ -217,8 +217,13 @@ test('electron shell boots, captures, routes and diagnoses', {
   assert.match(stdout, /"frontendErrors":[1-9]/);
   assert.match(stdout, /"consoleDiagnose":\{"ok":true/);
   assert.equal(smokeResult.elementUi?.composerOpen, true);
+  assert.equal(smokeResult.elementUi?.hasInput, true);
+  assert.equal(smokeResult.elementUi?.hasButton, true);
   assert.match(smokeResult.elementUi?.runScenario ?? '', /^element-/);
   assert.ok(smokeResult.elementUi?.runId, JSON.stringify(smokeResult.elementUi));
+  assert.equal(smokeResult.workspaceUi?.hasRecoveryModal, true);
+  assert.equal(smokeResult.workspaceUi?.hasRecoveryList, true);
+  assert.ok(Array.isArray(smokeResult.workspaceUi?.pending?.sessions), JSON.stringify(smokeResult.workspaceUi));
   assert.match(stdout, /"gates":true/);
   assert.ok(backendHits >= 1, `expected redirect to backend, got ${backendHits}`);
   // The tool answers local preflights itself; the backend must never see OPTIONS.

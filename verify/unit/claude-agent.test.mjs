@@ -2,9 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { z } from 'zod';
 import {
+  CLAUDE_SETTING_SOURCES,
   buildFollowUpPrompt,
   buildToolShapes,
   createClaudeAgent,
+  redactToolOutputHook,
   usageFromResult,
   validationStrategyPrompt,
 } from '../../src/agent/claude.mjs';
@@ -108,4 +110,42 @@ test('validation strategy is compile-first in sandbox/full and static in readonl
   assert.match(validationStrategyPrompt('full'), /直到通过为止/);
   assert.match(validationStrategyPrompt('readonly'), /静态兜底/);
   assert.doesNotMatch(validationStrategyPrompt('readonly'), /编译优先/);
+});
+
+test('loads user settings so Claude Code auth/base URL are available', () => {
+  assert.deepEqual([...CLAUDE_SETTING_SOURCES], ['user']);
+  assert.notEqual(CLAUDE_SETTING_SOURCES.length, 0);
+});
+
+test('PostToolUse hook redacts secrets from built-in tool output', async () => {
+  const output = await redactToolOutputHook({
+    hook_event_name: 'PostToolUse',
+    tool_response: {
+      content: 'ANTHROPIC_AUTH_TOKEN=abcdef123456',
+      rows: [{ id: 1, password: 'hunter2secret', note: 'keep me' }],
+    },
+  });
+  assert.equal(output.hookSpecificOutput.hookEventName, 'PostToolUse');
+  assert.equal(output.hookSpecificOutput.updatedToolOutput.content, 'ANTHROPIC_AUTH_TOKEN=<redacted>');
+  assert.equal(output.hookSpecificOutput.updatedToolOutput.rows[0].password, '<redacted>');
+  assert.equal(output.hookSpecificOutput.updatedToolOutput.rows[0].note, 'keep me');
+
+  const ignored = await redactToolOutputHook({ hook_event_name: 'PreToolUse' });
+  assert.equal(ignored.continue, true);
+  assert.equal(ignored.hookSpecificOutput, undefined);
+});
+
+test('follow-up prompt snapshots are redacted before reaching the model', () => {
+  const prompt = buildFollowUpPrompt('继续诊断', {
+    request: {
+      method: 'POST',
+      url: 'http://localhost/api/login',
+      headers: { authorization: 'Bearer abcdefghijklmnopqrstuvwxyz' },
+      body: 'token=abcdef123456',
+    },
+    response: { status: 401, body: 'password="hunter2secret"' },
+    logs: { records: [{ message: 'api-key: sk-ant-api03-abcdefghijklmnopqrstuvwxyz' }] },
+  });
+  assert.doesNotMatch(prompt, /abcdef123456|hunter2secret|abcdefghijklmnopqrstuvwxyz/);
+  assert.match(prompt, /<redacted>/);
 });

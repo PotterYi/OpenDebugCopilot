@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -84,7 +84,14 @@ function splitZ(value) {
   return String(value ?? '').split('\0').map((item) => item.trim()).filter(Boolean);
 }
 
-function createBaseline({ runDir, roots }) {
+async function writeJsonAtomic(file, value) {
+  const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+  await rename(tmp, file);
+}
+
+function createBaseline({ runDir, roots, onChange = null }) {
   const baselineDir = path.join(runDir, 'baseline');
   const startEntries = new Map();
   const touched = new Map();
@@ -144,6 +151,7 @@ function createBaseline({ runDir, roots }) {
       lastHash: current.hash,
       lastExists: current.exists,
     });
+    await onChange?.();
   }
 
   async function recordAfterWrite(filePath) {
@@ -153,6 +161,7 @@ function createBaseline({ runDir, roots }) {
     const current = await readTextFile(absPath);
     entry.lastHash = current.hash;
     entry.lastExists = current.exists;
+    await onChange?.();
   }
 
   async function extract() {
@@ -296,9 +305,52 @@ export async function createInPlaceSession({
   }
 
   let baseline = null;
+  const journalPath = path.join(runDir, 'workspace-journal.json');
+  const journal = {
+    version: 1,
+    runId,
+    mode: 'in-place',
+    status: 'editing',
+    pid: process.pid,
+    startedAt: Date.now(),
+    repos,
+    roots: detected.map((entry) => ({
+      key: entry.key,
+      extraRoot: entry.extraRoot ?? null,
+      root: entry.root,
+      repo: entry.repo,
+    })),
+    touched: [],
+    changedFiles: [],
+    skipped: [],
+    conflicts: [],
+    selfCheck: null,
+  };
+  async function flushJournal() {
+    if (!baseline) return;
+    journal.touched = [...baseline.touched.entries()].map(([file, entry]) => ({
+      file,
+      key: entry.descriptor.key,
+      extraRoot: entry.descriptor.extraRoot ?? null,
+      root: entry.descriptor.root,
+      repo: entry.repo,
+      relative: entry.relative,
+      backup: entry.backup,
+      existsBefore: entry.exists,
+      preHash: entry.preHash,
+      lastHash: entry.lastHash,
+      lastExists: entry.lastExists,
+    }));
+    await writeJsonAtomic(journalPath, journal);
+  }
   try {
-    baseline = createBaseline({ runDir, roots: detected });
+    baseline = createBaseline({
+      runDir,
+      roots: detected,
+      onChange: () => flushJournal(),
+    });
     await baseline.snapshotStart();
+    await flushJournal();
   } catch (error) {
     await locks.release();
     return { ok: false, reason: 'baseline-error', error };
@@ -338,12 +390,15 @@ export async function createInPlaceSession({
       projectRoot: cwd,
     }).catch(() => []);
     if (commands.length === 0) {
-      return {
+      const validation = {
         status: 'skipped',
         ok: true,
         reason: '未配置验证命令，且未识别到可用的编译命令',
         commands: [],
       };
+      journal.selfCheck = validation;
+      await flushJournal();
+      return validation;
     }
     const results = [];
     for (const target of commands) {
@@ -359,7 +414,7 @@ export async function createInPlaceSession({
     const error = failed
       ? (failed.timedOut ? `编译自测超时：${failed.command}` : `编译自测失败：${failed.command}`)
       : null;
-    return {
+    const validation = {
       status: error ? 'failed' : 'passed',
       ok: !error,
       error,
@@ -374,6 +429,19 @@ export async function createInPlaceSession({
       durationMs: results.reduce((sum, result) => sum + (result.durationMs ?? 0), 0),
       output: results.map((result) => result.output).join('\n\n').slice(-12_000),
     };
+    journal.selfCheck = validation;
+    await flushJournal();
+    return validation;
+  }
+
+  async function extract() {
+    const result = await baseline.extract();
+    journal.changedFiles = result.changedFiles;
+    journal.skipped = result.skipped;
+    journal.conflicts = result.conflicts;
+    journal.status = 'pending';
+    await flushJournal();
+    return result;
   }
 
   return {
@@ -385,18 +453,23 @@ export async function createInPlaceSession({
     readOnlyRoots: readOnlyRoots.map((entry) => entry.root),
     repos,
     baselineDir: baseline.baselineDir,
+    journalPath,
     systemPromptSuffix: INPLACE_PROMPT,
     onBeforeWrite: (input) => baseline.snapshotBeforeWrite(input.filePath),
     onAfterWrite: (input) => baseline.recordAfterWrite(input.filePath),
     runCommand,
-    extract: () => baseline.extract(),
+    extract,
     runSelfCheck,
     async discard() {
       const result = await baseline.discard();
+      journal.status = result.conflicts?.length ? 'pending' : 'discarded';
+      await flushJournal();
       await locks.release();
       return result;
     },
     async keep() {
+      journal.status = 'kept';
+      await flushJournal();
       await locks.release();
       return { ok: true };
     },
@@ -404,4 +477,115 @@ export async function createInPlaceSession({
       await locks.release();
     },
   };
+}
+
+/**
+ * Scan run directories for unfinished workspace journals. Called on startup so
+ * the UI can warn the user about half-applied in-place edits.
+ */
+export async function listPendingWorkspaceJournals(runsRoot) {
+  const root = path.resolve(runsRoot);
+  let names = [];
+  try {
+    names = await readdir(root);
+  } catch {
+    return [];
+  }
+  const pending = [];
+  for (const name of names) {
+    const journalPath = path.join(root, name, 'workspace-journal.json');
+    try {
+      const journal = JSON.parse(await readFile(journalPath, 'utf8'));
+      if (!['editing', 'pending'].includes(journal.status)) continue;
+      const files = (journal.touched ?? [])
+        .map((entry) => (entry?.key ? `${entry.key}/${entry.relative ?? ''}` : entry?.relative))
+        .filter(Boolean);
+      pending.push({
+        runId: journal.runId ?? name,
+        status: journal.status,
+        startedAt: journal.startedAt ?? null,
+        repoCount: (journal.repos ?? []).length,
+        changedFiles: (journal.changedFiles ?? []).length,
+        touchedFiles: (journal.touched ?? []).length,
+        files: files.slice(0, 20),
+        journalPath,
+      });
+    } catch {
+      // no journal or unreadable
+    }
+  }
+  return pending.sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0));
+}
+
+/**
+ * Finalize a journal that lost its in-memory session (app restart/crash).
+ * Never overwrites files whose current hash no longer matches the last agent write.
+ */
+export async function finalizeWorkspaceJournal(journalPath, action) {
+  let journal;
+  try {
+    journal = JSON.parse(await readFile(journalPath, 'utf8'));
+  } catch (error) {
+    return { ok: false, error: `读取工作区 journal 失败：${error?.message ?? error}` };
+  }
+  if (!['keep', 'discard'].includes(action)) {
+    return { ok: false, error: `未知操作：${action}` };
+  }
+  // A kept/discarded journal must never be re-applied: discard after keep would
+  // silently roll back modifications the user explicitly kept.
+  if (journal.status === 'kept' || journal.status === 'discarded') {
+    return {
+      ok: true,
+      status: journal.status,
+      restored: [],
+      conflicts: journal.conflicts ?? [],
+      alreadyFinalized: true,
+    };
+  }
+  const repos = Array.isArray(journal.repos) ? journal.repos : [];
+  const locks = await acquireWorkspaceLocks(repos, { runId: `recover-${journal.runId ?? 'unknown'}` });
+  if (!locks.ok) {
+    return { ok: false, error: '工作区仍被其他诊断占用，暂时无法处理', busyRepo: locks.busyRepo };
+  }
+  try {
+    if (action === 'keep') {
+      journal.status = 'kept';
+      journal.finishedAt = Date.now();
+      await writeJsonAtomic(journalPath, journal);
+      return { ok: true, status: 'kept', restored: [], conflicts: [] };
+    }
+    const restored = [];
+    const conflicts = [];
+    for (const entry of journal.touched ?? []) {
+      const file = entry.file;
+      if (!file) continue;
+      const current = await readTextFile(file);
+      if (entry.lastHash && current.exists && current.hash !== entry.lastHash) {
+        conflicts.push({
+          file: entry.relative ?? file,
+          reason: '文件在诊断期间被外部修改，拒绝回滚',
+        });
+        continue;
+      }
+      if (entry.existsBefore) {
+        if (!entry.backup) {
+          conflicts.push({ file: entry.relative ?? file, reason: '缺少修改前快照' });
+          continue;
+        }
+        const backup = await readFile(entry.backup);
+        await mkdir(path.dirname(file), { recursive: true });
+        await writeFile(file, backup);
+      } else {
+        await rm(file, { force: true });
+      }
+      restored.push(entry.relative ?? file);
+    }
+    journal.status = conflicts.length > 0 ? 'pending' : 'discarded';
+    journal.finishedAt = conflicts.length > 0 ? null : Date.now();
+    journal.conflicts = conflicts;
+    await writeJsonAtomic(journalPath, journal);
+    return { ok: true, status: journal.status, restored, conflicts };
+  } finally {
+    await locks.release();
+  }
 }

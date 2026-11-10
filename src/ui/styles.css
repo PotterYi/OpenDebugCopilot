@@ -50,6 +50,20 @@ body {
   padding: 14px;
   overflow: auto;
 }
+.workspace-pending {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 12px 8px;
+  padding: 8px 12px;
+  border: 1px solid #7a4a12;
+  border-radius: 6px;
+  background: #2a1d0e;
+  color: #fbbf24;
+  font-size: 12px;
+}
+.workspace-pending button { padding: 3px 9px; font-size: 11px; }
 .panel.grow { display: flex; flex-direction: column; }
 .panel h2 { margin: 0 0 12px; font-size: 14px; font-weight: 600; }
 .panel-head { display: flex; align-items: center; justify-content: space-between; }
@@ -270,6 +284,33 @@ button:disabled:hover { filter: grayscale(0.55); }
 .tab-pane { display: none; flex: 1; min-height: 0; flex-direction: column; }
 .tab-pane.active { display: flex; }
 .browser-slot { flex: 1; min-height: 0; border: 1px dashed var(--border); border-radius: 6px; }
+.element-composer {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0 0;
+  border-top: 1px solid var(--border);
+}
+.element-composer-meta {
+  flex: 0 1 220px;
+  min-width: 80px;
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.element-composer-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 7px 10px;
+  font: inherit;
+}
 .toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
 .request-toolbar { flex-wrap: wrap; row-gap: 6px; }
 .diagnose-toolbar { flex-wrap: wrap; row-gap: 6px; }
@@ -628,6 +669,27 @@ button:disabled:hover { filter: grayscale(0.55); }
 .modal select option,
 .modal select optgroup { background: var(--panel-2); color: var(--text); }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+.modal.workspace-recovery-modal {
+  width: min(720px, calc(100vw - 32px));
+  max-height: min(82vh, 760px);
+  overflow: auto;
+}
+.workspace-recovery-list { display: flex; flex-direction: column; gap: 8px; }
+.workspace-recovery-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+}
+.workspace-recovery-meta { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.workspace-recovery-meta strong { font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
+.workspace-recovery-meta span { font-size: 11px; color: var(--muted); }
+.workspace-recovery-actions { display: flex; gap: 6px; flex: none; }
+.workspace-recovery-actions button { padding: 4px 9px; font-size: 11px; }
 
 .probe-status { font-size: 11px; color: var(--muted); }
 .probe-status.ok { color: #5bd693; }

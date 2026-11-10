@@ -69,6 +69,7 @@ export function createService({ root = process.cwd(), configDir, runsDir, secret
           endedAt: meta.endedAt ?? null,
           durationMs: meta.durationMs ?? null,
           question: meta.question ?? '',
+          workspaceSessionStatus: meta.workspaceSessionStatus ?? null,
         });
       } catch {
         // skip incomplete runs

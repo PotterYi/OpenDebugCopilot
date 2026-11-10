@@ -176,6 +176,40 @@ test('query_db stores every result under the run db-queries directory', async (t
   assert.equal(dbQueries[1].name, 'write_db');
 });
 
+test('database artifacts redact credentials in rows and SQL', async (t) => {
+  t.after(async () => { await rm(TMP, { recursive: true, force: true }); });
+  const scenario = parseScenario({
+    name: 'db-redact',
+    baseUrl: 'http://127.0.0.1:1',
+    method: 'GET',
+    path: '/',
+    logfiles: [],
+  });
+  const runDir = path.join(TMP, 'runs', 'run-redact');
+  const { tools, dbQueries } = createTools({
+    scenario,
+    anchor: Date.now(),
+    runDir,
+    databases: [{ ...connection }],
+    activeDatabaseId: 'db-1',
+    databaseConnect: fakeConnect({
+      rows: [{ id: 7, password: 'hunter2secret', token: 'opaque-token', note: 'keep me' }],
+    }),
+  });
+
+  const result = await tools.query_db({ sql: "select * from users where password='letmein123'" });
+  assert.equal(result.rows[0].id, 7);
+  assert.equal(result.rows[0].password, '<redacted>');
+  assert.equal(result.rows[0].token, '<redacted>');
+  assert.equal(result.rows[0].note, 'keep me');
+
+  const persisted = JSON.parse(await readFile(path.join(runDir, dbQueries[0].file), 'utf8'));
+  assert.equal(persisted.result.rows[0].password, '<redacted>');
+  assert.equal(persisted.result.rows[0].note, 'keep me');
+  assert.match(persisted.sql, /password='<redacted>'/);
+  assert.doesNotMatch(JSON.stringify(persisted), /hunter2secret|opaque-token|letmein123/);
+});
+
 test('deleting a diagnosis removes its database query results', async (t) => {
   t.after(async () => { await rm(TMP, { recursive: true, force: true }); });
   const runsDir = path.join(TMP, 'runs');

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, safeStorage, screen, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, safeStorage, shell } from 'electron';
 import path from 'node:path';
 import { access, appendFile, mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
@@ -25,6 +25,7 @@ import { runVerifyCommand } from './verify-command.mjs';
 import { createTools } from '../../tools/index.mjs';
 import { readLogs } from '../../evidence/logs.mjs';
 import { runCaptureDiagnosis, runElementDiagnosis } from '../../diagnose/run.mjs';
+import { finalizeWorkspaceJournal, listPendingWorkspaceJournals } from '../../core/inplace-session.mjs';
 import { createMockAgent } from '../../agent/mock.mjs';
 import { createClaudeAgent } from '../../agent/claude.mjs';
 import { getLogFile, log, setLogFile } from '../../core/logger.mjs';
@@ -32,9 +33,6 @@ import { getLogFile, log, setLogFile } from '../../core/logger.mjs';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '../../..');
 const HOST = '127.0.0.1';
-const ELEMENT_COMPOSER_HTML = path.join(ROOT, 'src/ui/element-composer.html');
-const ELEMENT_COMPOSER_PRELOAD = path.join(HERE, 'element-composer-preload.cjs');
-let elementComposer = null;
 const workspaceSessions = new Map();
 
 app.disableHardwareAcceleration();
@@ -146,11 +144,24 @@ async function loadRunFix(service, runId, fixIndex) {
 }
 
 async function finalizeWorkspaceSession(service, runId, action) {
+  const runDir = path.join(service.runsRoot, runId);
   const session = workspaceSessions.get(runId);
-  if (!session) throw new Error('工作区会话已失效；如果应用重启过，请重新诊断。');
-  const outcome = action === 'keep'
-    ? await session.keep()
-    : await session.discard();
+  let outcome;
+  if (session) {
+    outcome = action === 'keep'
+      ? await session.keep()
+      : await session.discard();
+  } else {
+    // The app may have restarted; recover from the on-disk journal.
+    outcome = await finalizeWorkspaceJournal(path.join(runDir, 'workspace-journal.json'), action);
+    if (!outcome.ok) {
+      return {
+        ok: false,
+        error: outcome.error ?? '工作区会话已失效',
+        conflicts: outcome.conflicts ?? [],
+      };
+    }
+  }
   if (action === 'discard' && outcome?.conflicts?.length) {
     return {
       ok: false,
@@ -159,7 +170,9 @@ async function finalizeWorkspaceSession(service, runId, action) {
     };
   }
   workspaceSessions.delete(runId);
-  const runDir = path.join(service.runsRoot, runId);
+  const status = action === 'keep'
+    ? 'kept'
+    : (outcome?.status === 'pending' ? 'pending' : 'discarded');
   const file = path.join(runDir, 'result.json');
   let result = null;
   try {
@@ -168,16 +181,27 @@ async function finalizeWorkspaceSession(service, runId, action) {
     result = null;
   }
   if (result?.agent?.workspaceSession) {
-    result.agent.workspaceSession.status = action === 'keep' ? 'kept' : 'discarded';
+    result.agent.workspaceSession.status = status;
+    if (Array.isArray(outcome?.conflicts) && outcome.conflicts.length > 0) {
+      result.agent.workspaceSession.conflicts = outcome.conflicts;
+    }
     for (const fix of result.agent.fixes ?? []) {
-      fix.workspaceApplied = action === 'keep';
-      fix.pendingDecision = false;
+      fix.workspaceApplied = status === 'kept';
+      fix.pendingDecision = status === 'pending';
     }
     await writeJsonAtomic(file, result);
   }
+  try {
+    const metaFile = path.join(runDir, 'meta.json');
+    const meta = JSON.parse(await readFile(metaFile, 'utf8'));
+    meta.workspaceSessionStatus = status;
+    await writeJsonAtomic(metaFile, meta);
+  } catch {
+    // meta.json is optional
+  }
   return {
     ok: true,
-    status: action === 'keep' ? 'kept' : 'discarded',
+    status,
     restored: outcome?.restored ?? [],
     workspaceSession: result?.agent?.workspaceSession ?? null,
   };
@@ -307,143 +331,6 @@ function createToolApprover(event) {
   };
 }
 
-function closeElementComposer({ clearScreenshots = true } = {}) {
-  const composer = elementComposer;
-  elementComposer = null;
-  if (clearScreenshots) composer?.host?.clearElementScreenshots?.();
-  if (composer?.window && !composer.window.isDestroyed()) {
-    composer.window.destroy();
-  }
-}
-
-function elementComposerBounds(host, owner, element) {
-  const rect = element?.rect ?? {};
-  const viewBounds = typeof host?.view?.getBounds === 'function'
-    ? host.view.getBounds()
-    : (host?.bounds ?? { x: 0, y: 0 });
-  const content = owner.getContentBounds();
-  const width = 340;
-  const height = 200;
-  let x = content.x + (viewBounds.x ?? 0) + (rect.left ?? rect.x ?? 0);
-  let y = content.y + (viewBounds.y ?? 0) + (rect.bottom ?? rect.y ?? 0) + 8;
-  const display = screen.getDisplayNearestPoint({
-    x: Math.round(x + width / 2),
-    y: Math.round(y + height / 2),
-  });
-  const area = display.workArea;
-  x = Math.min(Math.max(area.x + 8, x), area.x + area.width - width - 8);
-  if (y + height > area.y + area.height - 8) {
-    y = content.y + (viewBounds.y ?? 0) + (rect.top ?? rect.y ?? 0) - height - 8;
-  }
-  y = Math.min(Math.max(area.y + 8, y), area.y + area.height - height - 8);
-  return {
-    x: Math.round(x),
-    y: Math.round(y),
-    width,
-    height,
-  };
-}
-
-async function showElementComposer({ owner, host, element }) {
-  closeElementComposer({ clearScreenshots: false });
-  if (!owner || owner.isDestroyed()) return;
-  const bounds = elementComposerBounds(host, owner, element);
-  const composerWindow = new BrowserWindow({
-    ...bounds,
-    show: false,
-    frame: false,
-    resizable: false,
-    movable: true,
-    minimizable: false,
-    maximizable: false,
-    fullscreenable: false,
-    skipTaskbar: true,
-    alwaysOnTop: true,
-    parent: owner,
-    backgroundColor: '#1f2430',
-    webPreferences: {
-      preload: ELEMENT_COMPOSER_PRELOAD,
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: false,
-    },
-  });
-  elementComposer = {
-    window: composerWindow,
-    owner,
-    host,
-    element,
-  };
-  composerWindow.once('closed', () => {
-    if (elementComposer?.window === composerWindow) {
-      elementComposer = null;
-      host?.clearElementScreenshots?.();
-    }
-  });
-  try {
-    await composerWindow.loadFile(ELEMENT_COMPOSER_HTML);
-    const label = element?.framework?.componentFile
-      || element?.framework?.componentName
-      || element?.selector
-      || '';
-    await composerWindow.webContents.executeJavaScript(
-      `window.setComposerData(${JSON.stringify({ label })})`,
-    ).catch(() => {});
-    composerWindow.show();
-    composerWindow.focus();
-  } catch (error) {
-    log.warn('[element] composer failed:', error?.message ?? error);
-    closeElementComposer();
-    if (!owner.isDestroyed()) {
-      owner.webContents.send('dc:element:event', {
-        type: 'element-error',
-        message: `元素诊断输入框打开失败：${error?.message ?? error}`,
-      });
-    }
-  }
-}
-
-function registerElementComposerIpc() {
-  ipcMain.handle('dc:element-composer:submit', async (event, payload = {}) => {
-    const composer = elementComposer;
-    if (!composer || event.sender !== composer.window.webContents) {
-      return { ok: false, message: '元素诊断窗口已关闭' };
-    }
-    const question = String(payload.question ?? '').trim();
-    if (!question) return { ok: false, message: '请先输入问题' };
-    const element = { ...composer.element };
-    const screenshot = composer.host.consumeElementScreenshot(element.id);
-    if (screenshot) {
-      element.screenshotDataUrl = screenshot.dataUrl;
-      element.screenshotRect = screenshot.rect ?? null;
-    }
-    const { window: composerWindow, owner } = composer;
-    elementComposer = null;
-    if (!composerWindow.isDestroyed()) composerWindow.destroy();
-    if (owner && !owner.isDestroyed()) {
-      owner.webContents.send('dc:element:event', {
-        type: 'element-submit',
-        element,
-        question,
-      });
-    }
-    return { ok: true };
-  });
-
-  ipcMain.handle('dc:element-composer:cancel', async (event) => {
-    const composer = elementComposer;
-    if (!composer || event.sender !== composer.window.webContents) {
-      return { ok: false };
-    }
-    const { owner } = composer;
-    closeElementComposer();
-    if (owner && !owner.isDestroyed()) {
-      owner.webContents.send('dc:element:event', { type: 'element-pick-cancel' });
-    }
-    return { ok: true };
-  });
-}
-
 function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
   const handle = (channel, fn) => ipcMain.handle(channel, async (event, payload) => {
     try {
@@ -534,6 +421,14 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
   });
 
   handle('dc:workspace', async (_event, payload = {}) => {
+    // Startup recovery scan does not belong to a single run: it must work even
+    // when the crashed diagnosis never wrote result.json/meta.json.
+    if (payload.action === 'pending') {
+      return {
+        sessions: await listPendingWorkspaceJournals(service.runsRoot),
+        active: workspaceSessions.size,
+      };
+    }
     const runId = String(payload.runId ?? '');
     if (!runId) throw new Error('runId 不能为空');
     if (payload.action === 'keep' || payload.action === 'discard') {
@@ -839,23 +734,12 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
     if (!host) throw new Error('browser host is not ready');
     switch (payload.action) {
       case 'start':
-        closeElementComposer();
         await host.startElementPick();
         return { ok: true };
       case 'cancel':
-        closeElementComposer();
         await host.cancelElementPick();
         return { ok: true };
       case 'toggle':
-        if (elementComposer) {
-          const { window: owner } = elementComposer;
-          closeElementComposer();
-          host.clearElementScreenshots();
-          if (owner && !owner.isDestroyed()) {
-            owner.webContents.send('dc:element:event', { type: 'element-pick-cancel' });
-          }
-          return { picking: false };
-        }
         return host.toggleElementPick();
       default:
         throw new Error(`dc:element: unknown action ${payload.action}`);
@@ -920,7 +804,17 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
     if (!host) throw new Error('browser host is not ready');
     const workspace = (await service.getConfig()).workspace;
 
-    const element = payload.element && typeof payload.element === 'object' ? payload.element : null;
+    let element = payload.element && typeof payload.element === 'object' ? payload.element : null;
+    if (element?.id) {
+      const screenshot = host.consumeElementScreenshot(element.id);
+      if (screenshot) {
+        element = {
+          ...element,
+          screenshotDataUrl: screenshot.dataUrl,
+          screenshotRect: screenshot.rect ?? null,
+        };
+      }
+    }
     let observation;
     let frontendErrors;
 
@@ -1672,16 +1566,21 @@ async function runSmoke(window, host) {
         const described = await host.sendCdp('DOM.describeNode', { nodeId: queried.nodeId });
         await host.handleElementPicked(described.node.backendNodeId);
         await new Promise((resolve) => setTimeout(resolve, 500));
-        elementUi = {
-          composerOpen: Boolean(elementComposer && !elementComposer.window.isDestroyed()),
-          screenshot: host.elementScreenshots.size > 0,
-          screenshotError: host.elementLastScreenshotError,
-        };
+        elementUi = await window.webContents.executeJavaScript(`(() => {
+          const bar = document.getElementById('element-composer');
+          return {
+            composerOpen: Boolean(bar && bar.hidden === false),
+            hasInput: Boolean(document.getElementById('element-composer-input')),
+            hasButton: Boolean(document.getElementById('element-composer-submit')),
+          };
+        })()`);
+        elementUi.screenshot = host.elementScreenshots.size > 0;
+        elementUi.screenshotError = host.elementLastScreenshotError;
         if (!elementUi.composerOpen && host.elementLastError) elementUi.error = host.elementLastError;
         if (elementUi.composerOpen) {
-          await elementComposer.window.webContents.executeJavaScript(`(() => {
-            document.getElementById('question').value = '元素显示异常';
-            document.getElementById('go').click();
+          await window.webContents.executeJavaScript(`(() => {
+            document.getElementById('element-composer-input').value = '元素显示异常';
+            document.getElementById('element-composer-submit').click();
             return true;
           })()`);
           await new Promise((resolve) => setTimeout(resolve, 900));
@@ -1776,6 +1675,11 @@ async function runSmoke(window, host) {
     const sample = host.list({ limit: 1 })[0] ?? null;
     const details = host.list({ limit: 50 }).map((item) => host.detail(item.id)).filter(Boolean);
     const sampleBody = details.find((item) => item.body?.text) ?? null;
+    const workspaceUi = await window.webContents.executeJavaScript(`(async () => ({
+      pending: await window.dc.invoke('dc:workspace', { action: 'pending' }),
+      hasRecoveryModal: Boolean(document.getElementById('workspace-recovery-modal')),
+      hasRecoveryList: Boolean(document.getElementById('workspace-recovery-list')),
+    }))()`).catch((error) => ({ error: String(error?.message ?? error) }));
     const result = {
       ...ui,
       captured,
@@ -1793,6 +1697,7 @@ async function runSmoke(window, host) {
       databaseModalOpen: Boolean(databaseUi?.open),
       databaseUi,
       modelUi,
+      workspaceUi,
       url: host.status().url,
       evalResult,
       uiEvalResult,
@@ -1932,7 +1837,6 @@ async function bootstrap() {
     // file logging is optional
   }
   installApplicationMenu();
-  registerElementComposerIpc();
   const userData = app.getPath('userData');
   const effectiveConfigDir = configDir ? path.resolve(configDir) : app.isPackaged ? path.join(userData, 'configs') : path.join(ROOT, 'configs');
   const effectiveRunsDir = runsDir ? path.resolve(runsDir) : app.isPackaged ? path.join(userData, 'runs') : path.join(ROOT, 'runs');
@@ -2028,12 +1932,6 @@ async function bootstrap() {
         }
       }
       if (!window.isDestroyed()) {
-        if (event.type === 'element-picked') {
-          showElementComposer({ owner: window, host, element: event.element })
-            .catch((error) => log.warn('[element] composer:', error?.message ?? error));
-        } else if (event.type === 'element-pick-cancel') {
-          closeElementComposer();
-        }
         if (String(event.type).startsWith('element-')) {
           window.webContents.send('dc:element:event', event);
         }
@@ -2075,6 +1973,49 @@ async function bootstrap() {
     mainWindow = null;
     router?.dispose();
     host?.destroy();
+  });
+
+  // Closing the window with half-applied in-place edits is the easiest way to
+  // forget about them. Warn once, and let the renderer reopen the recovery list.
+  let closeConfirmed = false;
+  let closePromptOpen = false;
+  window.on('close', (event) => {
+    if (smoke || closeConfirmed || shutdownDone || shutdownRunning) return;
+    event.preventDefault();
+    if (closePromptOpen) return;
+    closePromptOpen = true;
+    listPendingWorkspaceJournals(service.runsRoot)
+      .then(async (sessions) => {
+        if (window.isDestroyed()) return;
+        if (sessions.length === 0) {
+          closeConfirmed = true;
+          window.close();
+          return;
+        }
+        const { response } = await dialog.showMessageBox(window, {
+          type: 'warning',
+          title: '还有未收尾的工作区修改',
+          message: `检测到 ${sessions.length} 个诊断修改了真实工作区，但尚未选择保留或丢弃。`,
+          detail: '建议先返回处理，逐条保留或丢弃，避免半改状态被误提交。',
+          buttons: ['返回处理', '仍要退出'],
+          defaultId: 0,
+          cancelId: 0,
+          noLink: true,
+        });
+        if (response === 1) {
+          closeConfirmed = true;
+          if (!window.isDestroyed()) window.close();
+        } else if (!window.isDestroyed()) {
+          window.webContents.send('dc:workspace:event', { type: 'pending', sessions });
+        }
+      })
+      .catch(() => {
+        closeConfirmed = true;
+        if (!window.isDestroyed()) window.close();
+      })
+      .finally(() => {
+        closePromptOpen = false;
+      });
   });
 
   if (!smoke && initial.workspace.frontendUrl) {

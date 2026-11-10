@@ -106,6 +106,20 @@ let databaseEditingId = null;
 const diagnosisStates = new Map();
 let activeDiagnosisKey = null;
 let elementPicking = false;
+let pendingElement = null;
+let pendingWorkspaceSessions = [];
+const elementComposerEl = $('element-composer');
+const elementComposerMeta = $('element-composer-meta');
+const elementComposerInput = $('element-composer-input');
+const elementComposerSubmit = $('element-composer-submit');
+const elementComposerCancel = $('element-composer-cancel');
+const workspacePendingEl = $('workspace-pending');
+const workspacePendingText = $('workspace-pending-text');
+const workspacePendingOpen = $('workspace-pending-open');
+const workspaceRecoveryModal = $('workspace-recovery-modal');
+const workspaceRecoveryList = $('workspace-recovery-list');
+const workspaceRecoveryMessage = $('workspace-recovery-message');
+const workspaceRecoveryClose = $('workspace-recovery-close');
 let followUpProgressContext = null;
 const MAX_DEV_LOG_LINES = 300;
 const DEV_STATUS_LABELS = {
@@ -579,7 +593,11 @@ async function loadRuns() {
       main.className = 'run-main';
       const head = document.createElement('div');
       head.className = 'run-head';
-      head.append(title, meta);
+      head.append(title);
+      if (run.workspaceSessionStatus === 'pending') {
+        head.append(el('span', 'badge error', '待决定'));
+      }
+      head.append(meta);
       main.append(head);
       const questionText = String(run.question ?? '').trim();
       if (questionText) {
@@ -614,6 +632,7 @@ async function loadRuns() {
           historyMessageEl.textContent = `已删除 ${run.runId}${queryNote}`;
           historyMessageEl.className = 'message ok';
           await loadRuns();
+          await loadWorkspacePending();
         } catch (err) {
           historyMessageEl.textContent = `删除失败：${err.message}`;
           historyMessageEl.className = 'message error';
@@ -1464,10 +1483,129 @@ async function runWorkspaceAction(view, action) {
     view.response.result = run.result;
     renderRunInto(view);
     showMessage(view, action === 'keep' ? '已保留工作区修改' : '已丢弃工作区修改', 'message ok');
+    await loadWorkspacePending();
   } catch (error) {
     showMessage(view, `操作失败：${error.message}`, 'message error');
   }
 }
+
+async function loadWorkspacePending() {
+  if (!api.isDesktop) {
+    workspacePendingEl.hidden = true;
+    return;
+  }
+  try {
+    const result = await api.workspace('pending');
+    pendingWorkspaceSessions = Array.isArray(result?.sessions) ? result.sessions : [];
+    if (pendingWorkspaceSessions.length === 0) {
+      workspacePendingEl.hidden = true;
+      if (!workspaceRecoveryModal.hidden) closeWorkspaceRecovery();
+      return;
+    }
+    workspacePendingText.textContent = `检测到 ${pendingWorkspaceSessions.length} 个未收尾的工作区修改，请确认保留或丢弃。`;
+    workspacePendingEl.hidden = false;
+    if (!workspaceRecoveryModal.hidden) renderWorkspaceRecovery();
+  } catch {
+    workspacePendingEl.hidden = true;
+  }
+}
+
+function openWorkspaceRecovery() {
+  workspaceRecoveryMessage.textContent = '';
+  workspaceRecoveryMessage.className = 'message';
+  renderWorkspaceRecovery();
+  workspaceRecoveryModal.hidden = false;
+  hideBrowserForModal();
+}
+
+function closeWorkspaceRecovery() {
+  workspaceRecoveryModal.hidden = true;
+  restoreBrowserAfterModal();
+}
+
+function renderWorkspaceRecovery() {
+  workspaceRecoveryList.textContent = '';
+  if (pendingWorkspaceSessions.length === 0) {
+    workspaceRecoveryList.append(el('p', 'muted small', '当前没有未收尾的工作区修改。'));
+    return;
+  }
+  for (const session of pendingWorkspaceSessions) {
+    const item = el('div', 'workspace-recovery-item');
+    const meta = el('div', 'workspace-recovery-meta');
+    const startedAt = session.startedAt ? new Date(session.startedAt).toLocaleString() : '未知时间';
+    const statusLabel = session.status === 'pending' ? '待决定' : '编辑中（可能未生成诊断结果）';
+    const detail = el('span', null, `${statusLabel} · 改动 ${session.changedFiles ?? 0} 个文件 · 已快照 ${session.touchedFiles ?? 0} 个 · ${session.repoCount ?? 0} 个仓库 · ${startedAt}`);
+    meta.append(el('strong', null, session.runId), detail);
+    if (Array.isArray(session.files) && session.files.length > 0) {
+      const shown = session.files.length > 6 ? `${session.files.slice(0, 6).join('、')} …` : session.files.join('、');
+      meta.append(el('span', null, `文件：${shown}`));
+    }
+
+    const actions = el('div', 'workspace-recovery-actions');
+    const keep = el('button', null, '保留修改');
+    keep.type = 'button';
+    keep.addEventListener('click', () => finalizeRecoveredWorkspace(session.runId, 'keep'));
+    const discard = el('button', 'secondary', '丢弃并恢复');
+    discard.type = 'button';
+    discard.addEventListener('click', () => finalizeRecoveredWorkspace(session.runId, 'discard'));
+    actions.append(keep, discard);
+    if (session.status === 'pending') {
+      const view = el('button', 'secondary', '查看结果');
+      view.type = 'button';
+      view.addEventListener('click', () => openRecoveredRun(session.runId));
+      actions.append(view);
+    }
+    item.append(meta, actions);
+    workspaceRecoveryList.append(item);
+  }
+}
+
+async function finalizeRecoveredWorkspace(runId, action) {
+  if (action === 'discard' && typeof window.confirm === 'function'
+    && !window.confirm(`丢弃 ${runId} 的修改并恢复诊断前内容？诊断期间被外部修改的文件会保留并报告冲突。`)) {
+    return;
+  }
+  workspaceRecoveryMessage.textContent = action === 'keep' ? '正在保留…' : '正在恢复…';
+  workspaceRecoveryMessage.className = 'message muted';
+  try {
+    const result = await api.workspace(action, { runId });
+    if (result?.ok === false) {
+      const conflicts = Array.isArray(result.conflicts) ? result.conflicts.length : 0;
+      workspaceRecoveryMessage.textContent = `${result.error ?? '操作失败'}${conflicts ? `（${conflicts} 个冲突文件未覆盖）` : ''}`;
+      workspaceRecoveryMessage.className = 'message error';
+      return;
+    }
+    const restored = Array.isArray(result?.restored) ? result.restored.length : 0;
+    workspaceRecoveryMessage.textContent = action === 'keep'
+      ? `已保留 ${runId} 的修改`
+      : `已恢复 ${restored} 个文件`;
+    workspaceRecoveryMessage.className = 'message ok';
+    await loadWorkspacePending();
+    await loadRuns();
+  } catch (error) {
+    workspaceRecoveryMessage.textContent = `操作失败：${error.message}`;
+    workspaceRecoveryMessage.className = 'message error';
+  }
+}
+
+function openRecoveredRun(runId) {
+  closeWorkspaceRecovery();
+  setTab('history');
+  loadRuns().then(() => showRun(runId)).catch((error) => {
+    setStatus(`打开诊断失败：${error.message}`, 'error');
+  });
+}
+
+workspacePendingOpen.addEventListener('click', async () => {
+  await loadWorkspacePending();
+  if (pendingWorkspaceSessions.length > 0) openWorkspaceRecovery();
+});
+workspaceRecoveryClose.addEventListener('click', () => {
+  closeWorkspaceRecovery();
+});
+workspaceRecoveryModal.addEventListener('click', (event) => {
+  if (event.target === workspaceRecoveryModal) closeWorkspaceRecovery();
+});
 
 function renderRunBody(container, result, agent, view, { readOnly = false, showHeader = true } = {}) {
   const runId = view.response?.runId ?? result.meta?.runId;
@@ -2219,6 +2357,48 @@ function setElementPicking(active) {
   button.textContent = elementPicking ? '选择元素…' : '元素视野';
 }
 
+function showElementComposerBar(element) {
+  pendingElement = element;
+  elementComposerMeta.textContent = element?.framework?.componentFile
+    || element?.framework?.componentName
+    || element?.selector
+    || '';
+  elementComposerInput.value = '';
+  elementComposerEl.hidden = false;
+  requestAnimationFrame(syncBounds);
+  elementComposerInput.focus();
+}
+
+function hideElementComposerBar() {
+  elementComposerEl.hidden = true;
+  elementComposerInput.value = '';
+  pendingElement = null;
+  requestAnimationFrame(syncBounds);
+}
+
+async function cancelElementComposer() {
+  hideElementComposerBar();
+  setElementPicking(false);
+  await api.element('cancel').catch(() => {});
+  setStatus('已取消元素选择', 'ok');
+}
+
+function submitElementComposer() {
+  const element = pendingElement;
+  if (!element) return;
+  const question = elementComposerInput.value.trim();
+  if (!question) {
+    elementComposerInput.focus();
+    return;
+  }
+  hideElementComposerBar();
+  setElementPicking(false);
+  setStatus('元素诊断已开始', 'ok');
+  runElementDiagnosisPayload(element, question).catch((error) => {
+    setStatus(`元素诊断启动失败：${error.message}`, 'error');
+  });
+}
+
 function renderElementDetail(state) {
   const element = state?.element;
   if (!element) return;
@@ -2805,6 +2985,10 @@ $('element-scan').addEventListener('click', async () => {
     setStatus('元素视野仅桌面版可用', 'error');
     return;
   }
+  if (pendingElement || !elementComposerEl.hidden) {
+    await cancelElementComposer();
+    return;
+  }
   try {
     setTab('browser');
     const result = await api.element('toggle');
@@ -2817,26 +3001,53 @@ $('element-scan').addEventListener('click', async () => {
   }
 });
 
+elementComposerSubmit.addEventListener('click', submitElementComposer);
+elementComposerCancel.addEventListener('click', () => { cancelElementComposer().catch(() => {}); });
+elementComposerInput.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    submitElementComposer();
+  }
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    cancelElementComposer().catch(() => {});
+  }
+});
+
 api.onElementEvent((event) => {
   if (!event) return;
   if (event.type === 'element-pick-start') {
     setElementPicking(true);
     setStatus('请在页面中选择一个元素');
   } else if (event.type === 'element-picked') {
-    setStatus('已选中元素，请在页面浮层输入问题');
+    setElementPicking(false);
+    showElementComposerBar(event.element);
+    setStatus('已选中元素，请在浏览器下方输入问题');
   } else if (event.type === 'element-submit') {
+    hideElementComposerBar();
     setElementPicking(false);
     setStatus('元素诊断已开始', 'ok');
     runElementDiagnosisPayload(event.element, event.question).catch((error) => {
       setStatus(`元素诊断启动失败：${error.message}`, 'error');
     });
   } else if (event.type === 'element-pick-cancel') {
+    hideElementComposerBar();
     setElementPicking(false);
   } else if (event.type === 'element-error') {
+    hideElementComposerBar();
     setElementPicking(false);
     setStatus(`元素选择失败：${event.message ?? '未知错误'}`, 'error');
   }
 });
+
+api.onWorkspaceEvent((event) => {
+  if (event?.type !== 'pending') return;
+  if (Array.isArray(event.sessions)) pendingWorkspaceSessions = event.sessions;
+  workspacePendingText.textContent = `检测到 ${pendingWorkspaceSessions.length} 个未收尾的工作区修改，请确认保留或丢弃。`;
+  workspacePendingEl.hidden = pendingWorkspaceSessions.length === 0;
+  openWorkspaceRecovery();
+});
+
 async function clearCapturedData() {
   const runningRequestIds = [];
   const runningConsoleIds = [];
@@ -3060,6 +3271,7 @@ if (typeof ResizeObserver !== 'undefined') {
 const initialConfig = await loadConfig();
 if (initialConfig?.workspace?.frontendUrl) browserUrlInput.value = initialConfig.workspace.frontendUrl;
 await loadRuns();
+await loadWorkspacePending();
 setTab('browser');
 requestAnimationFrame(syncBounds);
 setTimeout(syncBounds, 300);

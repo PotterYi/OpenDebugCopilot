@@ -1,10 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import os from 'node:os';
+import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { createInPlaceSession } from '../../src/core/inplace-session.mjs';
+import {
+  createInPlaceSession,
+  finalizeWorkspaceJournal,
+  listPendingWorkspaceJournals,
+} from '../../src/core/inplace-session.mjs';
 import { tempDir } from './tmp.mjs';
 
 const exec = promisify(execFile);
@@ -39,6 +45,23 @@ async function startSession(repo, runDir, runId = 'run-1') {
     verifyCommand: '',
     projectRoot: repo,
   });
+}
+
+const LOCK_DIR = path.join(os.tmpdir(), 'debugcopilot-workspace-locks');
+
+function lockFileFor(repo) {
+  const key = createHash('sha256').update(path.resolve(repo)).digest('hex').slice(0, 24);
+  return path.join(LOCK_DIR, `${key}.lock`);
+}
+
+async function applyAgentEdit(session, file, content) {
+  await session.onBeforeWrite({ filePath: file });
+  await writeFile(file, content, 'utf8');
+  await session.onAfterWrite({ filePath: file });
+}
+
+function journalPathOf(runDir) {
+  return path.join(runDir, 'workspace-journal.json');
 }
 
 test('in-place session snapshots, extracts and discards to the pre-run content', async (t) => {
@@ -141,4 +164,100 @@ test('diagnosis keeps the in-place workspace pending for user decision', async (
   assert.equal(await readFile(file, 'utf8'), 'agent-edit\n');
   await outcome.workspaceSession.discard();
   assert.equal(await readFile(file, 'utf8'), 'old\n');
+});
+
+test('writes a workspace journal and keeps it pending until the user decides', async (t) => {
+  const { repo, runDir } = await fixture(t);
+  const file = path.join(repo, 'OrderService.java');
+  const session = await startSession(repo, runDir, 'run-journal');
+  assert.equal(session.ok, true);
+  await applyAgentEdit(session, file, 'agent\n');
+  await session.extract();
+
+  const journal = JSON.parse(await readFile(journalPathOf(runDir), 'utf8'));
+  assert.equal(journal.runId, 'run-journal');
+  assert.equal(journal.status, 'pending');
+  assert.equal(journal.touched.length, 1);
+  assert.match(journal.touched[0].backup, /prewrite/);
+  assert.equal(journal.touched[0].existsBefore, true);
+
+  const pending = await listPendingWorkspaceJournals(TMP);
+  assert.equal(pending.length, 1);
+  assert.equal(pending[0].runId, 'run-journal');
+  assert.equal(pending[0].status, 'pending');
+  assert.equal(pending[0].changedFiles, 1);
+  assert.deepEqual(pending[0].files, ['backend/OrderService.java']);
+
+  await session.keep();
+  const kept = JSON.parse(await readFile(journalPathOf(runDir), 'utf8'));
+  assert.equal(kept.status, 'kept');
+  assert.equal(await readFile(file, 'utf8'), 'agent\n');
+  assert.deepEqual(await listPendingWorkspaceJournals(TMP), []);
+});
+
+test('recovers an editing journal left by a crash and restores the pre-run file', async (t) => {
+  const { repo, runDir } = await fixture(t);
+  const file = path.join(repo, 'OrderService.java');
+  const session = await startSession(repo, runDir, 'run-crash');
+  await applyAgentEdit(session, file, 'agent\n');
+
+  // Simulate the process dying mid-run: the journal exists, no result, and the
+  // lock is stale from the next process's point of view.
+  await rm(lockFileFor(repo), { force: true });
+  const pending = await listPendingWorkspaceJournals(TMP);
+  assert.equal(pending.length, 1);
+  assert.equal(pending[0].status, 'editing');
+
+  const recovered = await finalizeWorkspaceJournal(journalPathOf(runDir), 'discard');
+  assert.equal(recovered.ok, true);
+  assert.equal(recovered.status, 'discarded');
+  assert.deepEqual(recovered.restored, ['OrderService.java']);
+  assert.equal(await readFile(file, 'utf8'), 'old\n');
+  assert.deepEqual(await listPendingWorkspaceJournals(TMP), []);
+
+  const journal = JSON.parse(await readFile(journalPathOf(runDir), 'utf8'));
+  assert.equal(journal.status, 'discarded');
+});
+
+test('journal recovery never rolls back edits the user already kept', async (t) => {
+  const { repo, runDir } = await fixture(t);
+  const file = path.join(repo, 'OrderService.java');
+  const session = await startSession(repo, runDir, 'run-kept');
+  await applyAgentEdit(session, file, 'agent\n');
+  await session.extract();
+  await rm(lockFileFor(repo), { force: true });
+
+  const kept = await finalizeWorkspaceJournal(journalPathOf(runDir), 'keep');
+  assert.equal(kept.ok, true);
+  assert.equal(kept.status, 'kept');
+
+  const replayed = await finalizeWorkspaceJournal(journalPathOf(runDir), 'discard');
+  assert.equal(replayed.ok, true);
+  assert.equal(replayed.status, 'kept');
+  assert.equal(replayed.alreadyFinalized, true);
+  assert.equal(await readFile(file, 'utf8'), 'agent\n');
+});
+
+test('journal recovery reports external edits instead of overwriting them', async (t) => {
+  const { repo, runDir } = await fixture(t);
+  const file = path.join(repo, 'OrderService.java');
+  const session = await startSession(repo, runDir, 'run-conflict');
+  await applyAgentEdit(session, file, 'agent\n');
+  await session.extract();
+  await writeFile(file, 'user-edited-after\n', 'utf8');
+  await rm(lockFileFor(repo), { force: true });
+
+  const recovered = await finalizeWorkspaceJournal(journalPathOf(runDir), 'discard');
+  assert.equal(recovered.ok, true);
+  assert.equal(recovered.status, 'pending');
+  assert.equal(recovered.conflicts.length, 1);
+  assert.equal(await readFile(file, 'utf8'), 'user-edited-after\n');
+
+  const pending = await listPendingWorkspaceJournals(TMP);
+  assert.equal(pending.length, 1);
+  assert.equal(pending[0].runId, 'run-conflict');
+
+  const kept = await finalizeWorkspaceJournal(journalPathOf(runDir), 'keep');
+  assert.equal(kept.status, 'kept');
+  assert.equal(await readFile(file, 'utf8'), 'user-edited-after\n');
 });

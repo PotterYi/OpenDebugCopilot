@@ -129,6 +129,10 @@ export const api = {
     if (!dc?.on) return () => {};
     return dc.on('dc:element:event', handler);
   },
+  onWorkspaceEvent(handler) {
+    if (!dc?.on) return () => {};
+    return dc.on('dc:workspace:event', handler);
+  },
   onDevServer(handler) {
     if (!dc?.on) return () => {};
     return dc.on('dc:devserver:event', handler);

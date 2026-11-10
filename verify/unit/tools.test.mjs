@@ -119,3 +119,27 @@ test('reads additional backend roots only when authorized', async (t) => {
   assert.equal(denied.error, true);
   assert.equal(denied.code, 'EXTRA_SOURCE_ROOT_REQUIRED');
 });
+
+test('redacts secrets from tool results, spilled records and call summaries', async (t) => {
+  t.after(async () => { await rm(RUN_DIR, { recursive: true, force: true }); });
+  const secret = 'sk-ant-api03-abcdefghijklmnopqrstuvwxyz';
+  const { tools, calls } = createTools({
+    scenario,
+    anchor,
+    runDir: RUN_DIR,
+    window,
+    runCommand: async () => ({
+      ok: true,
+      output: `ANTHROPIC_AUTH_TOKEN=${secret}\nDB_PASSWORD=hunter2secret`,
+    }),
+  });
+
+  const ran = await tools.run_command({ command: 'npm test' });
+  assert.match(ran.output, /ANTHROPIC_AUTH_TOKEN=<redacted>/);
+  assert.match(ran.output, /DB_PASSWORD=<redacted>/);
+  assert.doesNotMatch(ran.output, /abcdefghijklmnopqrstuvwxyz|hunter2secret/);
+
+  const callText = JSON.stringify(calls);
+  assert.doesNotMatch(callText, /abcdefghijklmnopqrstuvwxyz|hunter2secret/);
+  assert.match(callText, /ANTHROPIC_AUTH_TOKEN=<redacted>/);
+});

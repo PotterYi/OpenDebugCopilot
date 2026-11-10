@@ -3,6 +3,30 @@ import path from 'node:path';
 import { AppError } from '../core/errors.mjs';
 import { normalizeFixList } from '../core/fixes.mjs';
 import { summarizeToolCalls } from '../core/tool-calls.mjs';
+import { redactValue } from '../core/redact.mjs';
+
+// Never use []: SDK isolation mode drops the user's Claude Code settings,
+// including auth env vars such as ANTHROPIC_AUTH_TOKEN/ANTHROPIC_BASE_URL.
+export const CLAUDE_SETTING_SOURCES = Object.freeze(['user']);
+
+/**
+ * PostToolUse hook: built-in Read/Grep/Bash output bypasses our MCP tools, so
+ * redact secrets before the content reaches the model (and later transcripts).
+ */
+export async function redactToolOutputHook(input = {}) {
+  if (input?.hook_event_name !== 'PostToolUse') return { continue: true };
+  return {
+    continue: true,
+    hookSpecificOutput: {
+      hookEventName: 'PostToolUse',
+      updatedToolOutput: redactValue(input.tool_response),
+    },
+  };
+}
+
+const REDACT_TOOL_OUTPUT_HOOKS = Object.freeze({
+  PostToolUse: [{ hooks: [redactToolOutputHook] }],
+});
 
 export const READ_ONLY_BUILTIN_TOOLS = Object.freeze(['Read', 'Grep', 'Glob']);
 export const SANDBOX_BUILTIN_TOOLS = Object.freeze(['Read', 'Grep', 'Glob', 'Edit', 'Write']);
@@ -277,7 +301,7 @@ function sanitizeEvidence(evidence) {
 }
 
 function buildPrompt(question, evidence) {
-  const pack = JSON.stringify(sanitizeEvidence(evidence), null, 2);
+  const pack = JSON.stringify(redactValue(sanitizeEvidence(evidence)), null, 2);
   return [
     '# 用户描述的症状',
     question?.trim() || '(用户未提供描述，请从证据中推断现象)',
@@ -424,7 +448,7 @@ export function buildFollowUpPrompt(question, previous = {}) {
         }
       : null,
   };
-  const pack = JSON.stringify(snapshot, null, 2);
+  const pack = JSON.stringify(redactValue(snapshot), null, 2);
   return [
     '# 上一轮诊断',
     '```json',
@@ -440,7 +464,7 @@ export function buildFollowUpPrompt(question, previous = {}) {
 }
 
 function toolResultText(value) {
-  const text = JSON.stringify(value, null, 2);
+  const text = JSON.stringify(redactValue(value), null, 2);
   if (text.length <= MAX_TOOL_TEXT) return text;
   return `${text.slice(0, MAX_TOOL_TEXT)}\n… (tool result truncated)`;
 }
@@ -705,9 +729,14 @@ export function createClaudeAgent({
           mcpServers: { debugcopilot: server },
           strictMcpConfig: true,
           allowedTools: toolNames,
+          // Load the user's Claude Code settings so login/auth env vars such as
+          // ANTHROPIC_AUTH_TOKEN and ANTHROPIC_BASE_URL are available. Do not
+          // use [] here: SDK isolation mode drops those settings and the CLI
+          // reports "not logged in".
+          settingSources: [...CLAUDE_SETTING_SOURCES],
+          hooks: REDACT_TOOL_OUTPUT_HOOKS,
           permissionMode: 'default',
           canUseTool: permission,
-          settingSources: [],
           ...(additionalDirectories.length > 0 ? { additionalDirectories } : {}),
           ...(Number.isFinite(turnLimit) && turnLimit > 0 ? { maxTurns: Math.floor(turnLimit) } : {}),
           ...(maxBudgetUsd ? { maxBudgetUsd } : {}),
@@ -853,9 +882,12 @@ export function createClaudeAgent({
           ...(server
             ? { mcpServers: { debugcopilot: server }, strictMcpConfig: true, allowedTools: toolNames }
             : { mcpServers: {}, strictMcpConfig: true, allowedTools: [] }),
+          // Keep the user's Claude Code auth/base URL settings; [] causes
+          // "not logged in" because ANTHROPIC_AUTH_TOKEN is not loaded.
+          settingSources: [...CLAUDE_SETTING_SOURCES],
+          hooks: REDACT_TOOL_OUTPUT_HOOKS,
           permissionMode: 'default',
           canUseTool: permission,
-          settingSources: [],
           ...(additionalDirectories.length > 0 ? { additionalDirectories } : {}),
           ...(Number.isFinite(followUpTurnLimit) && followUpTurnLimit > 0
             ? { maxTurns: Math.floor(followUpTurnLimit) }

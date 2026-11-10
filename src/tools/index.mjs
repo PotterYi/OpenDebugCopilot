@@ -5,6 +5,7 @@ import { resolveScenarioPaths } from '../core/scenario.mjs';
 import { readLogs, listThreads, searchAll } from '../evidence/logs.mjs';
 import { readSource, searchSource } from '../evidence/source.mjs';
 import { queryDatabase, writeDatabase } from '../evidence/db.mjs';
+import { redactSecrets, redactValue } from '../core/redact.mjs';
 
 const DEFAULT_MAX_RESULT_BYTES = 32 * 1024;
 const DEFAULT_READ_LINES = 200;
@@ -226,7 +227,8 @@ export function createTools({
   let seq = 0;
   let dbSeq = 0;
 
-  async function spill(name, value) {
+  async function spill(name, rawValue) {
+    const value = redactValue(rawValue);
     const text = JSON.stringify(value, null, 2);
     const bytes = Buffer.byteLength(text);
     if (bytes <= limitBytes) return value;
@@ -250,26 +252,27 @@ export function createTools({
     dbSeq += 1;
     const at = Date.now();
     const id = `dbq-${String(dbSeq).padStart(3, '0')}`;
+    const safeResult = redactValue(result ?? null);
     const entry = {
       id,
       name,
       at,
-      connection: result?.connection ?? null,
-      sql: result?.sql ?? String(args?.sql ?? ''),
+      connection: safeResult?.connection ?? null,
+      sql: redactSecrets(safeResult?.sql ?? String(args?.sql ?? '')),
       error: Boolean(error),
-      code: result?.code ?? null,
-      message: result?.message ?? null,
-      durationMs: result?.durationMs ?? null,
-      rowCount: result?.rowCount ?? null,
-      affectedRows: result?.affectedRows ?? null,
-      truncated: Boolean(result?.truncated),
-      columns: Array.isArray(result?.columns) ? result.columns : [],
+      code: safeResult?.code ?? null,
+      message: safeResult?.message ?? null,
+      durationMs: safeResult?.durationMs ?? null,
+      rowCount: safeResult?.rowCount ?? null,
+      affectedRows: safeResult?.affectedRows ?? null,
+      truncated: Boolean(safeResult?.truncated),
+      columns: Array.isArray(safeResult?.columns) ? safeResult.columns : [],
       file: null,
     };
     try {
       await mkdir(dbQueryDir, { recursive: true });
       const file = path.join(dbQueryDir, `${id}-${at.toString(36)}.json`);
-      await writeFile(file, JSON.stringify({ ...entry, result }, null, 2), 'utf8');
+      await writeFile(file, JSON.stringify(redactValue({ ...entry, result: safeResult }), null, 2), 'utf8');
       entry.file = path.relative(runDir, file).split(path.sep).join('/');
     } catch {
       // Persisting evidence must never fail the tool call itself.
@@ -282,9 +285,10 @@ export function createTools({
   const calls = [];
 
   function summarizeCallResult(value) {
-    const text = JSON.stringify(value);
-    if (typeof text !== 'string') return String(value);
-    return text.length > 4000 ? `${text.slice(0, 4000)}… (${text.length} chars)` : value;
+    const safe = redactValue(value);
+    const text = JSON.stringify(safe);
+    if (typeof text !== 'string') return String(safe);
+    return text.length > 4000 ? `${redactSecrets(text.slice(0, 4000))}… (${text.length} chars)` : safe;
   }
 
   async function safe(name, fn, args = {}) {
@@ -292,14 +296,16 @@ export function createTools({
     const id = calls.length + 1;
     try {
       onCall?.({ id, stage: 'start', name });
-      const result = await fn(args);
+      // Central choke point: every tool result is sanitized before it can reach
+      // the agent, result.json, the report or a spilled evidence file.
+      const result = redactValue(await fn(args));
       const durationMs = Date.now() - started;
-      calls.push({ name, args, result: summarizeCallResult(result), durationMs });
+      calls.push({ name, args: redactValue(args), result: summarizeCallResult(result), durationMs });
       onCall?.({ id, stage: 'done', name, durationMs });
       return result;
     } catch (err) {
       if (err instanceof AppError) {
-        const payload = { error: true, code: err.code, message: err.message };
+        const payload = { error: true, code: err.code, message: redactSecrets(err.message) };
         const durationMs = Date.now() - started;
         calls.push({ name, args, result: payload, durationMs, error: true });
         onCall?.({ id, stage: 'done', name, durationMs, error: true });
