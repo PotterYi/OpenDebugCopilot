@@ -8,6 +8,7 @@ import {
   buildFixPreviews,
   clearProjectMethodIndexCache,
   inspectMissingMethods,
+  mergeExtractedFixes,
   normalizeFixList,
 } from '../../src/core/fixes.mjs';
 
@@ -367,4 +368,16 @@ test('previews and applies create/delete/baseHash fixes', async (t) => {
   }, roots(dirs));
   assert.equal(stale.preview.status, 'error');
   assert.match(stale.preview.message, /文件在诊断后已被修改/);
+});
+
+test('keeps extra-root suggestions when workspace edits replace the fix list', () => {
+  const merged = mergeExtractedFixes(
+    [{ summary: 'workspace', root: 'backend', file: 'A.java' }],
+    [
+      { summary: 'extra', root: 'extra', extraRoot: 'extra-1', file: 'B.java' },
+      { summary: 'agent backend', root: 'backend', file: 'C.java' },
+    ],
+  );
+  assert.deepEqual(merged.map((fix) => fix.summary), ['extra', 'workspace']);
+  assert.equal(merged[0].extraRoot, 'extra-1');
 });

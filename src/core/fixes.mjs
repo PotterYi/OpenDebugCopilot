@@ -321,6 +321,19 @@ export function normalizeFixList(value) {
   return value.map(normalizeFix).filter(Boolean);
 }
 
+/**
+ * Extra backend roots are read-only for the agent, so their changes can only
+ * arrive as fix suggestions. Keep those when extracted workspace edits replace
+ * the agent's fix list.
+ */
+export function extraRootFixes(fixes) {
+  return (Array.isArray(fixes) ? fixes : []).filter((fix) => fix?.root === 'extra');
+}
+
+export function mergeExtractedFixes(extracted = [], agentFixes = []) {
+  return [...extraRootFixes(agentFixes), ...(Array.isArray(extracted) ? extracted : [])];
+}
+
 async function pathKind(target) {
   try {
     const info = await stat(target);

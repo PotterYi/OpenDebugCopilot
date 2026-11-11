@@ -10,7 +10,7 @@ import { isLocalHostname, Router } from './routing.mjs';
 import { startLocalProxy } from './local-proxy.mjs';
 import { createDevServerManager, killProcessTreeSync } from './dev-server.mjs';
 import { applyFix, revertFix } from '../../core/fix-apply.mjs';
-import { buildFixPreviews } from '../../core/fixes.mjs';
+import { buildFixPreviews, mergeExtractedFixes } from '../../core/fixes.mjs';
 import {
   applyVerificationGate,
   detectCompileCommands,
@@ -1172,7 +1172,7 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
       if (followSandbox) {
         try {
           const extracted = await extractSandboxFixes(followSandbox);
-          followFixes = extracted.fixes;
+          followFixes = mergeExtractedFixes(extracted.fixes, follow.fixes);
           if (extracted.skipped.length > 0) {
             follow.needsMoreInfo = [
               ...(follow.needsMoreInfo ?? []),
@@ -1226,7 +1226,7 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
             detail: verification.error ?? verification.reason,
           });
           if (verification.status === 'failed') {
-            follow.fixesWithheld = extracted.fixes;
+            follow.fixesWithheld = followFixes;
             followFixes = [];
             follow.needsMoreInfo = [
               ...(follow.needsMoreInfo ?? []),

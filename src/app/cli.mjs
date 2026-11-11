@@ -62,6 +62,9 @@ Options:
   --budget-usd <n>  Cost cap for one live diagnosis (SDK maxBudgetUsd)
   --recheck <n>     Run consistency recheck n times (default: 1)
   -q, --question    Symptom description used by the diagnoser
+  --workspace <mode>  Workspace decision: keep | discard (required without a TTY)
+  --keep-workspace  Shorthand for --workspace=keep
+  --discard-workspace  Shorthand for --workspace=discard
   --runs-dir <dir>  Directory for run artifacts (default: runs)
   --json            Print the result as JSON
   -h, --help        Show this help
@@ -72,14 +75,15 @@ Exit codes:
   1  internal error
   2  usage error
   3  scenario or preflight error
-  4  feature not implemented yet`;
+  4  feature not implemented yet
+  5  workspace decision required in non-interactive mode`;
 
 async function readVersion(root) {
   const pkg = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
   return pkg.version ?? '0.0.0';
 }
 
-function parseArgv(argv) {
+export function parseArgv(argv) {
   const command = argv[0];
   if (!command || command === 'help' || command === '--help' || command === '-h') {
     return { command: 'help' };
@@ -122,7 +126,20 @@ function parseArgv(argv) {
     throw new UsageError(`Unknown command: ${command}`);
   }
 
-  const opts = { command: 'run', scenarioPath: undefined, mock: false, check: false, recheck: 1, json: false, question: '', runsDir: undefined, model: undefined, maxTurns: undefined, budgetUsd: undefined };
+  const opts = {
+    command: 'run',
+    scenarioPath: undefined,
+    mock: false,
+    check: false,
+    recheck: 1,
+    json: false,
+    question: '',
+    runsDir: undefined,
+    model: undefined,
+    maxTurns: undefined,
+    budgetUsd: undefined,
+    workspaceDecision: undefined,
+  };
   for (let i = 1; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '-h' || arg === '--help') return { command: 'help' };
@@ -187,6 +204,17 @@ function parseArgv(argv) {
       opts.recheck = parseRecheck(value);
     } else if (arg.startsWith('--recheck=')) {
       opts.recheck = parseRecheck(arg.slice('--recheck='.length));
+    } else if (arg === '--keep-workspace') {
+      opts.workspaceDecision = 'keep';
+    } else if (arg === '--discard-workspace') {
+      opts.workspaceDecision = 'discard';
+    } else if (arg === '--workspace') {
+      const value = argv[i + 1];
+      if (value === undefined) throw new UsageError('--workspace requires keep or discard');
+      i += 1;
+      opts.workspaceDecision = parseWorkspaceDecision(value);
+    } else if (arg.startsWith('--workspace=')) {
+      opts.workspaceDecision = parseWorkspaceDecision(arg.slice('--workspace='.length));
     } else if (arg.startsWith('-')) {
       throw new UsageError(`Unknown option: ${arg}`);
     } else if (opts.scenarioPath === undefined) {
@@ -208,6 +236,14 @@ function parseRecheck(value) {
     throw new UsageError('--recheck must be an integer between 1 and 10');
   }
   return n;
+}
+
+function parseWorkspaceDecision(value) {
+  const text = String(value ?? '').trim().toLowerCase();
+  if (!['keep', 'discard'].includes(text)) {
+    throw new UsageError('--workspace must be keep or discard');
+  }
+  return text;
 }
 
 function buildSummary(scenario, driver, opts) {
@@ -234,9 +270,10 @@ function formatMarker(marker) {
   return `${marker.mode}(${target})`;
 }
 
-function printDiagnosis(result, runDir, root) {
+function printDiagnosis(result, runDir, root, { workspaceUndecided = false } = {}) {
   const relative = path.relative(root, runDir).split(path.sep).join('/');
   const logs = result.logs;
+  const workspace = result.agent?.workspaceSession;
   const lines = [
     'DebugCopilot · diagnosis',
     `  Run ID     : ${result.meta.runId}`,
@@ -252,6 +289,12 @@ function printDiagnosis(result, runDir, root) {
           `  Verify     : ${result.agent.verification.status}${result.agent.verification.mode ? ` (${result.agent.verification.mode})` : ''}`,
           ...(result.agent.verification.error ? [`  VerifyErr  : ${result.agent.verification.error}`] : []),
           ...(result.agent.verification.reason ? [`  VerifyInfo : ${result.agent.verification.reason}`] : []),
+        ]
+      : []),
+    ...(workspace
+      ? [
+          `  Workspace  : ${workspace.status ?? 'unknown'}`
+            + `${workspaceUndecided ? '（非交互模式默认丢弃；请显式传 --workspace=keep|discard）' : ''}`,
         ]
       : []),
     `  Result     : ${relative}/result.json`,
@@ -385,6 +428,7 @@ export async function main(argv = process.argv.slice(2), { root = ROOT } = {}) {
       sandbox: toolMode === 'sandbox',
     });
     const { result, runDir, workspaceSession } = outcome;
+    let workspaceUndecided = false;
     if (workspaceSession) {
       const verification = result.agent?.verification;
       if (verification) {
@@ -394,7 +438,10 @@ export async function main(argv = process.argv.slice(2), { root = ROOT } = {}) {
         else log.info(line);
       }
       let keep = false;
-      if (process.stdin.isTTY) {
+      if (parsed.workspaceDecision) {
+        keep = parsed.workspaceDecision === 'keep';
+        log.info(`[workspace] explicit decision: ${parsed.workspaceDecision}`);
+      } else if (process.stdin.isTTY) {
         const rl = createInterface({ input: process.stdin, output: process.stderr });
         try {
           const question = verification?.status === 'failed'
@@ -405,6 +452,12 @@ export async function main(argv = process.argv.slice(2), { root = ROOT } = {}) {
         } finally {
           rl.close();
         }
+      } else {
+        workspaceUndecided = true;
+        log.error(
+          '[workspace] 非交互模式未指定 --workspace=keep|discard，'
+            + '本次工作区修改将被丢弃；请显式指定 keep 或 discard',
+        );
       }
       if (keep) {
         await workspaceSession.keep();
@@ -427,9 +480,9 @@ export async function main(argv = process.argv.slice(2), { root = ROOT } = {}) {
     if (parsed.json) {
       console.log(JSON.stringify(result, null, 2));
     } else {
-      printDiagnosis(result, runDir, root);
+      printDiagnosis(result, runDir, root, { workspaceUndecided });
     }
-    return 0;
+    return workspaceUndecided ? 5 : 0;
   } catch (err) {
     if (err?.code === 'EADDRINUSE') {
       log.error(`[PORT_IN_USE] ${parsed?.port ?? ''} is already in use; free it or pass --port`);

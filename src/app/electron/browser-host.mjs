@@ -46,8 +46,6 @@ function localTargetPatterns(rules) {
   return [...patterns];
 }
 
-const ELEMENT_BINDING = '__dcElementDiagnose';
-const ELEMENT_OVERLAY_ID = '__dc-element-diagnose__';
 const ELEMENT_HIGHLIGHT_CONFIG = {
   showInfo: true,
   contentColor: { r: 245, g: 158, b: 11, a: 0.35 },
@@ -296,96 +294,6 @@ function elementInfoExtractor() {
 
 const ELEMENT_EXTRACT_SOURCE = elementInfoExtractor.toString();
 
-function elementOverlayScript(info) {
-  const payload = JSON.stringify(info).replace(/</g, '\\u003c');
-  return `(() => {
-    const existing = document.getElementById(${JSON.stringify(ELEMENT_OVERLAY_ID)});
-    if (existing) existing.remove();
-    const info = ${payload};
-    const rect = info.rect || {};
-    const host = document.createElement('div');
-    host.id = ${JSON.stringify(ELEMENT_OVERLAY_ID)};
-    host.style.cssText = 'position:fixed;z-index:2147483647;left:0;top:0;width:0;height:0;';
-    const shadow = host.attachShadow({ mode: 'open' });
-    const style = document.createElement('style');
-    style.textContent = \`
-      .panel { position: fixed; width: 320px; box-sizing: border-box; padding: 10px; border-radius: 10px;
-        background: #1f2430; color: #e8edf5; border: 1px solid #4a5568;
-        box-shadow: 0 12px 32px rgba(0,0,0,.45); font: 13px/1.45 system-ui, sans-serif; }
-      .title { font-weight: 600; margin-bottom: 6px; color: #fbbf24; }
-      .meta { font-size: 11px; color: #9aa6b8; margin-bottom: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      textarea { width: 100%; box-sizing: border-box; resize: vertical; min-height: 52px; padding: 7px 8px;
-        border-radius: 6px; border: 1px solid #4a5568; background: #141922; color: #e8edf5; font: inherit; outline: none; }
-      .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
-      button { border: 0; border-radius: 6px; padding: 6px 12px; font: inherit; cursor: pointer; }
-      .go { background: #f59e0b; color: #1a1a1a; font-weight: 600; }
-      .cancel { background: #2b3342; color: #cbd5e1; }
-    \`;
-    shadow.append(style);
-    const panel = document.createElement('div');
-    panel.className = 'panel';
-    const title = document.createElement('div');
-    title.className = 'title';
-    title.textContent = '元素视野诊断';
-    const meta = document.createElement('div');
-    meta.className = 'meta';
-    meta.textContent = (info.framework && (info.framework.componentFile || info.framework.componentName)) || info.selector || '';
-    const input = document.createElement('textarea');
-    input.placeholder = '这个元素哪里不对劲？例如：字段显示不完整、样式错位、数据不合理…';
-    const actions = document.createElement('div');
-    actions.className = 'actions';
-    const cancel = document.createElement('button');
-    cancel.type = 'button';
-    cancel.className = 'cancel';
-    cancel.textContent = '取消';
-    const go = document.createElement('button');
-    go.type = 'button';
-    go.className = 'go';
-    go.textContent = '诊断';
-    actions.append(cancel, go);
-    panel.append(title, meta, input, actions);
-    shadow.append(panel);
-
-    const left = Math.min(Math.max(8, rect.left || 8), Math.max(8, window.innerWidth - 328));
-    let top = (rect.bottom || 80) + 8;
-    if (top + 190 > window.innerHeight) top = Math.max(8, (rect.top || 80) - 200);
-    panel.style.left = left + 'px';
-    panel.style.top = top + 'px';
-
-    const cleanup = () => {
-      window.removeEventListener('keydown', onKey, true);
-      host.remove();
-    };
-    const send = (payload) => {
-      try {
-        if (typeof window[${JSON.stringify(ELEMENT_BINDING)}] === 'function') {
-          window[${JSON.stringify(ELEMENT_BINDING)}](JSON.stringify(payload));
-        }
-      } catch {}
-      cleanup();
-    };
-    const onKey = (event) => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        send({ cancelled: true });
-      }
-    };
-    go.addEventListener('click', () => {
-      const question = input.value.trim();
-      if (!question) {
-        input.style.borderColor = '#ef4444';
-        input.focus();
-        return;
-      }
-      send({ element: info, question });
-    });
-    cancel.addEventListener('click', () => send({ cancelled: true }));
-    window.addEventListener('keydown', onKey, true);
-    document.documentElement.append(host);
-    setTimeout(() => input.focus(), 0);
-  })();`;
-}
-
 /**
  * Embedded browser host: WebContentsView + CDP capture.
  * Routing redirects live in routing.mjs; this module only answers local CORS preflights
@@ -420,8 +328,6 @@ export class BrowserHost {
     this.visible = false;
     this.bounds = { x: 0, y: 0, width: 0, height: 0 };
     this.elementPicking = false;
-    this.elementOverlay = false;
-    this.elementBindingAdded = false;
     this.elementLastError = null;
     this.elementLastScreenshotError = null;
     this.elementScreenshots = new Map();
@@ -466,14 +372,11 @@ export class BrowserHost {
     });
     contents.on('did-navigate', (_event, url) => {
       this.pendingUrl = null;
-      if (this.elementPicking || this.elementOverlay) {
+      if (this.elementPicking) {
         this.elementPicking = false;
-        this.elementOverlay = false;
         this.elementScreenshots.clear();
         this.emit({ type: 'element-pick-cancel' });
       }
-      // Runtime bindings belong to the page's JS context; re-add after navigation.
-      this.elementBindingAdded = false;
       this.emit({ type: 'navigation', url });
     });
     contents.on('did-navigate-in-page', (_event, url) => this.emit({ type: 'navigation', url }));
@@ -549,15 +452,6 @@ export class BrowserHost {
     return debuggerApi.sendCommand(method, params);
   }
 
-  async removeElementOverlay() {
-    this.elementOverlay = false;
-    await this.view.webContents.executeJavaScript(`(() => {
-      const node = document.getElementById(${JSON.stringify(ELEMENT_OVERLAY_ID)});
-      if (node) node.remove();
-      return true;
-    })()`).catch(() => false);
-  }
-
   consumeElementScreenshot(id) {
     const key = String(id ?? '');
     const screenshot = this.elementScreenshots.get(key);
@@ -584,15 +478,6 @@ export class BrowserHost {
     this.elementLastScreenshotError = null;
     await this.sendCdp('DOM.enable');
     await this.sendCdp('Overlay.enable');
-    if (!this.elementBindingAdded) {
-      try {
-        await this.sendCdp('Runtime.addBinding', { name: ELEMENT_BINDING });
-        this.elementBindingAdded = true;
-      } catch (error) {
-        log.warn('[element] Runtime.addBinding failed:', error?.message ?? error);
-      }
-    }
-    await this.removeElementOverlay();
     this.elementPicking = true;
     await this.sendCdp('Overlay.setInspectMode', {
       mode: 'searchForNode',
@@ -605,12 +490,11 @@ export class BrowserHost {
     this.elementPicking = false;
     this.elementScreenshots.clear();
     await this.stopElementInspectMode();
-    await this.removeElementOverlay();
     this.emit({ type: 'element-pick-cancel' });
   }
 
   async toggleElementPick() {
-    if (this.elementPicking || this.elementOverlay) {
+    if (this.elementPicking) {
       await this.cancelElementPick();
       return { picking: false };
     }
@@ -724,53 +608,14 @@ export class BrowserHost {
       }
       const picked = { ...info };
       delete picked.screenshotDataUrl;
-      // The prompt is a separate always-on-top window owned by main; keeping it
-      // out of the page means the element picker can never swallow its clicks.
-      this.elementOverlay = false;
+      // The composer lives outside the inspected page, so the picker can never
+      // swallow its clicks.
       this.emit({ type: 'element-picked', element: picked });
     } catch (error) {
       this.elementLastError = error?.message ?? String(error);
       log.warn('[element] extract failed:', this.elementLastError, error?.stack ?? '');
       this.emit({ type: 'element-error', message: this.elementLastError });
     }
-  }
-
-  handleElementBinding({ name, payload } = {}) {
-    if (name !== ELEMENT_BINDING) return;
-    let data = null;
-    try {
-      data = JSON.parse(payload);
-    } catch {
-      data = null;
-    }
-    this.elementPicking = false;
-    this.elementOverlay = false;
-    this.stopElementInspectMode().catch(() => {});
-    if (!data || data.cancelled) {
-      this.elementScreenshots.clear();
-      this.emit({ type: 'element-pick-cancel' });
-      return;
-    }
-    if (!data.element) {
-      this.elementScreenshots.clear();
-      this.emit({ type: 'element-error', message: '未收到元素信息' });
-      return;
-    }
-    let element = data.element;
-    const screenshot = element.id ? this.elementScreenshots.get(element.id) : null;
-    if (screenshot) {
-      element = {
-        ...element,
-        screenshotDataUrl: screenshot.dataUrl,
-        screenshotRect: screenshot.rect,
-      };
-      this.elementScreenshots.delete(element.id);
-    }
-    this.emit({
-      type: 'element-submit',
-      element,
-      question: String(data.question ?? '').trim(),
-    });
   }
 
   /**
@@ -878,11 +723,6 @@ export class BrowserHost {
       this.handleElementPicked(params.backendNodeId).catch((error) => {
         log.warn('[element] pick failed:', error?.message ?? error);
       });
-      return;
-    }
-
-    if (method === 'Runtime.bindingCalled') {
-      this.handleElementBinding(params);
       return;
     }
 

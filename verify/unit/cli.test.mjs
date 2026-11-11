@@ -7,6 +7,7 @@ import { mkdir, readFile, rm, writeFile, appendFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tempDir } from './tmp.mjs';
+import { parseArgv } from '../../src/app/cli.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '../..');
@@ -149,4 +150,16 @@ test('version command prints package version', () => {
   const result = runCli(['--version']);
   assert.equal(result.status, 0);
   assert.match(result.stdout.trim(), /^\d+\.\d+\.\d+/);
+});
+
+test('parses explicit workspace keep/discard flags', () => {
+  assert.equal(parseArgv(['run', 's.json', '--workspace', 'keep']).workspaceDecision, 'keep');
+  assert.equal(parseArgv(['run', 's.json', '--workspace=discard']).workspaceDecision, 'discard');
+  assert.equal(parseArgv(['run', 's.json', '--keep-workspace']).workspaceDecision, 'keep');
+  assert.equal(parseArgv(['run', 's.json', '--discard-workspace']).workspaceDecision, 'discard');
+  assert.equal(parseArgv(['run', 's.json']).workspaceDecision, undefined);
+  assert.throws(
+    () => parseArgv(['run', 's.json', '--workspace', 'maybe']),
+    /--workspace must be keep or discard/,
+  );
 });

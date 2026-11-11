@@ -5,7 +5,7 @@ import { promisify } from 'node:util';
 import { AppError } from '../core/errors.mjs';
 import { normalizeFixList } from '../core/fixes.mjs';
 import { summarizeToolCalls } from '../core/tool-calls.mjs';
-import { redactValue } from '../core/redact.mjs';
+import { redactHeaders, redactValue } from '../core/redact.mjs';
 
 // Never use []: SDK isolation mode drops the user's Claude Code settings,
 // including auth env vars such as ANTHROPIC_AUTH_TOKEN/ANTHROPIC_BASE_URL.
@@ -316,18 +316,6 @@ const RESULT_SCHEMA = {
     },
   },
 };
-
-const SENSITIVE_HEADERS = new Set([
-  'authorization', 'cookie', 'set-cookie', 'x-api-key', 'proxy-authorization', 'x-auth-token',
-]);
-
-function redactHeaders(headers = {}) {
-  const out = {};
-  for (const [key, value] of Object.entries(headers)) {
-    out[key] = SENSITIVE_HEADERS.has(key.toLowerCase()) ? '<redacted>' : value;
-  }
-  return out;
-}
 
 function sanitizeEvidence(evidence) {
   return {

@@ -13,6 +13,17 @@ const PATTERNS = [
   [/(\/\/[^:\/\s]+:)([^@\/\s]+)(@)/g, '$1<redacted>$3'],
 ];
 
+const SENSITIVE_HEADER_KEY = /(?:authorization|cookie|token|secret|api[-_]?key|access[-_]?key)/i;
+
+export function redactHeaders(headers = {}) {
+  if (!headers || typeof headers !== 'object') return headers;
+  const out = {};
+  for (const [key, value] of Object.entries(headers)) {
+    out[key] = SENSITIVE_HEADER_KEY.test(key) ? '<redacted>' : value;
+  }
+  return out;
+}
+
 // Object keys whose value is a credential regardless of its shape (database
 // rows, JSON API bodies, headers). Anchored so fields such as tokenCount survive.
 const SENSITIVE_KEY = /^(?:password|passwd|pwd|secret|client[_-]?secret|secret[_-]?key|token|auth[_-]?token|access[_-]?token|refresh[_-]?token|id[_-]?token|api[_-]?key|access[_-]?key|private[_-]?key|authorization|cookie|set-cookie|x-api-key|credentials)$/i;

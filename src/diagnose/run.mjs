@@ -1,11 +1,12 @@
 import { mkdir, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { AppError } from '../core/errors.mjs';
+import { redactHeaders } from '../core/redact.mjs';
 import { newRunId } from '../core/ids.mjs';
 import { resolveScenarioPaths } from '../core/scenario.mjs';
 import { resolveFrontendSources } from '../evidence/frontend.mjs';
 import { collectElementEvidence } from '../evidence/element.mjs';
-import { buildFixPreviews } from '../core/fixes.mjs';
+import { buildFixPreviews, extraRootFixes, mergeExtractedFixes } from '../core/fixes.mjs';
 import {
   applyVerificationGate,
   detectCompileCommands,
@@ -631,11 +632,31 @@ async function diagnoseWithFired({
     if (sandboxContext.mode === 'in-place') {
       try {
         const extracted = await sandboxContext.extract();
-        agentResult.fixes = (extracted.fixes ?? []).map((fix) => ({
+        const extractedFixes = (extracted.fixes ?? []).map((fix) => ({
           ...fix,
           workspaceApplied: true,
           pendingDecision: true,
         }));
+        // Extra backend roots stay read-only, but the agent's suggestions for
+        // them must survive the extracted workspace fixes and be previewable.
+        const extraFixes = extraRootFixes(agentResult.fixes);
+        let previewedExtras = [];
+        if (extraFixes.length > 0) {
+          try {
+            previewedExtras = await buildFixPreviews(extraFixes, {
+              sourceRoot: paths.sourceRoot,
+              frontendSourceRoot: frontendFixRoot,
+              extraSourceRoots,
+              staticChecks: 'strict',
+            });
+          } catch (error) {
+            previewedExtras = extraFixes.map((fix) => ({
+              ...fix,
+              preview: { status: 'error', message: `其他源码根预览失败：${error?.message ?? error}` },
+            }));
+          }
+        }
+        agentResult.fixes = [...previewedExtras, ...extractedFixes];
         const selfCheck = (extracted.changedFiles?.length ?? 0) > 0
           ? await sandboxContext.runSelfCheck()
           : {
@@ -755,15 +776,16 @@ async function diagnoseWithFired({
         );
         await runLog.info(`sandbox self-check ${verification.status} commands=${(verification.commands ?? []).length}`);
 
+        const mergedFixes = mergeExtractedFixes(extracted.fixes, agentResult.fixes);
         if (verification.status === 'failed') {
-          agentResult.fixesWithheld = extracted.fixes;
+          agentResult.fixesWithheld = mergedFixes;
           agentResult.fixes = [];
           agentResult.needsMoreInfo = [
             ...(agentResult.needsMoreInfo ?? []),
             `沙箱修改未通过编译/测试，已隐藏。${verification.error ?? ''}`.trim(),
           ];
         } else {
-          agentResult.fixes = extracted.fixes;
+          agentResult.fixes = mergedFixes;
         }
 
         progress('sandbox', `沙箱修改 ${extracted.changedFiles.length} 个文件`, 'done');
@@ -986,8 +1008,8 @@ async function diagnoseWithFired({
     },
     target,
     ...(element ? { element: evidence.element } : {}),
-    request: evidence.request,
-    response: evidence.response,
+    request: { ...evidence.request, headers: redactHeaders(evidence.request?.headers) },
+    response: { ...evidence.response, headers: redactHeaders(evidence.response?.headers) },
     marker: evidence.marker,
     window: {
       anchor: fired.firedAt,
