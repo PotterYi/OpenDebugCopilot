@@ -194,3 +194,15 @@ test('preflights oversized non-Git copies before writing anything', async (t) =>
   await assert.rejects(access(path.join(runDir, 'sandbox', 'backend')));
   await assert.rejects(access(path.join(runDir, 'sandbox')));
 });
+
+test('supports a unique sandbox directory for follow-up runs', async (t) => {
+  const { root, runDir } = await fixture(t);
+  const sandbox = await createAgentSandbox({
+    runDir,
+    roots: [{ key: 'backend', name: 'backend', root }],
+    dirName: 'sandbox-followup-test',
+  });
+  assert.match(sandbox.dir, /sandbox-followup-test$/);
+  await cleanupAgentSandbox(sandbox);
+  await assert.rejects(access(sandbox.dir));
+});

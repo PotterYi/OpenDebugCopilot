@@ -40,6 +40,12 @@ export function createMockAgent() {
     },
 
     async followUp({ question, previous }) {
+      // Smoke-test hook: simulate a slow follow-up so tab/run switches can be
+      // covered without a real model.
+      const delay = Number(process.env.DC_MOCK_FOLLOWUP_DELAY_MS ?? 0);
+      if (Number.isFinite(delay) && delay > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
       const agent = previous?.agent ?? {};
       const text = String(question ?? '').trim();
       const refs = Array.isArray(agent.evidenceRefs) && agent.evidenceRefs.length

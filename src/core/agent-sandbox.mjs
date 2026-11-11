@@ -148,8 +148,8 @@ function rootDescriptor({ key, name, root, extraRoot = null }, sandboxDir) {
  * Create an isolated copy of the affected source roots. The model may edit
  * this copy freely; the real workspace is never touched.
  */
-export async function createAgentSandbox({ runDir, roots = [], limits = {} } = {}) {
-  const sandboxDir = path.join(runDir, 'sandbox');
+export async function createAgentSandbox({ runDir, roots = [], limits = {}, dirName = 'sandbox' } = {}) {
+  const sandboxDir = path.join(runDir, dirName);
   const effectiveLimits = { ...DEFAULT_LIMITS, ...limits };
   await rm(sandboxDir, { recursive: true, force: true });
   await mkdir(sandboxDir, { recursive: true });

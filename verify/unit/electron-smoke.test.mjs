@@ -845,6 +845,8 @@ test('history runs behave as an accordion', {
     const input = chat?.querySelector('.chat-input');
     const send = row?.querySelector('button');
     let running = null;
+    let concurrent = null;
+    let restoredProgress = null;
     let finished = null;
     if (input && send) {
       input.value = '补充信息';
@@ -853,6 +855,22 @@ test('history runs behave as an accordion', {
         disabled: send.disabled,
         inputDisabled: input.disabled,
         label: send.textContent,
+      };
+      concurrent = await window.dc.invoke('dc:followup', { runId: 'run-a', question: '并发' })
+        .then(() => ({ ok: true, message: '' }))
+        .catch((error) => ({ ok: false, message: String(error?.message ?? error) }));
+      // Switch to another run and back while the follow-up is still running.
+      // The in-flight progress must be restored from per-run state.
+      const secondDuring = [...document.querySelectorAll('#runs li[data-run-id]')]
+        .find((li) => li.textContent.includes('B'));
+      secondDuring?.click();
+      await waitFor(() => report.textContent.includes('B结论'));
+      first().click();
+      await waitFor(() => report.textContent.includes('A结论'));
+      restoredProgress = {
+        steps: report.querySelectorAll('.followup-progress .diagnose-step').length,
+        sendDisabled: report.querySelector('.chat-input-row button')?.disabled === true,
+        inputDisabled: report.querySelector('.chat-input')?.disabled === true,
       };
       await waitFor(() => report.textContent.includes('继续诊断：补充信息'));
       const chatAfter = report.querySelector('.chat-panel');
@@ -869,6 +887,8 @@ test('history runs behave as an accordion', {
       selected: document.querySelector('#runs li.selected')?.textContent.includes('A') === true,
       chatOrder,
       running,
+      concurrent,
+      restoredProgress,
       finished,
     };
     first().click();
@@ -919,7 +939,7 @@ test('history runs behave as an accordion', {
     '--config-dir', path.join(DIR, 'configs'),
     '--runs-dir', path.join(DIR, 'runs'),
     '--smoke-ui-eval', Buffer.from(uiScript).toString('base64'),
-  ], { env: { ...process.env } });
+  ], { env: { ...process.env, DC_MOCK_FOLLOWUP_DELAY_MS: '4000' } });
   let stdout = '';
   let stderr = '';
   child.stdout.on('data', (chunk) => { stdout += chunk; });
@@ -933,7 +953,15 @@ test('history runs behave as an accordion', {
   assert.match(stdout, /SMOKE_OK/);
   const match = stdout.match(/SMOKE_RESULT (\{.*\})/);
   const smoke = JSON.parse(match[1]);
-  assert.deepEqual(smoke.uiEvalResult, {
+  const { opened, ...restResult } = smoke.uiEvalResult;
+  assert.ok(opened.restoredProgress?.steps > 0, JSON.stringify(opened));
+  assert.equal(opened.restoredProgress?.sendDisabled, true);
+  assert.equal(opened.restoredProgress?.inputDisabled, true);
+  assert.equal(opened.concurrent?.ok, false);
+  assert.match(opened.concurrent?.message ?? '', /正在继续诊断中/);
+  delete opened.restoredProgress;
+  delete opened.concurrent;
+  assert.deepEqual({ opened, ...restResult }, {
     initial: { reportHidden: true, visibleRuns: 2 },
     opened: {
       reportHidden: false,

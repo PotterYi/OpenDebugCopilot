@@ -40,6 +40,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '../../..');
 const HOST = '127.0.0.1';
 const workspaceSessions = new Map();
+const followUpRunning = new Set();
 
 app.disableHardwareAcceleration();
 app.setName('DebugCopilot');
@@ -964,15 +965,24 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
   });
 
   handle('dc:followup', async (event, payload = {}) => {
-    const sendProgress = (progress) => {
-      if (!event.sender.isDestroyed()) event.sender.send('dc:followup:progress', progress);
-    };
-    sendProgress({ id: 'prepare', label: '整理上一轮诊断', status: 'start' });
-    let followSandbox = null;
+    const targetRunId = String(payload.runId ?? '');
+    if (!targetRunId) throw new Error('runId 不能为空');
+    if (followUpRunning.has(targetRunId)) {
+      throw new Error('该诊断正在继续诊断中，请等待完成');
+    }
+    followUpRunning.add(targetRunId);
     try {
-      const question = String(payload.question ?? '').trim();
-      if (!question) throw new Error('请输入继续诊断的内容');
-      const { runId, result } = await service.getRun(String(payload.runId ?? ''));
+      const sendProgress = (progress) => {
+        if (!event.sender.isDestroyed()) {
+          event.sender.send('dc:followup:progress', { ...progress, runId: targetRunId });
+        }
+      };
+      sendProgress({ id: 'prepare', label: '整理上一轮诊断', status: 'start' });
+      let followSandbox = null;
+      try {
+        const question = String(payload.question ?? '').trim();
+        if (!question) throw new Error('请输入继续诊断的内容');
+        const { runId, result } = await service.getRun(targetRunId);
       if (result.agent?.workspaceSession?.status === 'pending') {
         throw new Error('该诊断仍有未决定的工作区修改，请先保留或丢弃');
       }
@@ -1018,7 +1028,11 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
         ].filter(Boolean);
         sendProgress({ id: 'sandbox', label: '创建隔离沙箱', status: 'start' });
         try {
-          followSandbox = await createAgentSandbox({ runDir, roots: sandboxRoots });
+          followSandbox = await createAgentSandbox({
+            runDir,
+            roots: sandboxRoots,
+            dirName: `sandbox-followup-${Date.now().toString(36)}`,
+          });
           agent.configureScope({
             cwd: followSandbox.dir,
             allowedRoots: followSandbox.roots.map((entry) => entry.sandboxRoot),
@@ -1381,18 +1395,21 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
     log.info('[followup]', runId, question.slice(0, 80));
     sendProgress({ id: 'done', label: '继续诊断完成', status: 'done' });
     return { runId, result };
-    } catch (error) {
-      if (followSandbox) {
-        await cleanupAgentSandbox(followSandbox);
-        followSandbox = null;
+      } catch (error) {
+        if (followSandbox) {
+          await cleanupAgentSandbox(followSandbox);
+          followSandbox = null;
+        }
+        sendProgress({
+          id: 'error',
+          label: '继续诊断失败',
+          status: 'error',
+          detail: error?.message ?? String(error),
+        });
+        throw error;
       }
-      sendProgress({
-        id: 'error',
-        label: '继续诊断失败',
-        status: 'error',
-        detail: error?.message ?? String(error),
-      });
-      throw error;
+    } finally {
+      followUpRunning.delete(targetRunId);
     }
   });
 }

@@ -133,7 +133,7 @@ const workspaceRecoveryModal = $('workspace-recovery-modal');
 const workspaceRecoveryList = $('workspace-recovery-list');
 const workspaceRecoveryMessage = $('workspace-recovery-message');
 const workspaceRecoveryClose = $('workspace-recovery-close');
-let followUpProgressContext = null;
+const followUpStates = new Map();
 const MAX_DEV_LOG_LINES = 300;
 const DEV_STATUS_LABELS = {
   stopped: '未启动',
@@ -1232,58 +1232,79 @@ function conversationFor(result) {
   return messages;
 }
 
+function runIdOf(view) {
+  return String(view?.response?.runId ?? view?.response?.result?.meta?.runId ?? '');
+}
+
+function isCurrentRun(runId) {
+  return Boolean(currentRunView) && runIdOf(currentRunView) === String(runId);
+}
+
+function markFollowUpAborted(state, error) {
+  for (const step of state.steps) {
+    if (step.status === 'start') {
+      step.status = 'error';
+      step.label = `${step.label ?? ''}（已中止）`;
+    }
+  }
+  upsertProgressStep(state.steps, {
+    id: 'error',
+    label: '继续诊断失败',
+    status: 'error',
+    detail: error?.message ?? String(error ?? 'unknown'),
+  });
+}
+
 async function runFollowUp(view, input, button) {
-  const response = view.response;
-  const runId = response?.runId ?? response?.result?.meta?.runId;
+  const runId = runIdOf(view);
   const question = input.value.trim();
   if (!runId || !question) return;
-  const label = button.textContent;
+  if (followUpStates.get(runId)?.status === 'running') {
+    showMessage(view, '该诊断正在继续诊断中，请等待完成', 'muted');
+    return;
+  }
+
+  const state = { status: 'running', question, steps: [], startedAt: Date.now(), error: null };
+  upsertProgressStep(state.steps, {
+    id: 'client-start',
+    label: '开始继续诊断',
+    status: 'start',
+  });
+  followUpStates.set(runId, state);
+  input.value = '';
   input.disabled = true;
   button.disabled = true;
   button.textContent = '继续诊断中…';
   showMessage(view, '继续诊断中…');
   const progressEl = view.container.querySelector('.followup-progress');
-  if (progressEl) {
-    followUpProgressContext = { container: progressEl, steps: [] };
-    upsertProgressStep(followUpProgressContext.steps, {
-      id: 'client-start',
-      label: '开始继续诊断',
-      status: 'start',
-    });
-    renderProgressSteps(progressEl, followUpProgressContext.steps);
-  }
+  if (progressEl) renderProgressSteps(progressEl, state.steps);
+
   try {
     const result = await api.followUp({ runId, question, mock: false });
-    if (result?.result) view.response.result = result.result;
-    followUpProgressContext = null;
-    renderRunInto(view);
-    showMessage(view, '已根据追问更新诊断', 'message ok');
-    requestAnimationFrame(() => {
-      view.container.scrollTop = view.container.scrollHeight;
-    });
-  } catch (error) {
-    if (followUpProgressContext) {
-      // Stop every in-flight spinner: a rejected follow-up (for example when a
-      // fix is still applied) must not leave the "思考中" steps animating.
-      for (const step of followUpProgressContext.steps) {
-        if (step.status === 'start') {
-          step.status = 'error';
-          step.label = `${step.label ?? ''}（已中止）`;
-        }
+    if (followUpStates.get(runId) === state) followUpStates.delete(runId);
+    if (isCurrentRun(runId)) {
+      if (result?.result) {
+        currentRunView.response.result = result.result;
+      } else {
+        const refreshed = await api.getRun(runId).catch(() => null);
+        if (refreshed) currentRunView.response = refreshed;
       }
-      upsertProgressStep(followUpProgressContext.steps, {
-        id: 'error',
-        label: '继续诊断失败',
-        status: 'error',
-        detail: error.message,
+      renderRunInto(currentRunView);
+      showMessage(currentRunView, '已根据追问更新诊断', 'message ok');
+      requestAnimationFrame(() => {
+        currentRunView.container.scrollTop = currentRunView.container.scrollHeight;
       });
-      renderProgressSteps(followUpProgressContext.container, followUpProgressContext.steps);
-      followUpProgressContext = null;
     }
-    showMessage(view, `继续诊断失败：${error.message}`, 'message error');
-    input.disabled = false;
-    button.disabled = false;
-    button.textContent = label;
+  } catch (error) {
+    // Keep the error on the run so returning to it later still explains what
+    // happened, instead of silently losing the in-flight turn.
+    markFollowUpAborted(state, error);
+    state.status = 'error';
+    state.error = error.message;
+    if (isCurrentRun(runId)) {
+      renderRunInto(currentRunView);
+      showMessage(currentRunView, `继续诊断失败：${error.message}`, 'message error');
+    }
   }
 }
 
@@ -1291,12 +1312,18 @@ function buildChatSection(view) {
   const block = el('section', 'card-section chat-panel');
   block.append(el('div', 'card-title', '继续诊断'));
 
+  const runId = runIdOf(view);
+  const followState = runId ? followUpStates.get(runId) : null;
+  const running = followState?.status === 'running';
+
   const row = el('div', 'chat-input-row');
   const input = document.createElement('input');
   input.className = 'chat-input';
   input.placeholder = '继续描述你的问题，或对当前修复方案的调整意见…';
-  const send = el('button', null, '继续诊断');
+  const send = el('button', null, running ? '继续诊断中…' : '继续诊断');
   send.type = 'button';
+  input.disabled = running;
+  send.disabled = running;
   send.addEventListener('click', () => runFollowUp(view, input, send));
   input.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') {
@@ -1309,6 +1336,7 @@ function buildChatSection(view) {
   progress.hidden = true;
   // Thinking steps belong under the composer so the input stays visually first.
   block.append(row, progress);
+  if (followState?.steps?.length) renderProgressSteps(progress, followState.steps);
   return block;
 }
 
@@ -3389,9 +3417,14 @@ api.onDiagnoseProgress((progress) => {
 });
 
 api.onFollowUpProgress((progress) => {
-  if (!followUpProgressContext) return;
-  upsertProgressStep(followUpProgressContext.steps, progress);
-  renderProgressSteps(followUpProgressContext.container, followUpProgressContext.steps);
+  const runId = String(progress?.runId ?? '');
+  if (!runId) return;
+  const state = followUpStates.get(runId);
+  if (!state || state.status !== 'running') return;
+  upsertProgressStep(state.steps, progress);
+  if (!isCurrentRun(runId)) return;
+  const progressEl = currentRunView.container.querySelector('.followup-progress');
+  if (progressEl) renderProgressSteps(progressEl, state.steps);
 });
 
 api.onDevServer((event) => {
