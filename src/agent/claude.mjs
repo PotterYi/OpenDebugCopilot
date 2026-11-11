@@ -1,5 +1,7 @@
 import { realpath } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
 import path from 'node:path';
+import { promisify } from 'node:util';
 import { AppError } from '../core/errors.mjs';
 import { normalizeFixList } from '../core/fixes.mjs';
 import { summarizeToolCalls } from '../core/tool-calls.mjs';
@@ -51,10 +53,12 @@ export const FULL_BUILTIN_TOOLS = Object.freeze(['Read', 'Grep', 'Glob', 'Edit',
 
 const SENSITIVE_NAME = /^(?:\.env(?:\..*)?|.*\.(?:pem|key|p12|pfx)|id_(?:rsa|dsa|ecdsa|ed25519).*|\.npmrc|\.pypirc|credentials|secrets?)$/i;
 const SENSITIVE_PATH = /(?:^|[\\/])\.git[\\/]config$|(?:^|[\\/])\.ssh[\\/]|(?:^|[\\/])\.aws[\\/]|(?:^|[\\/])\.kube[\\/]|(?:^|[\\/])\.docker[\\/]config\.json$/i;
-const WRITE_DENY_SEGMENTS = new Set([
-  'target', 'dist', 'build', 'out', 'node_modules', '.git', 'logs', 'runs',
+const WRITE_DENY_ANYWHERE = new Set(['.git', 'node_modules']);
+const WRITE_OUTPUT_SEGMENTS = new Set([
+  'target', 'dist', 'build', 'out', 'logs', 'runs',
   'coverage', '.next', '.nuxt', '.idea', '.vscode', 'vendor',
 ]);
+const execFileAsync = promisify(execFile);
 
 function inside(root, target) {
   const relative = path.relative(root, target);
@@ -104,9 +108,53 @@ export function createToolPermission(allowedRoots = [], {
     return false;
   }
 
-  function hasDeniedWriteSegment(target) {
-    const segments = target.replace(/\\/g, '/').split('/');
-    return segments.some((segment) => WRITE_DENY_SEGMENTS.has(segment.toLowerCase()));
+  async function writableRootFor(target) {
+    const realTarget = await realpath(target).catch(() => target);
+    let best = null;
+    for (const root of writableRoots) {
+      const realRoot = await realpath(root).catch(() => root);
+      if (!inside(realRoot, realTarget)) continue;
+      if (!best || realRoot.length > best.root.length) {
+        best = { root: realRoot, relative: path.relative(realRoot, realTarget) };
+      }
+    }
+    return best;
+  }
+
+  async function gitIgnoreStatus(root, relative) {
+    try {
+      await execFileAsync('git', ['-C', root, 'check-ignore', '-q', '--', relative], {
+        windowsHide: true,
+        timeout: 5000,
+        maxBuffer: 1024 * 1024,
+      });
+      return 'ignored';
+    } catch (error) {
+      // git check-ignore exits 1 for "not ignored" and 128 when not a repo.
+      return error?.code === 1 ? 'tracked' : 'no-repo';
+    }
+  }
+
+  /**
+   * Check the path relative to the writable root, not the absolute path.
+   * Copy sandboxes live under runs/<runId>/sandbox, and projects may live under
+   * a folder literally named "build" or "out"; both must not block every write.
+   */
+  async function isDeniedWritePath(target) {
+    const match = await writableRootFor(target);
+    if (!match) return false;
+    const parts = match.relative.replace(/\\/g, '/').split('/').filter(Boolean);
+    if (parts.some((segment) => WRITE_DENY_ANYWHERE.has(segment.toLowerCase()))) return true;
+    if (parts.length === 0) return false;
+    const hasOutputSegment = parts.some((segment) => WRITE_OUTPUT_SEGMENTS.has(segment.toLowerCase()));
+    if (!hasOutputSegment) return false;
+    // Git is the source of truth inside a repository: ignored build outputs are
+    // denied, while tracked/legitimate folders named build/out stay writable.
+    const status = await gitIgnoreStatus(match.root, parts.join('/'));
+    if (status === 'ignored') return true;
+    if (status === 'tracked') return false;
+    // No Git (copy sandbox): only deny output names at the workspace root.
+    return WRITE_OUTPUT_SEGMENTS.has(parts[0].toLowerCase());
   }
 
   async function askApproval(toolName, input) {
@@ -158,7 +206,7 @@ export function createToolPermission(allowedRoots = [], {
     if (isSensitive(target)) {
       return { behavior: 'deny', message: `拒绝访问敏感文件：${target}` };
     }
-    if (isWrite && hasDeniedWriteSegment(target)) {
+    if (isWrite && await isDeniedWritePath(target)) {
       return {
         behavior: 'deny',
         message: `禁止修改构建产物、依赖或版本控制目录：${target}`,

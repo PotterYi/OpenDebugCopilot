@@ -25,6 +25,18 @@ const COMMAND_OUTPUT_LIMIT = 12_000;
 const SAFE_COMMAND = /^(?:(?:\.\/)?(?:mvnw|mvn)(?:\.cmd)?|(?:\.\/)?gradlew(?:\.bat)?|gradle|npm|pnpm|yarn|npx|python(?:3)?|pytest|go|dotnet|cargo)\b/i;
 const SHELL_META = /[;&|<>`]|\$\(|\n|\r/;
 
+export function sandboxRootsForCheck(sandbox) {
+  const roots = sandbox?.roots ?? [];
+  const backend = roots.find((entry) => entry.key === 'backend');
+  const frontend = roots.find((entry) => entry.key === 'frontend');
+  const extras = roots.filter((entry) => entry.key === 'extra');
+  return {
+    sourceRoot: backend?.sandboxRoot ?? null,
+    frontendSourceRoot: frontend?.sandboxRoot ?? null,
+    extraSourceRoots: extras.map((entry) => ({ id: entry.extraRoot, root: entry.sandboxRoot })),
+  };
+}
+
 export function sandboxPromptFor(sandbox) {
   const roots = (sandbox?.roots ?? []).map((entry) => {
     const label = entry.key === 'extra' ? `extra/${entry.extraRoot}` : entry.key;
@@ -403,12 +415,7 @@ export function createSandboxCommandRunner({
 } = {}) {
   const backend = sandbox.roots.find((entry) => entry.key === 'backend');
   const frontend = sandbox.roots.find((entry) => entry.key === 'frontend');
-  const extras = sandbox.roots.filter((entry) => entry.key === 'extra');
-  const roots = {
-    sourceRoot: backend?.sandboxRoot ?? null,
-    frontendSourceRoot: frontend?.sandboxRoot ?? null,
-    extraSourceRoots: extras.map((entry) => ({ id: entry.extraRoot, root: entry.sandboxRoot })),
-  };
+  const roots = sandboxRootsForCheck(sandbox);
   let commandsPromise = null;
   const allowedCommands = () => {
     if (!commandsPromise) {

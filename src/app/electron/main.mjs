@@ -15,7 +15,6 @@ import {
   applyVerificationGate,
   detectCompileCommands,
   runWorkspaceCheck,
-  validateFixes,
 } from '../../core/fix-validation.mjs';
 import {
   cleanupAgentSandbox,
@@ -23,6 +22,7 @@ import {
   createSandboxCommandRunner,
   extractSandboxFixes,
   sandboxPromptFor,
+  sandboxRootsForCheck,
 } from '../../core/agent-sandbox.mjs';
 import { buildReport, renderMarkdown } from '../../report/report.mjs';
 import { resolveFrontendProjectRoot } from '../../core/frontend-service.mjs';
@@ -1168,6 +1168,7 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
       });
       const usedFollowSandbox = Boolean(followSandbox);
       let followFixes = follow.fixes;
+      let followVerification = null;
       if (followSandbox) {
         try {
           const extracted = await extractSandboxFixes(followSandbox);
@@ -1178,6 +1179,61 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
               `沙箱中有 ${extracted.skipped.length} 个变更未能自动提取（新增/删除/大文件），请手动检查。`,
             ];
           }
+
+          let verification;
+          if (extracted.changedFiles.length > 0) {
+            sendProgress({ id: 'selfcheck', label: '沙箱内编译/测试验证', status: 'start' });
+            try {
+              verification = await runWorkspaceCheck({
+                roots: sandboxRootsForCheck(followSandbox),
+                verifyCommand: workspace.verifyCommand ?? '',
+                // Keep the command cwd inside the sandbox even when the
+                // workspace config points at an absolute real project path.
+                workspace: { ...workspace, frontendProjectRoot: '', frontendSourceRoot: '' },
+                projectRoot: followSandbox.dir,
+                runDir: path.join(service.runsRoot, runId),
+                restrictToProjectRoot: true,
+              });
+            } catch (error) {
+              verification = {
+                status: 'failed',
+                ok: false,
+                error: `沙箱验证执行失败：${error?.message ?? error}`,
+                commands: [],
+                durationMs: 0,
+                output: '',
+              };
+            }
+          } else {
+            verification = {
+              status: 'skipped',
+              ok: true,
+              reason: '本轮没有修改沙箱文件',
+              commands: [],
+              durationMs: 0,
+              output: '',
+            };
+          }
+          followVerification = { scope: 'sandbox', mode: 'copy', ...verification };
+          sendProgress({
+            id: 'selfcheck',
+            label: verification.status === 'passed'
+              ? '沙箱内编译/测试验证通过'
+              : verification.status === 'failed'
+                ? '沙箱内编译/测试验证失败，修改建议已隐藏'
+                : '未执行编译/测试验证',
+            status: verification.status === 'failed' || verification.detectionError ? 'error' : 'done',
+            detail: verification.error ?? verification.reason,
+          });
+          if (verification.status === 'failed') {
+            follow.fixesWithheld = extracted.fixes;
+            followFixes = [];
+            follow.needsMoreInfo = [
+              ...(follow.needsMoreInfo ?? []),
+              `沙箱修改未通过编译/测试，已隐藏。${verification.error ?? ''}`.trim(),
+            ];
+          }
+
           sendProgress({
             id: 'sandbox',
             label: `沙箱修改 ${extracted.changedFiles.length} 个文件`,
@@ -1220,52 +1276,11 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
         }),
       };
       sendProgress({ id: 'preview', label: '生成修复预览', status: 'done' });
-
-      const editableFixes = (followAgent.fixes ?? [])
-        .filter((fix) => ['edit', 'create', 'delete'].includes(fix?.kind) && fix?.preview?.status === 'ready');
-      if (editableFixes.length > 0) {
-        sendProgress({ id: 'selfcheck', label: '编译自测修改后的代码', status: 'start' });
-        let validation;
-        try {
-          validation = await validateFixes({
-            fixes: followAgent.fixes,
-            roots: result.meta?.fixRoots ?? {},
-            verifyCommand: workspace.verifyCommand ?? '',
-            workspace,
-            projectRoot: ROOT,
-            runDir: path.join(service.runsRoot, runId),
-          });
-        } catch (error) {
-          validation = {
-            status: 'failed',
-            ok: false,
-            error: `编译自测执行失败：${error?.message ?? error}`,
-            commands: [],
-            applied: 0,
-          };
-        }
-        followAgent.fixesValidation = validation;
-        if (validation.status === 'failed') {
-          followAgent.fixesWithheld = followAgent.fixes;
-          followAgent.fixes = [];
-          followAgent.needsMoreInfo = [
-            ...(followAgent.needsMoreInfo ?? []),
-            `修改建议未通过编译自测，已隐藏。${validation.error ?? ''}`.trim(),
-          ];
-          sendProgress({
-            id: 'selfcheck',
-            label: '编译自测失败，修改建议已隐藏',
-            status: 'error',
-            detail: validation.error,
-          });
-        } else {
-          sendProgress({
-            id: 'selfcheck',
-            label: validation.status === 'passed' ? '编译自测通过' : '未执行编译自测',
-            status: 'done',
-            detail: validation.reason,
-          });
-        }
+      if (followVerification) {
+        followAgent.verification = followVerification;
+        result.gates = applyVerificationGate(result.gates, followVerification, {
+          name: 'compile-self-check-followup',
+        });
       }
 
       // Full-permission follow-ups edit the real workspace directly and have

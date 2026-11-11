@@ -10,7 +10,6 @@ import {
   applyVerificationGate,
   detectCompileCommands,
   runWorkspaceCheck,
-  validateFixes,
 } from '../core/fix-validation.mjs';
 import {
   cleanupAgentSandbox,
@@ -18,6 +17,7 @@ import {
   createSandboxCommandRunner,
   extractSandboxFixes,
   sandboxPromptFor,
+  sandboxRootsForCheck,
 } from '../core/agent-sandbox.mjs';
 import { createInPlaceSession } from '../core/inplace-session.mjs';
 import { resolveFrontendProjectRoot } from '../core/frontend-service.mjs';
@@ -695,7 +695,6 @@ async function diagnoseWithFired({
     } else {
       try {
         const extracted = await extractSandboxFixes(sandboxContext);
-        agentResult.fixes = extracted.fixes;
         agentResult.sandbox = {
           changedFiles: extracted.changedFiles,
           skipped: extracted.skipped,
@@ -706,6 +705,67 @@ async function diagnoseWithFired({
             `沙箱中有 ${extracted.skipped.length} 个变更未能自动提取（新增/删除/大文件），请手动检查。`,
           ];
         }
+
+        // Verify inside the disposable sandbox before extracting fixes. The
+        // real source tree is never written for validation.
+        let verification = null;
+        if (extracted.changedFiles.length > 0) {
+          progress('selfcheck', '沙箱内编译/测试验证', 'start');
+          try {
+            verification = await runWorkspaceCheck({
+              roots: sandboxRootsForCheck(sandboxContext),
+              verifyCommand,
+              // Do not let an absolute real-project config leak the command cwd
+              // outside the disposable sandbox.
+              workspace: { ...workspace, frontendProjectRoot: '', frontendSourceRoot: '' },
+              projectRoot: sandboxContext.dir,
+              runDir,
+              restrictToProjectRoot: true,
+            });
+          } catch (error) {
+            verification = {
+              status: 'failed',
+              ok: false,
+              error: `沙箱验证执行失败：${error?.message ?? error}`,
+              commands: [],
+              durationMs: 0,
+              output: '',
+            };
+          }
+        } else {
+          verification = {
+            status: 'skipped',
+            ok: true,
+            reason: '本轮没有修改沙箱文件',
+            commands: [],
+            durationMs: 0,
+            output: '',
+          };
+        }
+        agentResult.verification = { scope: 'sandbox', mode: 'copy', ...verification };
+        progress(
+          'selfcheck',
+          verification.status === 'passed'
+            ? '沙箱内编译/测试验证通过'
+            : verification.status === 'failed'
+              ? '沙箱内编译/测试验证失败，修改建议已隐藏'
+              : '未执行编译/测试验证',
+          verification.status === 'failed' || verification.detectionError ? 'error' : 'done',
+          verification.error ?? verification.reason,
+        );
+        await runLog.info(`sandbox self-check ${verification.status} commands=${(verification.commands ?? []).length}`);
+
+        if (verification.status === 'failed') {
+          agentResult.fixesWithheld = extracted.fixes;
+          agentResult.fixes = [];
+          agentResult.needsMoreInfo = [
+            ...(agentResult.needsMoreInfo ?? []),
+            `沙箱修改未通过编译/测试，已隐藏。${verification.error ?? ''}`.trim(),
+          ];
+        } else {
+          agentResult.fixes = extracted.fixes;
+        }
+
         progress('sandbox', `沙箱修改 ${extracted.changedFiles.length} 个文件`, 'done');
         await runLog.info(`sandbox extracted=${extracted.fixes.length} skipped=${extracted.skipped.length}`);
       } catch (error) {
@@ -810,48 +870,6 @@ async function diagnoseWithFired({
       await runLog.error(`fix preview failed: ${error?.message ?? error}`);
     }
 
-    const editableFixes = (agentResult.fixes ?? [])
-      .filter((fix) => ['edit', 'create', 'delete'].includes(fix?.kind) && fix?.preview?.status === 'ready');
-    if (editableFixes.length > 0) {
-      progress('selfcheck', '编译自测修改后的代码', 'start');
-      let validation;
-      try {
-        validation = await validateFixes({
-          fixes: agentResult.fixes,
-          roots: {
-            sourceRoot: paths.sourceRoot,
-            frontendSourceRoot: frontendFixRoot,
-            extraSourceRoots,
-          },
-          verifyCommand,
-          workspace,
-          projectRoot: scenario.dir ?? process.cwd(),
-          runDir,
-        });
-      } catch (error) {
-        validation = {
-          status: 'failed',
-          ok: false,
-          error: `编译自测执行失败：${error?.message ?? error}`,
-          commands: [],
-          applied: 0,
-        };
-      }
-    agentResult.fixesValidation = validation;
-    if (validation.status === 'failed') {
-      agentResult.fixesWithheld = agentResult.fixes;
-      agentResult.fixes = [];
-      agentResult.needsMoreInfo = [
-        ...(agentResult.needsMoreInfo ?? []),
-        `修改建议未通过编译自测，已隐藏。${validation.error ?? ''}`.trim(),
-      ];
-      progress('selfcheck', '编译自测失败，修改建议已隐藏', 'error', validation.error);
-      await runLog.error(`fix self-check failed: ${validation.error ?? 'unknown'}`);
-    } else {
-      progress('selfcheck', validation.status === 'passed' ? '编译自测通过' : '未执行编译自测', 'done', validation.reason);
-      await runLog.info(`fix self-check ${validation.status} commands=${(validation.commands ?? []).length}`);
-    }
-    }
   }
 
   const gates = applyVerificationGate(evaluateGates(fired, agentResult, elementContext), agentResult.verification);

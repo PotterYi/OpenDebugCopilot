@@ -209,6 +209,7 @@ export async function runWorkspaceCheck({
   projectRoot = process.cwd(),
   runDir = null,
   timeoutMs = DEFAULT_TIMEOUT_MS,
+  restrictToProjectRoot = false,
 } = {}) {
   let commands;
   try {
@@ -238,6 +239,15 @@ export async function runWorkspaceCheck({
       durationMs: 0,
       output: '',
     };
+  }
+  if (restrictToProjectRoot) {
+    const root = path.resolve(projectRoot);
+    commands = commands.map((entry) => {
+      const cwd = path.resolve(entry.cwd ?? root);
+      const relative = path.relative(root, cwd);
+      const outside = relative.startsWith('..') || path.isAbsolute(relative);
+      return outside ? { ...entry, cwd: root } : entry;
+    });
   }
 
   const results = [];

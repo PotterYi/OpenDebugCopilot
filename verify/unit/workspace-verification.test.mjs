@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { runCaptureDiagnosis } from '../../src/diagnose/run.mjs';
 import { runWorkspaceCheck } from '../../src/core/fix-validation.mjs';
 import { tempDir } from './tmp.mjs';
@@ -204,4 +204,23 @@ test('in-place compile failure is surfaced as verification and turns gates red',
 
   await outcome.workspaceSession.discard();
   assert.equal(await readFile(file, 'utf8'), 'old\n');
+});
+
+test('sandbox checks cannot escape the sandbox project root', async (t) => {
+  await rm(TMP, { recursive: true, force: true });
+  const outside = path.join(TMP, 'outside');
+  const sandbox = path.join(TMP, 'sandbox');
+  await mkdir(outside, { recursive: true });
+  await mkdir(sandbox, { recursive: true });
+  t.after(async () => { await rm(TMP, { recursive: true, force: true }); });
+
+  const result = await runWorkspaceCheck({
+    roots: { sourceRoot: outside },
+    verifyCommand: 'node -e "require(\'fs\').writeFileSync(\'ran\',\'x\')"',
+    projectRoot: sandbox,
+    restrictToProjectRoot: true,
+  });
+  assert.equal(result.status, 'passed');
+  assert.equal(await readFile(path.join(sandbox, 'ran'), 'utf8'), 'x');
+  await assert.rejects(access(path.join(outside, 'ran')));
 });

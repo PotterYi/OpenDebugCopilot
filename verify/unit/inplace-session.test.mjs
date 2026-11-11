@@ -5,7 +5,7 @@ import os from 'node:os';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import {
   createInPlaceSession,
   finalizeWorkspaceJournal,
@@ -80,6 +80,7 @@ test('in-place session snapshots, extracts and discards to the pre-run content',
   const discarded = await session.discard();
   assert.deepEqual(discarded.conflicts, []);
   assert.equal(await readFile(file, 'utf8'), 'old\n');
+  await assert.rejects(access(session.baselineDir));
 });
 
 test('discard preserves a pre-run uncommitted change instead of HEAD', async (t) => {
@@ -196,6 +197,7 @@ test('writes a workspace journal and keeps it pending until the user decides', a
   assert.equal(kept.status, 'kept');
   assert.equal(await readFile(file, 'utf8'), 'agent\n');
   assert.deepEqual(await listPendingWorkspaceJournals(TMP), []);
+  await assert.rejects(access(session.baselineDir));
 });
 
 test('recovers an editing journal left by a crash and restores the pre-run file', async (t) => {
@@ -220,6 +222,7 @@ test('recovers an editing journal left by a crash and restores the pre-run file'
 
   const journal = JSON.parse(await readFile(journalPathOf(runDir), 'utf8'));
   assert.equal(journal.status, 'discarded');
+  await assert.rejects(access(path.join(runDir, 'baseline')));
 });
 
 test('journal recovery never rolls back edits the user already kept', async (t) => {
@@ -255,6 +258,7 @@ test('journal recovery reports external edits instead of overwriting them', asyn
   assert.equal(recovered.status, 'pending');
   assert.equal(recovered.conflicts.length, 1);
   assert.equal(await readFile(file, 'utf8'), 'user-edited-after\n');
+  await access(path.join(runDir, 'baseline'));
 
   const pending = await listPendingWorkspaceJournals(TMP);
   assert.equal(pending.length, 1);
@@ -263,6 +267,7 @@ test('journal recovery reports external edits instead of overwriting them', asyn
   const kept = await finalizeWorkspaceJournal(journalPathOf(runDir), 'keep');
   assert.equal(kept.status, 'kept');
   assert.equal(await readFile(file, 'utf8'), 'user-edited-after\n');
+  await assert.rejects(access(path.join(runDir, 'baseline')));
 });
 
 test('busy workspace lock is surfaced in the diagnosis result', async (t) => {

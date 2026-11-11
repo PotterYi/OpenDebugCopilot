@@ -7,7 +7,9 @@ import {
   createAgentSandbox,
   createSandboxCommandRunner,
   extractSandboxFixes,
+  sandboxRootsForCheck,
 } from '../../src/core/agent-sandbox.mjs';
+import { runWorkspaceCheck } from '../../src/core/fix-validation.mjs';
 import { runCaptureDiagnosis } from '../../src/diagnose/run.mjs';
 import { tempDir } from './tmp.mjs';
 
@@ -205,4 +207,27 @@ test('supports a unique sandbox directory for follow-up runs', async (t) => {
   assert.match(sandbox.dir, /sandbox-followup-test$/);
   await cleanupAgentSandbox(sandbox);
   await assert.rejects(access(sandbox.dir));
+});
+
+test('verifies edits inside the disposable sandbox without touching the real tree', async (t) => {
+  const { root, runDir } = await fixture(t);
+  const sandbox = await createAgentSandbox({
+    runDir,
+    roots: [{ key: 'backend', name: 'backend', root }],
+  });
+  const sandboxFile = path.join(sandbox.roots[0].sandboxRoot, 'src', 'app.js');
+  await writeFile(sandboxFile, 'export const value = 2;\n', 'utf8');
+
+  const check = await runWorkspaceCheck({
+    roots: sandboxRootsForCheck(sandbox),
+    verifyCommand: 'node -e "require(\'fs\').writeFileSync(\'check-ran\',\'x\')"',
+    projectRoot: sandbox.dir,
+  });
+  assert.equal(check.status, 'passed');
+  assert.equal(
+    await readFile(path.join(sandbox.roots[0].sandboxRoot, 'check-ran'), 'utf8'),
+    'x',
+  );
+  assert.equal(await readFile(path.join(root, 'src', 'app.js'), 'utf8'), 'export const value = 1;\n');
+  await cleanupAgentSandbox(sandbox);
 });

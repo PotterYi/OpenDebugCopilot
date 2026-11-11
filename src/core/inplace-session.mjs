@@ -3,7 +3,6 @@ import { mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from 
 import { execFile } from 'node:child_process';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { AppError } from './errors.mjs';
 import { acquireWorkspaceLocks } from './workspace-lock.mjs';
 import { runWorkspaceCheck } from './fix-validation.mjs';
 import { previewFixFromTexts } from './fixes.mjs';
@@ -79,10 +78,6 @@ function inside(root, target) {
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
-function splitZ(value) {
-  return String(value ?? '').split('\0').map((item) => item.trim()).filter(Boolean);
-}
-
 async function writeJsonAtomic(file, value) {
   const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
   await mkdir(path.dirname(file), { recursive: true });
@@ -92,7 +87,6 @@ async function writeJsonAtomic(file, value) {
 
 function createBaseline({ runDir, roots, onChange = null }) {
   const baselineDir = path.join(runDir, 'baseline');
-  const startEntries = new Map();
   const touched = new Map();
 
   const rootFor = (absPath) => roots.find((entry) => inside(entry.root, absPath)) ?? null;
@@ -100,32 +94,6 @@ function createBaseline({ runDir, roots, onChange = null }) {
   function backupPath(kind, repo, relative) {
     const repoKey = createHash('sha256').update(path.resolve(repo)).digest('hex').slice(0, 12);
     return path.join(baselineDir, kind, repoKey, relative);
-  }
-
-  async function snapshotStart() {
-    const repos = [...new Set(roots.map((entry) => entry.repo))];
-    for (const repo of repos) {
-      const changed = splitZ(await git(repo, ['diff', 'HEAD', '--name-only', '-z'], { allowFail: true }));
-      const untracked = splitZ(await git(repo, ['ls-files', '--others', '--exclude-standard', '-z'], { allowFail: true }));
-      for (const relative of new Set([...changed, ...untracked])) {
-        const absPath = path.join(repo, relative);
-        if (!rootFor(absPath)) continue;
-        if (startEntries.has(absPath)) continue;
-        const current = await readTextFile(absPath);
-        if (current.tooLarge) {
-          throw new AppError('BASELINE_TOO_LARGE', `脏文件过大，无法保存基线：${relative}`, { exitCode: 3 });
-        }
-        const backup = backupPath('start', repo, relative);
-        if (current.exists) await writeBackup(current, backup);
-        startEntries.set(absPath, {
-          repo,
-          relative,
-          backup: current.exists ? backup : null,
-          exists: current.exists,
-          hash: current.hash,
-        });
-      }
-    }
   }
 
   async function snapshotBeforeWrite(filePath) {
@@ -258,9 +226,7 @@ function createBaseline({ runDir, roots, onChange = null }) {
 
   return {
     baselineDir,
-    startEntries,
     touched,
-    snapshotStart,
     snapshotBeforeWrite,
     recordAfterWrite,
     extract,
@@ -348,7 +314,6 @@ export async function createInPlaceSession({
       roots: detected,
       onChange: () => flushJournal(),
     });
-    await baseline.snapshotStart();
     await flushJournal();
   } catch (error) {
     await locks.release();
@@ -404,6 +369,11 @@ export async function createInPlaceSession({
     return result;
   }
 
+  async function cleanupBaseline() {
+    if (!baseline) return;
+    await rm(baseline.baselineDir, { recursive: true, force: true }).catch(() => {});
+  }
+
   return {
     ok: true,
     mode: 'in-place',
@@ -424,12 +394,14 @@ export async function createInPlaceSession({
       const result = await baseline.discard();
       journal.status = result.conflicts?.length ? 'pending' : 'discarded';
       await flushJournal();
+      if (!result.conflicts?.length) await cleanupBaseline();
       await locks.release();
       return result;
     },
     async keep() {
       journal.status = 'kept';
       await flushJournal();
+      await cleanupBaseline();
       await locks.release();
       return { ok: true };
     },
@@ -493,9 +465,12 @@ export async function finalizeWorkspaceJournal(journalPath, action) {
   if (!['keep', 'discard'].includes(action)) {
     return { ok: false, error: `未知操作：${action}` };
   }
+  const baselineDir = path.join(path.dirname(journalPath), 'baseline');
+  const cleanupBaseline = () => rm(baselineDir, { recursive: true, force: true }).catch(() => {});
   // A kept/discarded journal must never be re-applied: discard after keep would
   // silently roll back modifications the user explicitly kept.
   if (journal.status === 'kept' || journal.status === 'discarded') {
+    await cleanupBaseline();
     return {
       ok: true,
       status: journal.status,
@@ -514,6 +489,7 @@ export async function finalizeWorkspaceJournal(journalPath, action) {
       journal.status = 'kept';
       journal.finishedAt = Date.now();
       await writeJsonAtomic(journalPath, journal);
+      await cleanupBaseline();
       return { ok: true, status: 'kept', restored: [], conflicts: [] };
     }
     const restored = [];
@@ -546,6 +522,7 @@ export async function finalizeWorkspaceJournal(journalPath, action) {
     journal.finishedAt = conflicts.length > 0 ? null : Date.now();
     journal.conflicts = conflicts;
     await writeJsonAtomic(journalPath, journal);
+    if (conflicts.length === 0) await cleanupBaseline();
     return { ok: true, status: journal.status, restored, conflicts };
   } finally {
     await locks.release();
