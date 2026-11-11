@@ -1,4 +1,5 @@
 import { api } from './api.js';
+import { upsertProgressStep } from './progress-state.mjs';
 import { deriveCandidateRules } from './routing-assist.mjs';
 import { formatBodyText } from './format-body.mjs';
 import { REQUEST_FILTERS, matchesRequestFilter } from './request-filter.mjs';
@@ -2349,11 +2350,14 @@ function renderProgressSteps(container, steps) {
   for (const step of steps) {
     const row = el('div', `diagnose-step ${step.status ?? 'start'}`);
     const icon = step.status === 'start' ? '◌' : step.status === 'error' ? '✕' : '✓';
+    const label = step.label
+      || step.detail
+      || (step.status === 'error' ? '失败' : step.status === 'start' ? '处理中' : '完成');
     row.append(
       el('span', 'diagnose-step-icon', icon),
-      el('span', 'diagnose-step-label', step.label ?? ''),
+      el('span', 'diagnose-step-label', label),
     );
-    if (step.detail) {
+    if (step.detail && step.detail !== label) {
       const detail = el('span', 'diagnose-step-detail', step.detail);
       detail.title = step.detail;
       row.append(detail);
@@ -2361,19 +2365,6 @@ function renderProgressSteps(container, steps) {
     container.append(row);
   }
   container.scrollTop = container.scrollHeight;
-}
-
-function upsertProgressStep(steps, event) {
-  if (!event) return;
-  const id = event.id ?? event.label;
-  if (!id) return;
-  const existing = steps.find((step) => step.id === id);
-  if (existing) {
-    Object.assign(existing, event, { id });
-  } else {
-    steps.push({ ...event, id });
-    if (steps.length > 40) steps.splice(0, steps.length - 40);
-  }
 }
 
 function syncDiagnoseControls() {

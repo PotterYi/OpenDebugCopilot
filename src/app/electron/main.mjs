@@ -1148,10 +1148,14 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
             && ['Edit', 'Write', 'Bash'].includes(tool.name)) {
             followWroteWorkspace = true;
           }
-          const label = builtinToolLabels[tool.name] ?? tool.name;
+          const toolLabel = tool.name
+            ? (builtinToolLabels[tool.name] ?? tool.name)
+            : null;
           sendProgress({
             id: `builtin-${tool.id}`,
-            label: tool.stage === 'start' ? `${label}…` : label,
+            label: tool.stage === 'start'
+              ? (toolLabel ? `${toolLabel}…` : '调用工具…')
+              : (toolLabel ?? '工具调用完成'),
             status: tool.stage === 'start' ? 'start' : tool.isError ? 'error' : 'done',
             detail: tool.name,
           });

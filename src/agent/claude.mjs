@@ -817,7 +817,12 @@ export function createClaudeAgent({
               }
               toolUses.delete(block.tool_use_id);
               if (onToolUse) {
-                onToolUse({ stage: 'done', id: block.tool_use_id, isError: Boolean(block.is_error) });
+                onToolUse({
+                  stage: 'done',
+                  id: block.tool_use_id,
+                  name: used?.name,
+                  isError: Boolean(block.is_error),
+                });
               }
             }
           }
@@ -969,7 +974,12 @@ export function createClaudeAgent({
               }
               toolUses.delete(block.tool_use_id);
               if (onToolUse) {
-                onToolUse({ stage: 'done', id: block.tool_use_id, isError: Boolean(block.is_error) });
+                onToolUse({
+                  stage: 'done',
+                  id: block.tool_use_id,
+                  name: used?.name,
+                  isError: Boolean(block.is_error),
+                });
               }
             }
           }

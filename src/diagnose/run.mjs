@@ -574,10 +574,14 @@ async function diagnoseWithFired({
             && ['Edit', 'Write', 'Bash'].includes(tool.name)) {
             wroteWorkspace = true;
           }
-          const label = BUILTIN_TOOL_LABELS[tool.name] ?? tool.name;
+          const toolLabel = tool.name
+            ? (BUILTIN_TOOL_LABELS[tool.name] ?? tool.name)
+            : null;
           progress(
             `builtin-${tool.id}`,
-            tool.stage === 'start' ? `${label}…` : label,
+            tool.stage === 'start'
+              ? (toolLabel ? `${toolLabel}…` : '调用工具…')
+              : (toolLabel ?? '工具调用完成'),
             tool.stage === 'start' ? 'start' : tool.isError ? 'error' : 'done',
             tool.name,
           );
