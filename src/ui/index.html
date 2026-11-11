@@ -323,7 +323,7 @@
   </div>
 
   <div id="model-modal" class="modal-backdrop" hidden>
-    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="model-modal-title">
+    <div class="modal model-modal" role="dialog" aria-modal="true" aria-labelledby="model-modal-title">
       <h2 id="model-modal-title">模型设置</h2>
       <label>模型
         <select id="model-name">
@@ -383,6 +383,33 @@
         </select>
       </label>
       <p class="muted small">默认 60 轮、超时 600 秒；轮次留空表示不限制。完全权限会直接操作真实项目，所有 Edit/Write/Bash 都会弹窗确认。</p>
+
+      <div id="agent-auth-section" class="agent-auth">
+        <h3>Claude 认证</h3>
+        <div id="agent-auth-modes" class="auth-modes">
+          <label class="inline"><input type="radio" name="agent-auth-mode" value="user" checked /> 跟随 Claude Code 设置</label>
+          <label class="inline"><input type="radio" name="agent-auth-mode" value="custom" /> 自定义 Token</label>
+          <label class="inline"><input type="radio" name="agent-auth-mode" value="env" /> 环境变量</label>
+        </div>
+        <label id="agent-auth-base-row">Base URL（可选）
+          <input id="agent-auth-base-url" placeholder="https://api.anthropic.com" />
+        </label>
+        <div id="agent-auth-custom" hidden>
+          <label>Token
+            <input id="agent-auth-token" type="password" autocomplete="off" placeholder="留空 = 不修改" />
+          </label>
+          <p id="agent-auth-token-status" class="muted small"></p>
+          <button id="agent-auth-token-clear" type="button" class="secondary" hidden>清除已保存 Token</button>
+        </div>
+        <div id="agent-auth-env" hidden>
+          <label>Token 环境变量名
+            <input id="agent-auth-token-env" placeholder="ANTHROPIC_AUTH_TOKEN" />
+          </label>
+        </div>
+        <p id="agent-auth-web-hint" class="muted small" hidden>凭据加密保存仅桌面版可用；WebUI/CLI 请使用 ANTHROPIC_AUTH_TOKEN / ANTHROPIC_BASE_URL 环境变量。</p>
+        <p class="muted small">Token 使用系统安全存储加密，只保存在本机；不会写入日志或诊断结果。自定义/环境变量模式会注入进程环境，并停止加载 ~/.claude/settings.json。</p>
+      </div>
+
       <div class="modal-actions">
         <button id="model-save" type="button">保存</button>
         <button id="model-cancel" type="button" class="secondary">取消</button>

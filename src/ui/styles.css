@@ -674,6 +674,36 @@ button:disabled:hover { filter: grayscale(0.55); }
   max-height: min(82vh, 760px);
   overflow: auto;
 }
+.modal.model-modal {
+  width: min(520px, calc(100vw - 32px));
+  max-height: min(86vh, 820px);
+  overflow: auto;
+}
+.agent-auth {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  border-radius: 8px;
+  transition: box-shadow 0.25s ease;
+}
+.agent-auth.attention {
+  box-shadow: 0 0 0 2px #f59e0b inset;
+}
+.agent-auth h3 { margin: 0; font-size: 13px; font-weight: 600; }
+.agent-auth .auth-modes { display: flex; flex-wrap: wrap; gap: 12px; }
+.agent-auth .auth-modes label {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  color: var(--text);
+  font-size: 12px;
+}
+.agent-auth .auth-modes input { margin: 0; }
+#agent-auth-custom,
+#agent-auth-env { display: flex; flex-direction: column; gap: 8px; }
+#agent-auth-token-clear { align-self: flex-start; padding: 4px 10px; font-size: 11px; }
 .workspace-recovery-list { display: flex; flex-direction: column; gap: 8px; }
 .workspace-recovery-item {
   display: flex;

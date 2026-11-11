@@ -229,6 +229,14 @@ test('electron shell boots, captures, routes and diagnoses', {
   assert.equal(smokeResult.workspaceKeep?.resultStatus, 'kept');
   assert.equal(smokeResult.workspaceKeep?.fixPending, false);
   assert.equal(smokeResult.workspaceKeep?.metaStatus, 'kept');
+  assert.equal(smokeResult.menuHasCredentials, true);
+  assert.equal(smokeResult.agentAuthUi?.modalSection, true);
+  assert.equal(smokeResult.agentAuthUi?.hasTokenField, true);
+  assert.equal(smokeResult.agentAuthUi?.hasModeRadios, 3);
+  assert.equal(smokeResult.agentAuthUi?.saved?.mode, 'env');
+  assert.equal(smokeResult.agentAuthUi?.saved?.hasToken, false);
+  assert.equal(smokeResult.agentAuthUi?.after?.mode, 'env');
+  assert.equal(smokeResult.agentAuthUi?.after?.token, undefined);
   assert.match(stdout, /"gates":true/);
   assert.ok(backendHits >= 1, `expected redirect to backend, got ${backendHits}`);
   // The tool answers local preflights itself; the backend must never see OPTIONS.

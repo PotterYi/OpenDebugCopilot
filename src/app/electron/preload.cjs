@@ -3,6 +3,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 const CHANNELS = new Set([
   'dc:config',
   'dc:databases',
+  'dc:agent-auth',
   'dc:browser',
   'dc:element',
   'dc:capture',

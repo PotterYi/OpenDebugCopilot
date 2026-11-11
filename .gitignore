@@ -6,4 +6,5 @@ configs/workspace.json
 configs/routing.json
 configs/profiles.json
 configs/databases.json
+configs/agent-auth.json
 logs/

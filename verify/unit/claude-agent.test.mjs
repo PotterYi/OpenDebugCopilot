@@ -7,6 +7,7 @@ import {
   buildToolShapes,
   createClaudeAgent,
   redactToolOutputHook,
+  sdkAuthOptions,
   usageFromResult,
   validationStrategyPrompt,
 } from '../../src/agent/claude.mjs';
@@ -156,4 +157,23 @@ test('follow-up prompt snapshots are redacted before reaching the model', () => 
   });
   assert.doesNotMatch(prompt, /abcdef123456|hunter2secret|abcdefghijklmnopqrstuvwxyz/);
   assert.match(prompt, /<redacted>/);
+});
+
+test('sdkAuthOptions keeps user settings by default and injects app credentials', () => {
+  const defaults = sdkAuthOptions(null);
+  assert.deepEqual(defaults.settingSources, ['user']);
+  assert.equal(defaults.env, undefined);
+
+  const custom = sdkAuthOptions({
+    settingSources: [],
+    env: {
+      ANTHROPIC_AUTH_TOKEN: 'sk-ant-test-token',
+      ANTHROPIC_BASE_URL: 'https://gateway.example.com',
+    },
+  });
+  assert.deepEqual(custom.settingSources, []);
+  assert.equal(custom.env.ANTHROPIC_AUTH_TOKEN, 'sk-ant-test-token');
+  assert.equal(custom.env.ANTHROPIC_BASE_URL, 'https://gateway.example.com');
+  // env replaces the whole subprocess environment, so process.env must survive.
+  assert.equal(custom.env.PATH, process.env.PATH);
 });

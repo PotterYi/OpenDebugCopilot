@@ -45,6 +45,14 @@ export const api = {
     if (dc?.invoke) return dc.invoke('dc:databases', { action: 'test', connection });
     return http('/api/databases/test', { method: 'POST', body: JSON.stringify({ connection }) });
   },
+  async getAgentAuth() {
+    if (!dc?.invoke) return { mode: 'user', baseUrl: '', tokenEnv: '', hasToken: false };
+    return dc.invoke('dc:agent-auth', { action: 'get' });
+  },
+  async saveAgentAuth(auth) {
+    if (!dc?.invoke) throw new Error('凭据加密保存仅桌面版可用，请使用环境变量');
+    return dc.invoke('dc:agent-auth', { action: 'save', auth });
+  },
   async listRuns() {
     if (dc?.invoke) return (await dc.invoke('dc:runs', { action: 'list' })).runs;
     return (await http('/api/runs')).runs;

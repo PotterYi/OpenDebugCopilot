@@ -62,6 +62,17 @@ const modelMaxTurnsInput = $('model-max-turns');
 const modelMaxBudgetInput = $('model-max-budget');
 const modelTimeoutInput = $('model-timeout');
 const modelToolModeInput = $('model-tool-mode');
+const agentAuthSection = $('agent-auth-section');
+const agentAuthModes = $('agent-auth-modes');
+const agentAuthBaseRow = $('agent-auth-base-row');
+const agentAuthBaseUrl = $('agent-auth-base-url');
+const agentAuthCustom = $('agent-auth-custom');
+const agentAuthEnv = $('agent-auth-env');
+const agentAuthToken = $('agent-auth-token');
+const agentAuthTokenStatus = $('agent-auth-token-status');
+const agentAuthTokenClear = $('agent-auth-token-clear');
+const agentAuthTokenEnv = $('agent-auth-token-env');
+const agentAuthWebHint = $('agent-auth-web-hint');
 const databaseListEl = $('database-list');
 const databaseMessageEl = $('database-message');
 const databaseStatusEl = $('database-status');
@@ -82,6 +93,8 @@ const databaseModalMessage = $('database-modal-message');
 
 let currentTab = 'browser';
 let configCache = null;
+let agentAuthState = { mode: 'user', baseUrl: '', tokenEnv: '', hasToken: false };
+let agentAuthClearToken = false;
 let routingRules = [];
 let routingWarnings = [];
 let routingHits = 0;
@@ -2935,7 +2948,60 @@ function syncModelCustomRow({ focus = false } = {}) {
   if (custom && focus) modelNameCustomInput.focus();
 }
 
-function openModelModal() {
+function agentAuthMode() {
+  return document.querySelector('input[name="agent-auth-mode"]:checked')?.value ?? 'user';
+}
+
+function syncAgentAuthVisibility() {
+  const mode = agentAuthMode();
+  agentAuthBaseRow.hidden = mode === 'user';
+  agentAuthCustom.hidden = mode !== 'custom';
+  agentAuthEnv.hidden = mode !== 'env';
+}
+
+function renderAgentAuthForm({ focus = false } = {}) {
+  const state = agentAuthState ?? { mode: 'user', hasToken: false };
+  for (const radio of document.querySelectorAll('input[name="agent-auth-mode"]')) {
+    radio.checked = radio.value === (state.mode ?? 'user');
+  }
+  agentAuthBaseUrl.value = state.baseUrl ?? '';
+  agentAuthTokenEnv.value = state.tokenEnv ?? '';
+  agentAuthToken.value = '';
+  agentAuthClearToken = false;
+  agentAuthTokenStatus.textContent = state.hasToken
+    ? '已保存 Token（留空不修改）'
+    : '尚未保存 Token';
+  agentAuthTokenClear.hidden = !state.hasToken;
+  syncAgentAuthVisibility();
+  if (focus) {
+    agentAuthSection.scrollIntoView({ block: 'nearest' });
+    agentAuthSection.classList.add('attention');
+    setTimeout(() => agentAuthSection.classList.remove('attention'), 1200);
+  }
+}
+
+function collectAgentAuthPayload() {
+  const mode = agentAuthMode();
+  const payload = {
+    mode,
+    baseUrl: agentAuthBaseUrl.value.trim(),
+    tokenEnv: mode === 'env' ? agentAuthTokenEnv.value.trim() : '',
+  };
+  if (mode === 'custom') {
+    const token = agentAuthToken.value.trim();
+    if (token) payload.token = token;
+    if (agentAuthClearToken) payload.clearToken = true;
+    if (!token && !agentAuthState.hasToken && !agentAuthClearToken) {
+      throw new Error('自定义凭据需要填写 Token');
+    }
+  }
+  if (mode === 'env' && !payload.tokenEnv) {
+    throw new Error('请填写 Token 环境变量名');
+  }
+  return payload;
+}
+
+async function openModelModal({ focus = null } = {}) {
   const agent = configCache?.workspace?.agent ?? {};
   const model = String(agent.model ?? '').trim();
   const known = [...modelNameInput.options]
@@ -2951,7 +3017,27 @@ function openModelModal() {
     : (agent.sandbox === false ? 'readonly' : 'sandbox');
   modelModal.hidden = false;
   hideBrowserForModal();
-  modelNameInput.focus();
+  agentAuthSection.hidden = false;
+  agentAuthWebHint.hidden = api.isDesktop;
+  agentAuthModes.hidden = !api.isDesktop;
+  if (api.isDesktop) {
+    try {
+      agentAuthState = await api.getAgentAuth();
+    } catch (error) {
+      agentAuthState = { mode: 'user', baseUrl: '', tokenEnv: '', hasToken: false };
+      setStatus(`读取 Claude 凭据失败：${error.message}`, 'error');
+    }
+    renderAgentAuthForm({ focus: focus === 'auth' });
+  } else {
+    agentAuthBaseRow.hidden = true;
+    agentAuthCustom.hidden = true;
+    agentAuthEnv.hidden = true;
+  }
+  if (focus === 'auth') {
+    agentAuthSection.scrollIntoView({ block: 'nearest' });
+  } else {
+    modelNameInput.focus();
+  }
 }
 
 function closeModelModal() {
@@ -2963,6 +3049,15 @@ async function saveModelSettings() {
   if (!configCache?.workspace) {
     setStatus('配置尚未加载，请稍后重试', 'error');
     return;
+  }
+  let authPayload = null;
+  if (api.isDesktop) {
+    try {
+      authPayload = collectAgentAuthPayload();
+    } catch (error) {
+      setStatus(error.message, 'error');
+      return;
+    }
   }
   const selectedModel = modelNameInput.value;
   const model = selectedModel === '__custom__'
@@ -2986,18 +3081,31 @@ async function saveModelSettings() {
     toolMode: modelToolModeInput.value,
   };
   try {
+    if (authPayload) {
+      agentAuthState = await api.saveAgentAuth(authPayload);
+      renderAgentAuthForm();
+    }
     const saved = await api.saveConfig({
       workspace: { ...(configCache?.workspace ?? {}), agent },
     });
     configCache = saved;
     closeModelModal();
-    setStatus('模型设置已保存', 'ok');
+    setStatus(authPayload ? '模型设置与 Claude 凭据已保存' : '模型设置已保存', 'ok');
   } catch (error) {
-    setStatus(`模型设置保存失败：${error.message}`, 'error');
+    setStatus(`保存失败：${error.message}`, 'error');
   }
 }
 
 $('model-save').addEventListener('click', saveModelSettings);
+for (const radio of document.querySelectorAll('input[name="agent-auth-mode"]')) {
+  radio.addEventListener('change', () => syncAgentAuthVisibility());
+}
+agentAuthTokenClear.addEventListener('click', () => {
+  agentAuthClearToken = true;
+  agentAuthToken.value = '';
+  agentAuthTokenStatus.textContent = '保存后将清除已保存 Token';
+  agentAuthTokenClear.hidden = true;
+});
 modelNameInput.addEventListener('change', () => syncModelCustomRow({ focus: true }));
 modelNameCustomInput.addEventListener('keydown', (event) => {
   if (event.key === 'Enter') {
@@ -3041,7 +3149,11 @@ window.addEventListener('keydown', (event) => {
   else if (!modelModal.hidden) closeModelModal();
 });
 
-api.onModelSettings(openModelModal);
+api.onModelSettings((payload) => {
+  openModelModal(payload ?? {}).catch((error) => {
+    setStatus(`打开模型设置失败：${error.message}`, 'error');
+  });
+});
 api.onDatabaseSettings(openDatabaseManager);
 
 const advancedToggle = $('toggle-advanced');

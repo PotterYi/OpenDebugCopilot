@@ -28,6 +28,23 @@ const REDACT_TOOL_OUTPUT_HOOKS = Object.freeze({
   PostToolUse: [{ hooks: [redactToolOutputHook] }],
 });
 
+/**
+ * Build the SDK auth-related options. `env` REPLACES the subprocess
+ * environment, so always spread process.env. When the app supplies a custom
+ * token we also stop loading user settings, otherwise ~/.claude/settings.json
+ * could silently override the configured credential.
+ */
+export function sdkAuthOptions(auth = null) {
+  const env = auth?.env && Object.keys(auth.env).length > 0 ? auth.env : null;
+  const settingSources = Array.isArray(auth?.settingSources)
+    ? auth.settingSources
+    : [...CLAUDE_SETTING_SOURCES];
+  return {
+    settingSources: [...settingSources],
+    ...(env ? { env: { ...process.env, ...env } } : {}),
+  };
+}
+
 export const READ_ONLY_BUILTIN_TOOLS = Object.freeze(['Read', 'Grep', 'Glob']);
 export const SANDBOX_BUILTIN_TOOLS = Object.freeze(['Read', 'Grep', 'Glob', 'Edit', 'Write']);
 export const FULL_BUILTIN_TOOLS = Object.freeze(['Read', 'Grep', 'Glob', 'Edit', 'Write', 'Bash']);
@@ -673,6 +690,7 @@ export function createClaudeAgent({
   approval = null,
   onBeforeWrite = null,
   onAfterWrite = null,
+  auth = null,
 } = {}) {
   let scope = {
     cwd: cwd ?? process.cwd(),
@@ -682,6 +700,7 @@ export function createClaudeAgent({
     approval,
     onBeforeWrite,
     onAfterWrite,
+    auth,
     systemPromptSuffix: '',
   };
   const configureScope = (next = {}) => {
@@ -738,11 +757,9 @@ export function createClaudeAgent({
           mcpServers: { debugcopilot: server },
           strictMcpConfig: true,
           allowedTools: toolNames,
-          // Load the user's Claude Code settings so login/auth env vars such as
-          // ANTHROPIC_AUTH_TOKEN and ANTHROPIC_BASE_URL are available. Do not
-          // use [] here: SDK isolation mode drops those settings and the CLI
-          // reports "not logged in".
-          settingSources: [...CLAUDE_SETTING_SOURCES],
+          // Default to loading the user's Claude Code settings. A configured
+          // app credential injects env and may isolate user settings instead.
+          ...sdkAuthOptions(scope.auth),
           hooks: REDACT_TOOL_OUTPUT_HOOKS,
           permissionMode: 'default',
           canUseTool: permission,
@@ -891,9 +908,8 @@ export function createClaudeAgent({
           ...(server
             ? { mcpServers: { debugcopilot: server }, strictMcpConfig: true, allowedTools: toolNames }
             : { mcpServers: {}, strictMcpConfig: true, allowedTools: [] }),
-          // Keep the user's Claude Code auth/base URL settings; [] causes
-          // "not logged in" because ANTHROPIC_AUTH_TOKEN is not loaded.
-          settingSources: [...CLAUDE_SETTING_SOURCES],
+          // Same auth precedence as the initial diagnosis.
+          ...sdkAuthOptions(scope.auth),
           hooks: REDACT_TOOL_OUTPUT_HOOKS,
           permissionMode: 'default',
           canUseTool: permission,

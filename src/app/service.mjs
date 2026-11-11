@@ -3,6 +3,7 @@ import path from 'node:path';
 import { AppError } from '../core/errors.mjs';
 import { createStore } from '../core/store.mjs';
 import { createDatabaseStore } from '../core/database-store.mjs';
+import { createAgentAuthStore } from '../core/agent-auth-store.mjs';
 import { checkDatabases } from '../evidence/db.mjs';
 import { getLogFile } from '../core/logger.mjs';
 
@@ -23,6 +24,7 @@ export function createService({ root = process.cwd(), configDir, runsDir, secret
   const effectiveConfigDir = configDir ?? path.join(root, 'configs');
   const store = createStore({ configDir: effectiveConfigDir });
   const databaseStore = createDatabaseStore({ configDir: effectiveConfigDir, secretCodec });
+  const agentAuthStore = createAgentAuthStore({ configDir: effectiveConfigDir, secretCodec });
   const runsRoot = path.resolve(runsDir ?? path.join(root, 'runs'));
 
   async function getConfig() {
@@ -178,6 +180,18 @@ export function createService({ root = process.cwd(), configDir, runsDir, secret
     return result;
   }
 
+  async function getAgentAuth() {
+    return agentAuthStore.getPublic();
+  }
+
+  async function saveAgentAuth(auth) {
+    return agentAuthStore.save(auth);
+  }
+
+  async function getAgentAuthRuntime() {
+    return agentAuthStore.getRuntime();
+  }
+
   return {
     root,
     runsRoot,
@@ -199,5 +213,9 @@ export function createService({ root = process.cwd(), configDir, runsDir, secret
     getRuntimeDatabases,
     getDiagnosisDatabases,
     testDatabase,
+    agentAuthStore,
+    getAgentAuth,
+    saveAgentAuth,
+    getAgentAuthRuntime,
   };
 }

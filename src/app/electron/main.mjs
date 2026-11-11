@@ -31,6 +31,7 @@ import { createTools } from '../../tools/index.mjs';
 import { readLogs } from '../../evidence/logs.mjs';
 import { runCaptureDiagnosis, runElementDiagnosis } from '../../diagnose/run.mjs';
 import { finalizeWorkspaceJournal, listPendingWorkspaceJournals } from '../../core/inplace-session.mjs';
+import { resolveAgentAuth } from '../../core/agent-auth.mjs';
 import { createMockAgent } from '../../agent/mock.mjs';
 import { createClaudeAgent } from '../../agent/claude.mjs';
 import { getLogFile, log, setLogFile } from '../../core/logger.mjs';
@@ -374,6 +375,17 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
         return service.testDatabase(payload.connection);
       default:
         throw new Error(`dc:databases: unknown action ${payload.action}`);
+    }
+  });
+
+  handle('dc:agent-auth', async (_event, payload = {}) => {
+    switch (payload.action) {
+      case 'get':
+        return service.getAgentAuth();
+      case 'save':
+        return service.saveAgentAuth(payload.auth);
+      default:
+        throw new Error(`dc:agent-auth: unknown action ${payload.action}`);
     }
   });
 
@@ -880,6 +892,9 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
     }
 
     const toolMode = agentToolMode(workspace);
+    const auth = payload.mock === true || smoke
+      ? null
+      : resolveAgentAuth(await service.getAgentAuthRuntime());
     const agent = payload.mock === true || smoke
       ? createMockAgent()
       : createClaudeAgent({
@@ -890,6 +905,7 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
         // exists. Full mode is the only mode constructed with write access.
         toolMode: toolMode === 'full' ? 'full' : 'readonly',
         approval: createToolApprover(event),
+        auth,
       });
 
     const targetRequestId = payload.requestId != null ? String(payload.requestId) : null;
@@ -968,6 +984,9 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
       const workspace = (await service.getConfig()).workspace;
       const runDir = path.join(service.runsRoot, runId);
       const toolMode = agentToolMode(workspace);
+      const auth = payload.mock === true || smoke
+        ? null
+        : resolveAgentAuth(await service.getAgentAuthRuntime());
       const agent = payload.mock === true || smoke
         ? createMockAgent()
         : createClaudeAgent({
@@ -976,6 +995,7 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
           }),
           toolMode: toolMode === 'full' ? 'full' : 'readonly',
           approval: createToolApprover(event),
+          auth,
         });
       if (typeof agent.followUp !== 'function') throw new Error('当前 Agent 不支持继续诊断');
 
@@ -1812,6 +1832,20 @@ async function runSmoke(window, host, service) {
     } catch (error) {
       workspaceKeep = { error: String(error?.message ?? error) };
     }
+
+    const agentAuthUi = await window.webContents.executeJavaScript(`(async () => ({
+      modalSection: Boolean(document.getElementById('agent-auth-section')),
+      hasTokenField: Boolean(document.getElementById('agent-auth-token')),
+      hasModeRadios: document.querySelectorAll('input[name="agent-auth-mode"]').length,
+      initial: await window.dc.invoke('dc:agent-auth', { action: 'get' }),
+      saved: await window.dc.invoke('dc:agent-auth', {
+        action: 'save',
+        auth: { mode: 'env', tokenEnv: 'ANTHROPIC_AUTH_TOKEN', baseUrl: 'https://gateway.example.com' },
+      }),
+      after: await window.dc.invoke('dc:agent-auth', { action: 'get' }),
+    }))()`).catch((error) => ({ error: String(error?.message ?? error) }));
+    const modelMenuItems = Menu.getApplicationMenu()?.items
+      ?.find((item) => item.label === '模型')?.submenu?.items?.map((item) => item.label) ?? [];
     const result = {
       ...ui,
       captured,
@@ -1831,6 +1865,8 @@ async function runSmoke(window, host, service) {
       modelUi,
       workspaceUi,
       workspaceKeep,
+      agentAuthUi,
+      menuHasCredentials: modelMenuItems.includes('Claude 凭据…'),
       url: host.status().url,
       evalResult,
       uiEvalResult,
@@ -1920,6 +1956,14 @@ function installApplicationMenu() {
           click: () => {
             if (mainWindow && !mainWindow.isDestroyed()) {
               mainWindow.webContents.send('dc:model:open');
+            }
+          },
+        },
+        {
+          label: 'Claude 凭据…',
+          click: () => {
+            if (mainWindow && !mainWindow.isDestroyed()) {
+              mainWindow.webContents.send('dc:model:open', { focus: 'auth' });
             }
           },
         },
