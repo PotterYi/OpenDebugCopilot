@@ -3310,7 +3310,10 @@ async function clearCapturedData() {
       if (state.status === 'running') continue;
       const requestGone = state.requestId != null && !keepRequests.has(String(state.requestId));
       const consoleGone = state.consoleId != null && !keepConsoles.has(String(state.consoleId));
-      if (requestGone || consoleGone) diagnosisStates.delete(key);
+      // Element diagnoses have no request/console record. Once finished their
+      // result is in history, so the clear button should remove them too.
+      const elementGone = state.elementId != null || Boolean(state.element);
+      if (requestGone || consoleGone || elementGone) diagnosisStates.delete(key);
     }
 
     if (currentRequestId != null && !keepRequests.has(String(currentRequestId))) {

@@ -221,6 +221,10 @@ test('electron shell boots, captures, routes and diagnoses', {
   assert.equal(smokeResult.elementUi?.hasButton, true);
   assert.match(smokeResult.elementUi?.runScenario ?? '', /^element-/);
   assert.ok(smokeResult.elementUi?.runId, JSON.stringify(smokeResult.elementUi));
+  assert.ok(smokeResult.clearAfterDiagnosis?.before?.elements > 0, JSON.stringify(smokeResult.clearAfterDiagnosis));
+  assert.equal(smokeResult.clearAfterDiagnosis?.after?.requests, 0);
+  assert.equal(smokeResult.clearAfterDiagnosis?.after?.elements, 0);
+  assert.equal(smokeResult.clearAfterDiagnosis?.after?.console, '0');
   assert.equal(smokeResult.workspaceUi?.hasRecoveryModal, true);
   assert.equal(smokeResult.workspaceUi?.hasRecoveryList, true);
   assert.ok(Array.isArray(smokeResult.workspaceUi?.pending?.sessions), JSON.stringify(smokeResult.workspaceUi));

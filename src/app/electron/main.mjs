@@ -1799,6 +1799,34 @@ async function runSmoke(window, host, service) {
     const sample = host.list({ limit: 1 })[0] ?? null;
     const details = host.list({ limit: 50 }).map((item) => host.detail(item.id)).filter(Boolean);
     const sampleBody = details.find((item) => item.body?.text) ?? null;
+
+    // Finished request/console/element diagnoses are visible in history, so the
+    // clear button must remove their request-page entries.
+    let clearAfterDiagnosis = null;
+    if (elementUi?.runId) {
+      clearAfterDiagnosis = await window.webContents.executeJavaScript(`(async () => {
+        const before = {
+          requests: document.querySelectorAll('#requests li').length,
+          elements: document.querySelectorAll('#requests .element-diagnosis-item').length,
+          console: document.getElementById('console-count')?.textContent ?? '',
+        };
+        document.getElementById('clear-requests').click();
+        const deadline = Date.now() + 3000;
+        while (Date.now() < deadline) {
+          if (document.querySelectorAll('#requests li').length === 0) break;
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        return {
+          before,
+          after: {
+            requests: document.querySelectorAll('#requests li').length,
+            elements: document.querySelectorAll('#requests .element-diagnosis-item').length,
+            console: document.getElementById('console-count')?.textContent ?? '',
+          },
+        };
+      })()`).catch((error) => ({ error: String(error?.message ?? error) }));
+    }
+
     const workspaceUi = await window.webContents.executeJavaScript(`(async () => ({
       pending: await window.dc.invoke('dc:workspace', { action: 'pending' }),
       hasRecoveryModal: Boolean(document.getElementById('workspace-recovery-modal')),
@@ -1877,6 +1905,7 @@ async function runSmoke(window, host, service) {
       diagnoseUi,
       consoleDiagnose,
       elementUi,
+      clearAfterDiagnosis,
       pageTitle,
       menuHasLog: Boolean(Menu.getApplicationMenu()?.items?.some((item) => item.label === '日志')),
       menuHasDatabase: databaseMenuIndex >= 0,
