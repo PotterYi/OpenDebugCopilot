@@ -512,6 +512,25 @@ button:disabled:hover { filter: grayscale(0.55); }
 .diagnose-step.error { color: var(--danger); }
 .diagnose-step.error .diagnose-step-icon { color: var(--danger); }
 .diagnose-step-label { flex: none; }
+.diagnose-step-more {
+  color: var(--muted);
+  font-size: 11px;
+  padding-left: 18px;
+}
+.diagnose-step-footer {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  margin-top: 2px;
+  padding-top: 4px;
+  background: var(--panel-2);
+  border-top: 1px dashed var(--border);
+}
+.diagnose-step-elapsed {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 11px;
+}
 .diagnose-step-detail {
   overflow: hidden;
   text-overflow: ellipsis;

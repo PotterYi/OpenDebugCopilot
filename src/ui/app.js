@@ -1,5 +1,5 @@
 import { api } from './api.js';
-import { upsertProgressStep } from './progress-state.mjs';
+import { buildProgressView, upsertProgressStep } from './progress-state.mjs';
 import { deriveCandidateRules } from './routing-assist.mjs';
 import { formatBodyText } from './format-body.mjs';
 import { REQUEST_FILTERS, matchesRequestFilter } from './request-filter.mjs';
@@ -1337,7 +1337,13 @@ function buildChatSection(view) {
   progress.hidden = true;
   // Thinking steps belong under the composer so the input stays visually first.
   block.append(row, progress);
-  if (followState?.steps?.length) renderProgressSteps(progress, followState.steps);
+  if (followState?.steps?.length) {
+    renderProgressSteps(progress, followState.steps, {
+      running: followState.status === 'running',
+      startedAt: followState.startedAt ?? null,
+      timeoutMs: Number(configCache?.workspace?.agent?.timeoutMs ?? 0) || 0,
+    });
+  }
   return block;
 }
 
@@ -2340,14 +2346,18 @@ function renderConsoleList() {
   }
 }
 
-function renderProgressSteps(container, steps) {
+function renderProgressSteps(container, steps, options = {}) {
   container.textContent = '';
-  if (steps.length === 0) {
+  const view = buildProgressView(steps, options);
+  if (view.visibleSteps.length === 0 && !view.footer && view.hiddenCount === 0) {
     container.hidden = true;
     return;
   }
   container.hidden = false;
-  for (const step of steps) {
+  if (view.hiddenCount > 0) {
+    container.append(el('div', 'diagnose-step diagnose-step-more', `… 已隐藏 ${view.hiddenCount} 个较早步骤`));
+  }
+  for (const step of view.visibleSteps) {
     const row = el('div', `diagnose-step ${step.status ?? 'start'}`);
     const icon = step.status === 'start' ? '◌' : step.status === 'error' ? '✕' : '✓';
     const label = step.label
@@ -2363,6 +2373,20 @@ function renderProgressSteps(container, steps) {
       row.append(detail);
     }
     container.append(row);
+  }
+  if (view.footer) {
+    const footer = el('div', 'diagnose-step start diagnose-step-footer');
+    footer.append(
+      el('span', 'diagnose-step-icon', '◌'),
+      el('span', 'diagnose-step-label', view.footer.label),
+    );
+    if (view.footer.elapsedSec != null) {
+      const elapsed = view.footer.timeoutSec
+        ? `${view.footer.elapsedSec}s / ${view.footer.timeoutSec}s`
+        : `${view.footer.elapsedSec}s`;
+      footer.append(el('span', 'diagnose-step-elapsed', elapsed));
+    }
+    container.append(footer);
   }
   container.scrollTop = container.scrollHeight;
 }
@@ -2388,7 +2412,11 @@ function renderDiagnosisState() {
     diagnoseProgressEl.textContent = '';
     diagnoseProgressEl.hidden = true;
   } else {
-    renderProgressSteps(diagnoseProgressEl, state?.progressSteps ?? []);
+    renderProgressSteps(diagnoseProgressEl, state?.progressSteps ?? [], {
+      running: state?.status === 'running',
+      startedAt: state?.startedAt ?? null,
+      timeoutMs: Number(configCache?.workspace?.agent?.timeoutMs ?? 0) || 0,
+    });
   }
   if (!state) {
     diagnoseMessage.textContent = '';
@@ -3407,7 +3435,11 @@ api.onDiagnoseProgress((progress) => {
   if (!state || state.status !== 'running') return;
   upsertProgressStep(state.progressSteps, progress);
   if (activeDiagnosisKey !== key) return;
-  renderProgressSteps(diagnoseProgressEl, state.progressSteps);
+  renderProgressSteps(diagnoseProgressEl, state.progressSteps, {
+    running: true,
+    startedAt: state.startedAt,
+    timeoutMs: Number(configCache?.workspace?.agent?.timeoutMs ?? 0) || 0,
+  });
 });
 
 api.onFollowUpProgress((progress) => {
@@ -3418,8 +3450,41 @@ api.onFollowUpProgress((progress) => {
   upsertProgressStep(state.steps, progress);
   if (!isCurrentRun(runId)) return;
   const progressEl = currentRunView.container.querySelector('.followup-progress');
-  if (progressEl) renderProgressSteps(progressEl, state.steps);
+  if (progressEl) {
+    renderProgressSteps(progressEl, state.steps, {
+      running: true,
+      startedAt: state.startedAt,
+      timeoutMs: Number(configCache?.workspace?.agent?.timeoutMs ?? 0) || 0,
+    });
+  }
 });
+
+// The model can spend a long time between tool calls. Keep the pinned footer
+// (and its elapsed time) moving so the UI never looks frozen.
+function refreshRunningProgress() {
+  const timeoutMs = Number(configCache?.workspace?.agent?.timeoutMs ?? 0) || 0;
+  const state = activeDiagnosisState();
+  if (state?.status === 'running') {
+    renderProgressSteps(diagnoseProgressEl, state.progressSteps, {
+      running: true,
+      startedAt: state.startedAt,
+      timeoutMs,
+    });
+  }
+  if (!currentRunView) return;
+  const runId = runIdOf(currentRunView);
+  const follow = followUpStates.get(runId);
+  if (follow?.status !== 'running') return;
+  const progressEl = currentRunView.container.querySelector('.followup-progress');
+  if (progressEl) {
+    renderProgressSteps(progressEl, follow.steps, {
+      running: true,
+      startedAt: follow.startedAt,
+      timeoutMs,
+    });
+  }
+}
+setInterval(refreshRunningProgress, 1000);
 
 api.onDevServer((event) => {
   if (event.type === 'state') {
