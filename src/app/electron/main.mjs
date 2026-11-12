@@ -303,7 +303,28 @@ function createWriteApprover(event) {
   };
 }
 
-/** Per-action confirmation for full-permission Edit/Write/Bash. */
+/**
+ * One extra confirmation layer for risky Bash in full mode. Build/test
+ * toolchain commands are allowed directly; everything else needs approval.
+ */
+function createBashApprover(event) {
+  const parent = BrowserWindow.fromWebContents(event.sender) ?? mainWindow;
+  let queue = Promise.resolve();
+  return ({ command, safe } = {}) => {
+    if (safe) return Promise.resolve(true);
+    const next = queue.then(async () => {
+      if (smoke) return false;
+      return confirmFixDialog(parent, {
+        title: '确认危险 Bash 命令',
+        message: 'AI 请求执行非构建/测试命令',
+        detail: String(command ?? ''),
+      });
+    });
+    queue = next.catch(() => false);
+    return next;
+  };
+}
+
 function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
   const handle = (channel, fn) => ipcMain.handle(channel, async (event, payload) => {
     try {
@@ -871,6 +892,7 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
         // Fail closed: sandbox config is applied only after the isolated copy
         // exists. Full mode is the only mode constructed with write access.
         toolMode: toolMode === 'full' ? 'full' : 'readonly',
+        bashApproval: toolMode === 'full' ? createBashApprover(event) : null,
         auth,
       });
 
@@ -989,6 +1011,7 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
             extraSourceRoots: result.meta?.logContext?.extraSourceRoots ?? [],
           }),
           toolMode: toolMode === 'full' ? 'full' : 'readonly',
+          bashApproval: toolMode === 'full' ? createBashApprover(event) : null,
           auth,
         });
       if (typeof agent.followUp !== 'function') throw new Error('当前 Agent 不支持继续诊断');

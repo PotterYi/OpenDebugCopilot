@@ -73,7 +73,7 @@ test('sandbox mode allows Edit/Write only inside authorized roots', async (t) =>
   assert.equal(await behavior('Bash', { command: 'ls' }), 'deny');
 });
 
-test('full mode runs Edit/Write/Bash without per-action approval', async (t) => {
+test('full mode runs Edit/Write and safe Bash without per-action approval', async (t) => {
   const { root, outside } = await fixture(t);
   let approvalCalls = 0;
   const canUseTool = createToolPermission([root], {
@@ -89,8 +89,31 @@ test('full mode runs Edit/Write/Bash without per-action approval', async (t) => 
   assert.equal(await behavior('Edit', { file_path: path.join(root, 'src', 'app.js') }), 'allow');
   assert.equal(await behavior('Write', { file_path: path.join(root, 'src', 'new.js'), content: 'x' }), 'allow');
   assert.equal(approvalCalls, 0);
-  assert.equal(await behavior('Bash', { command: 'cat /etc/passwd' }), 'allow');
+  // Risky Bash is denied when no dangerous-action approver is configured.
+  assert.equal(await behavior('Bash', { command: 'cat /etc/passwd' }), 'deny');
   assert.equal(await behavior('Write', { file_path: path.join(outside, 'new.js') }), 'deny');
+});
+
+test('full mode asks the Bash approver for risky commands only', async (t) => {
+  const { root } = await fixture(t);
+  const calls = [];
+  const canUseTool = createToolPermission([root], {
+    cwd: root,
+    allowWrite: true,
+    allowBash: true,
+    bashApproval: async ({ command, safe }) => {
+      calls.push({ command, safe });
+      return safe || command === './deploy.sh';
+    },
+  });
+  assert.equal((await canUseTool('Bash', { command: 'npm run build' })).behavior, 'allow');
+  assert.equal((await canUseTool('Bash', { command: 'rm -rf .' })).behavior, 'deny');
+  assert.equal((await canUseTool('Bash', { command: './deploy.sh' })).behavior, 'allow');
+  assert.deepEqual(calls, [
+    { command: 'npm run build', safe: true },
+    { command: 'rm -rf .', safe: false },
+    { command: './deploy.sh', safe: false },
+  ]);
 });
 
 test('requireApproval can still gate Edit/Write/Bash explicitly', async (t) => {

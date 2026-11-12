@@ -26,6 +26,23 @@ function cliToolMode(workspace = {}) {
 }
 
 /** Full-permission CLI mode asks before every built-in write/command. */
+function createCliBashApprover() {
+  return async ({ command, safe } = {}) => {
+    if (safe) return true;
+    if (!process.stdin.isTTY) {
+      log.error(`[bash] 非交互模式拒绝非构建/测试命令：${command}`);
+      return false;
+    }
+    const rl = createInterface({ input: process.stdin, output: process.stderr });
+    try {
+      const answer = await rl.question(`[确认] 允许执行非构建/测试命令？\n${command}\n[y/N] `);
+      return /^y(?:es)?$/i.test(answer.trim());
+    } finally {
+      rl.close();
+    }
+  };
+}
+
 const HELP = `DebugCopilot CLI
 
 Usage:
@@ -389,6 +406,7 @@ export async function main(argv = process.argv.slice(2), { root = ROOT } = {}) {
           allowedRoots,
           writeRoots,
           toolMode: toolMode === 'full' ? 'full' : 'readonly',
+          bashApproval: toolMode === 'full' ? createCliBashApprover() : null,
         });
 
     // CLI has no safeStorage: encrypted passwords cannot be decrypted here.

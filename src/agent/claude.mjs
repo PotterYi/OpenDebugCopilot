@@ -6,6 +6,7 @@ import { AppError } from '../core/errors.mjs';
 import { normalizeFixList } from '../core/fixes.mjs';
 import { summarizeToolCalls } from '../core/tool-calls.mjs';
 import { redactHeaders, redactValue } from '../core/redact.mjs';
+import { isSafeBashCommand } from '../core/bash-policy.mjs';
 
 // Never use []: SDK isolation mode drops the user's Claude Code settings,
 // including auth env vars such as ANTHROPIC_AUTH_TOKEN/ANTHROPIC_BASE_URL.
@@ -87,6 +88,7 @@ export function createToolPermission(allowedRoots = [], {
   allowBash = false,
   approve = null,
   requireApproval = false,
+  bashApproval = null,
   onBeforeWrite = null,
 } = {}) {
   const roots = [...new Set((allowedRoots.length > 0 ? allowedRoots : [cwd])
@@ -186,6 +188,20 @@ export function createToolPermission(allowedRoots = [], {
     if (toolName === 'Bash') {
       const command = String(input.command ?? '').trim();
       if (!command) return { behavior: 'deny', message: 'Bash 命令为空。' };
+      const safe = isSafeBashCommand(command);
+      if (typeof bashApproval === 'function') {
+        let allowed = false;
+        try {
+          allowed = await bashApproval({ command, safe });
+        } catch {
+          allowed = false;
+        }
+        if (!allowed) {
+          return { behavior: 'deny', message: '危险 Bash 命令未获确认。' };
+        }
+      } else if (!safe) {
+        return { behavior: 'deny', message: '危险 Bash 命令未配置确认回调，已拒绝。' };
+      }
       if (requireApproval) return askApproval('Bash', input);
       return { behavior: 'allow', updatedInput: input };
     }
@@ -696,8 +712,8 @@ export const FULL_MODE_PROMPT = `
 你拥有最高权限：可以直接修改当前工作区文件并执行 Bash 命令，不再逐次请求用户确认。请谨慎操作，避免破坏性命令。
 - 修改前先读取文件和引用，尽量给出最小、可编译的改动。
 - 直接修改并验证完成后，不要再把同样的修改重复写进 fixes；只有未直接修改的方案才放进 fixes。
-- Bash 仅在必要时用于编译/测试或环境检查；不要访问当前工作区之外的路径，避免安装依赖、部署、推送、长时间运行或破坏性操作。
-- 用户拒绝的操作不要重复尝试。`;
+- Bash 仅在必要时用于编译/测试或环境检查；构建/测试工具链（mvn、npm、pytest 等）会直接执行，其他命令需要用户额外确认，非交互环境会被拒绝。
+- 不要访问当前工作区之外的路径，避免安装依赖、部署、推送、长时间运行或破坏性操作；用户拒绝的操作不要重复尝试。`;
 
 export function validationStrategyPrompt(toolMode = 'readonly') {
   if (toolMode === 'sandbox' || toolMode === 'full') {
@@ -727,6 +743,7 @@ export function createClaudeAgent({
   toolMode = 'readonly',
   onBeforeWrite = null,
   onAfterWrite = null,
+  bashApproval = null,
   auth = null,
 } = {}) {
   let scope = {
@@ -736,6 +753,7 @@ export function createClaudeAgent({
     toolMode,
     onBeforeWrite,
     onAfterWrite,
+    bashApproval,
     auth,
     systemPromptSuffix: '',
   };
@@ -759,6 +777,7 @@ export function createClaudeAgent({
         allowWrite: scope.toolMode !== 'readonly',
         writeRoots: scope.writeRoots,
         allowBash: scope.toolMode === 'full',
+        bashApproval: scope.bashApproval,
         onBeforeWrite: scope.onBeforeWrite,
       });
       const builtinTools = scope.toolMode === 'full'
@@ -909,6 +928,7 @@ export function createClaudeAgent({
         allowWrite: scope.toolMode !== 'readonly',
         writeRoots: scope.writeRoots,
         allowBash: scope.toolMode === 'full',
+        bashApproval: scope.bashApproval,
         onBeforeWrite: scope.onBeforeWrite,
       });
       const builtinTools = scope.toolMode === 'full'
