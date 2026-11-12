@@ -236,6 +236,8 @@ test('full mode reuses the in-place session instead of editing unmanaged files',
   await writeFile(file, 'old\n', 'utf8');
   await exec('git', ['-C', repo, 'add', '.']);
   await exec('git', ['-C', repo, 'commit', '-q', '-m', 'base']);
+  // An unrelated dirty/untracked file must never be copied into baseline.
+  await writeFile(path.join(repo, 'dirty-secret.txt'), 'do-not-copy\n', 'utf8');
   t.after(async () => { await rm(TMP, { recursive: true, force: true }); });
 
   let scopeToolMode = null;
@@ -280,6 +282,9 @@ test('full mode reuses the in-place session instead of editing unmanaged files',
   assert.equal(result.agent.verification.mode, 'in-place');
   assert.equal(await readFile(file, 'utf8'), 'full-edit\n');
   await access(path.join(outcome.runDir, 'baseline'));
+  await access(path.join(outcome.runDir, 'baseline', 'prewrite'));
+  // Only written files are backed up; no startup dirty-file snapshot exists.
+  await assert.rejects(access(path.join(outcome.runDir, 'baseline', 'start')));
   await access(path.join(outcome.runDir, 'workspace-journal.json'));
 
   await outcome.workspaceSession.discard();

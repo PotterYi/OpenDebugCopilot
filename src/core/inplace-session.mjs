@@ -85,6 +85,10 @@ async function writeJsonAtomic(file, value) {
   await rename(tmp, file);
 }
 
+// Deliberately no startup snapshot of dirty/untracked files. Only files that
+// are actually written get a prewrite backup. Do not reintroduce a
+// snapshotStart-style copy: it would leak unrelated secrets from the whole
+// worktree into runs/<runId>/baseline.
 function createBaseline({ runDir, roots, onChange = null }) {
   const baselineDir = path.join(runDir, 'baseline');
   const touched = new Map();
