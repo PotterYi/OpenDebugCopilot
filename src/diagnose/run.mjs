@@ -349,7 +349,11 @@ async function diagnoseWithFired({
   let sandboxUsed = false;
   let inPlaceUsed = false;
   let workspaceNotice = null;
-  if (sandbox && agent.id !== 'mock' && typeof agent.configureScope === 'function') {
+  // Full mode always runs through the same in-place session as sandbox mode;
+  // Bash is the only extra capability. This guarantees journal/baseline
+  // coverage even if a caller forgets to pass sandbox:true.
+  const useWorkspaceSession = agent.id !== 'mock' && (sandbox || toolMode === 'full');
+  if (useWorkspaceSession && typeof agent.configureScope === 'function') {
     const writableRoots = [
       paths.sourceRoot ? { key: 'backend', name: 'backend', root: paths.sourceRoot } : null,
       frontendFixRoot ? { key: 'frontend', name: 'frontend', root: frontendFixRoot } : null,
@@ -557,14 +561,6 @@ async function diagnoseWithFired({
 
   await runLog.info(`agent=${agent.id} mode=${agent.id === 'mock' ? 'mock' : 'live'}`);
   let wroteWorkspace = false;
-  if (!sandbox && toolMode === 'full' && agent.id !== 'mock' && typeof agent.configureScope === 'function') {
-    // Full-permission mode has no sandbox session to introspect; record writes
-    // so the post-run compile gate can skip a check when nothing changed.
-    agent.configureScope({
-      onBeforeWrite: () => { wroteWorkspace = true; },
-      onAfterWrite: () => { wroteWorkspace = true; },
-    });
-  }
   const BUILTIN_TOOL_LABELS = {
     Read: '读取文件',
     Grep: '搜索项目引用',

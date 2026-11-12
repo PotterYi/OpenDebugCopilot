@@ -70,85 +70,6 @@ test('runWorkspaceCheck skips with an explicit reason when no command is detecte
   assert.match(skipped.reason, /未配置验证命令/);
 });
 
-test('full-permission diagnosis gates on a forced workspace compile check', async (t) => {
-  const { sourceRoot, file } = await prepare(t);
-  const agent = {
-    id: 'full-agent',
-    scope: null,
-    configureScope(next) { this.scope = { ...(this.scope ?? {}), ...next }; },
-    async diagnose() {
-      await this.scope.onBeforeWrite({ filePath: file });
-      await writeFile(file, 'new\n', 'utf8');
-      await this.scope.onAfterWrite({ filePath: file });
-      return {
-        conclusion: '已直接修改工作区',
-        evidenceRefs: [{ type: 'request', ref: 'request' }],
-        confidence: 0.8,
-        needsMoreInfo: [],
-        fixes: [],
-      };
-    },
-  };
-
-  const { result } = await runCaptureDiagnosis(captureInput(), {
-    workspace: {
-      sourceRoot,
-      logfiles: [],
-      window: { beforeMs: 1000, afterMs: 1000 },
-      agent: { toolMode: 'full' },
-    },
-    root: TMP,
-    runsDir: path.join(TMP, 'runs'),
-    agent,
-    verifyCommand: 'node -e "process.exit(1)"',
-    sandbox: false,
-  });
-
-  assert.equal(result.agent.verification.status, 'failed');
-  assert.equal(result.agent.verification.mode, 'full');
-  assert.match(result.agent.verification.error, /编译\/测试验证失败/);
-  assert.equal(result.meta.verificationStatus, 'failed');
-  assert.equal(result.gates.ok, false);
-  assert.ok(result.gates.checks.some((check) => check.name === 'compile-self-check' && check.ok === false));
-  assert.ok(result.agent.needsMoreInfo.some((item) => item.includes('未通过编译/测试')));
-  assert.equal(await readFile(file, 'utf8'), 'new\n');
-});
-
-test('full-permission diagnosis skips the gate when nothing was written', async (t) => {
-  const { sourceRoot } = await prepare(t);
-  const agent = {
-    id: 'full-agent',
-    configureScope() {},
-    async diagnose() {
-      return {
-        conclusion: '只做分析，没有修改',
-        evidenceRefs: [{ type: 'request', ref: 'request' }],
-        confidence: 0.8,
-        needsMoreInfo: [],
-        fixes: [],
-      };
-    },
-  };
-
-  const { result } = await runCaptureDiagnosis(captureInput(), {
-    workspace: {
-      sourceRoot,
-      logfiles: [],
-      window: { beforeMs: 1000, afterMs: 1000 },
-      agent: { toolMode: 'full' },
-    },
-    root: TMP,
-    runsDir: path.join(TMP, 'runs'),
-    agent,
-    verifyCommand: 'node -e "process.exit(1)"',
-    sandbox: false,
-  });
-
-  assert.equal(result.agent.verification.status, 'skipped');
-  assert.match(result.agent.verification.reason, /没有直接写入/);
-  assert.equal(result.gates.ok, true);
-});
-
 test('in-place compile failure is surfaced as verification and turns gates red', async (t) => {
   await rm(TMP, { recursive: true, force: true });
   const repo = path.join(TMP, 'repo');
@@ -271,7 +192,8 @@ test('full mode reuses the in-place session instead of editing unmanaged files',
     runsDir: path.join(TMP, 'runs'),
     agent,
     verifyCommand: 'node -e "process.exit(0)"',
-    sandbox: true,
+    // Full mode must use the in-place session even when the caller omits it.
+    sandbox: false,
   });
   const { result } = outcome;
 
