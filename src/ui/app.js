@@ -1,5 +1,5 @@
 import { api } from './api.js';
-import { buildProgressView, upsertProgressStep } from './progress-state.mjs';
+import { buildProgressView, resolveFollowUpRunId, upsertProgressStep } from './progress-state.mjs';
 import { deriveCandidateRules } from './routing-assist.mjs';
 import { formatBodyText } from './format-body.mjs';
 import { REQUEST_FILTERS, matchesRequestFilter } from './request-filter.mjs';
@@ -1268,17 +1268,23 @@ async function runFollowUp(view, input, button) {
   const state = { status: 'running', question, steps: [], startedAt: Date.now(), error: null };
   upsertProgressStep(state.steps, {
     id: 'client-start',
-    label: '开始继续诊断',
+    label: 'AI 正在继续分析',
     status: 'start',
   });
   followUpStates.set(runId, state);
-  input.value = '';
+  // Keep the user's text in the box while the turn is running.
   input.disabled = true;
   button.disabled = true;
   button.textContent = '继续诊断中…';
   showMessage(view, '继续诊断中…');
   const progressEl = view.container.querySelector('.followup-progress');
-  if (progressEl) renderProgressSteps(progressEl, state.steps);
+  if (progressEl) {
+    renderProgressSteps(progressEl, state.steps, {
+      running: true,
+      startedAt: state.startedAt,
+      timeoutMs: Number(configCache?.workspace?.agent?.timeoutMs ?? 0) || 0,
+    });
+  }
 
   try {
     const result = await api.followUp({ runId, question, mock: false });
@@ -1324,6 +1330,7 @@ function buildChatSection(view) {
   const send = el('button', null, running ? '继续诊断中…' : '继续诊断');
   send.type = 'button';
   input.disabled = running;
+  if (running && followState?.question) input.value = followState.question;
   send.disabled = running;
   send.addEventListener('click', () => runFollowUp(view, input, send));
   input.addEventListener('keydown', (event) => {
@@ -3443,10 +3450,14 @@ api.onDiagnoseProgress((progress) => {
 });
 
 api.onFollowUpProgress((progress) => {
-  const runId = String(progress?.runId ?? '');
+  const runId = resolveFollowUpRunId(progress, followUpStates);
   if (!runId) return;
   const state = followUpStates.get(runId);
   if (!state || state.status !== 'running') return;
+  if (progress.id && progress.id !== 'client-start') {
+    const start = state.steps.find((step) => step.id === 'client-start');
+    if (start?.status === 'start') start.status = 'done';
+  }
   upsertProgressStep(state.steps, progress);
   if (!isCurrentRun(runId)) return;
   const progressEl = currentRunView.container.querySelector('.followup-progress');

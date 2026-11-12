@@ -873,8 +873,11 @@ test('history runs behave as an accordion', {
       await waitFor(() => report.textContent.includes('A结论'));
       restoredProgress = {
         steps: report.querySelectorAll('.followup-progress .diagnose-step').length,
+        labels: [...report.querySelectorAll('.followup-progress .diagnose-step-label')]
+          .map((node) => node.textContent),
         sendDisabled: report.querySelector('.chat-input-row button')?.disabled === true,
         inputDisabled: report.querySelector('.chat-input')?.disabled === true,
+        inputValue: report.querySelector('.chat-input')?.value ?? '',
       };
       await waitFor(() => report.textContent.includes('继续诊断：补充信息'));
       const chatAfter = report.querySelector('.chat-panel');
@@ -930,7 +933,7 @@ test('history runs behave as an accordion', {
       rejected = {
         errorShown: message.textContent.includes('继续诊断失败'),
         spinnerSteps: report.querySelectorAll('.followup-progress .diagnose-step.start').length,
-        allStepsStopped: steps.length > 0 && steps.every((step) => step.classList.contains('error')),
+        allStepsStopped: steps.length > 0 && steps.every((step) => !step.classList.contains('start')),
         buttonEnabled: Boolean(sendAfter && !sendAfter.disabled),
         buttonLabel: sendAfter?.textContent ?? '',
       };
@@ -959,8 +962,17 @@ test('history runs behave as an accordion', {
   const smoke = JSON.parse(match[1]);
   const { opened, ...restResult } = smoke.uiEvalResult;
   assert.ok(opened.restoredProgress?.steps > 0, JSON.stringify(opened));
+  assert.ok(
+    opened.restoredProgress?.labels?.some((label) => label.includes('整理上一轮诊断')),
+    JSON.stringify(opened.restoredProgress),
+  );
+  assert.ok(
+    opened.restoredProgress?.labels?.some((label) => label.includes('AI 正在继续分析') || label.includes('AI 正在思考')),
+    JSON.stringify(opened.restoredProgress),
+  );
   assert.equal(opened.restoredProgress?.sendDisabled, true);
   assert.equal(opened.restoredProgress?.inputDisabled, true);
+  assert.equal(opened.restoredProgress?.inputValue, '补充信息');
   assert.equal(opened.concurrent?.ok, false);
   assert.match(opened.concurrent?.message ?? '', /正在继续诊断中/);
   delete opened.restoredProgress;

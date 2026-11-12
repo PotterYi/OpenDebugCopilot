@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildProgressView, upsertProgressStep } from '../../src/ui/progress-state.mjs';
+import { buildProgressView, resolveFollowUpRunId, upsertProgressStep } from '../../src/ui/progress-state.mjs';
 
 test('a done event without label keeps the start label', () => {
   const steps = [];
@@ -73,4 +73,16 @@ test('does not add a footer when the run is not running', () => {
   assert.equal(view.footer, null);
   assert.equal(view.visibleSteps.length, 1);
   assert.equal(view.hiddenCount, 0);
+});
+
+test('routes legacy follow-up progress without runId when unambiguous', () => {
+  const states = new Map([
+    ['run-a', { status: 'running' }],
+    ['run-b', { status: 'done' }],
+  ]);
+  assert.equal(resolveFollowUpRunId({ id: 'prepare' }, states), 'run-a');
+  assert.equal(resolveFollowUpRunId({ id: 'prepare', runId: 'run-b' }, states), 'run-b');
+
+  states.set('run-c', { status: 'running' });
+  assert.equal(resolveFollowUpRunId({ id: 'prepare' }, states), '');
 });

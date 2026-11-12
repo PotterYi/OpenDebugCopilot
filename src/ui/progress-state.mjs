@@ -23,6 +23,15 @@ export function upsertProgressStep(steps, event) {
   }
 }
 
+export function resolveFollowUpRunId(progress, states) {
+  const explicit = String(progress?.runId ?? '');
+  if (explicit) return explicit;
+  // Older main processes did not attach runId. Route only when unambiguous.
+  const running = [...(states?.entries?.() ?? [])]
+    .filter(([, state]) => state?.status === 'running');
+  return running.length === 1 ? String(running[0][0]) : '';
+}
+
 export const MAX_VISIBLE_PROGRESS_STEPS = 10;
 
 /**
