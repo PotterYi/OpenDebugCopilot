@@ -41,6 +41,7 @@ const ROOT = path.resolve(HERE, '../../..');
 const HOST = '127.0.0.1';
 const workspaceSessions = new Map();
 const followUpRunning = new Set();
+let activeService = null;
 
 app.disableHardwareAcceleration();
 app.setName('DebugCopilot');
@@ -115,7 +116,13 @@ process.on('exit', () => {
 
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.on(signal, () => {
-    shutdownAndQuit().catch(() => app.exit(1));
+    // No interactive prompt on signals: default to keeping pending edits.
+    const keep = activeService
+      ? keepPendingWorkspaceSessions(activeService).catch(() => {})
+      : Promise.resolve();
+    keep.finally(() => {
+      shutdownAndQuit().catch(() => app.exit(1));
+    });
   });
 }
 
@@ -212,6 +219,42 @@ async function finalizeWorkspaceSession(service, runId, action) {
     restored: outcome?.restored ?? [],
     workspaceSession: result?.agent?.workspaceSession ?? null,
   };
+}
+
+/**
+ * No-confirmation exit policy: keep pending workspace changes by default so an
+ * app close/quit never silently discards the agent's edits.
+ */
+async function keepPendingWorkspaceSessions(service) {
+  if (!service) return { kept: 0, failures: [] };
+  let pending = [];
+  try {
+    pending = await listPendingWorkspaceJournals(service.runsRoot);
+  } catch {
+    pending = [];
+  }
+  const runIds = new Set([
+    ...pending.map((session) => String(session.runId)),
+    ...workspaceSessions.keys(),
+  ]);
+  const failures = [];
+  let kept = 0;
+  for (const runId of runIds) {
+    try {
+      const result = await finalizeWorkspaceSession(service, runId, 'keep');
+      if (result?.ok) kept += 1;
+      else failures.push({ runId, error: result?.error ?? '保留工作区修改失败' });
+    } catch (error) {
+      failures.push({ runId, error: error?.message ?? String(error) });
+    }
+  }
+  if (runIds.size > 0) {
+    log.info(
+      `[workspace] kept ${kept} pending session(s) on exit`
+        + `${failures.length ? `; failures=${failures.length}` : ''}`,
+    );
+  }
+  return { kept, failures };
 }
 
 function agentToolMode(workspace = {}) {
@@ -2101,6 +2144,7 @@ async function bootstrap() {
     configDir: effectiveConfigDir,
     secretCodec: createSecretCodec(),
   });
+  activeService = service;
   const initial = await service.getConfig();
   let host = null;
   let router = null;
@@ -2247,13 +2291,25 @@ async function bootstrap() {
           type: 'warning',
           title: '还有未收尾的工作区修改',
           message: `检测到 ${sessions.length} 个诊断修改了真实工作区，但尚未选择保留或丢弃。`,
-          detail: '建议先返回处理，逐条保留或丢弃，避免半改状态被误提交。',
-          buttons: ['返回处理', '仍要退出'],
+          detail: '无确认退出时默认保留这些修改，避免丢失；之后可在历史页查看。若需丢弃，请先返回处理。',
+          buttons: ['返回处理', '退出并保留修改'],
           defaultId: 0,
           cancelId: 0,
           noLink: true,
         });
         if (response === 1) {
+          const kept = await keepPendingWorkspaceSessions(service);
+          if (kept.failures.length > 0) {
+            await dialog.showMessageBox(window, {
+              type: 'error',
+              title: '无法保留全部工作区修改',
+              message: '退出已取消，请返回处理后重试。',
+              detail: kept.failures.map((item) => `${item.runId}: ${item.error}`).join('\n'),
+              buttons: ['知道了'],
+              noLink: true,
+            });
+            return;
+          }
           closeConfirmed = true;
           if (!window.isDestroyed()) window.close();
         } else if (!window.isDestroyed()) {
@@ -2311,12 +2367,59 @@ if (!hasSingleInstanceLock) {
     });
   }
 
+  let quitPromptOpen = false;
   app.on('before-quit', (event) => {
     if (shutdownDone) return;
     event.preventDefault();
-    shutdownAndQuit().catch(() => {
+    if (quitPromptOpen) return;
+    if (smoke || !activeService) {
+      shutdownAndQuit().catch(() => {
+        shutdownDone = true;
+        app.exit(1);
+      });
+      return;
+    }
+    quitPromptOpen = true;
+    (async () => {
+      const service = activeService;
+      const sessions = await listPendingWorkspaceJournals(service.runsRoot).catch(() => []);
+      if (sessions.length > 0) {
+        const options = {
+          type: 'warning',
+          title: '还有未收尾的工作区修改',
+          message: `检测到 ${sessions.length} 个诊断修改了真实工作区，但尚未选择保留或丢弃。`,
+          detail: '无确认退出时默认保留这些修改，避免丢失；之后可在历史页查看。若需丢弃，请先返回处理。',
+          buttons: ['返回处理', '退出并保留修改'],
+          defaultId: 0,
+          cancelId: 0,
+          noLink: true,
+        };
+        const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
+        const { response } = win
+          ? await dialog.showMessageBox(win, options)
+          : await dialog.showMessageBox(options);
+        if (response === 0) return;
+        const kept = await keepPendingWorkspaceSessions(service);
+        if (kept.failures.length > 0) {
+          const errorOptions = {
+            type: 'error',
+            title: '无法保留全部工作区修改',
+            message: '退出已取消，请返回处理后重试。',
+            detail: kept.failures.map((item) => `${item.runId}: ${item.error}`).join('\n'),
+            buttons: ['知道了'],
+            noLink: true,
+          };
+          if (win) await dialog.showMessageBox(win, errorOptions);
+          else await dialog.showMessageBox(errorOptions);
+          return;
+        }
+      }
+      await shutdownAndQuit();
+    })().catch(() => {
       shutdownDone = true;
       app.exit(1);
+    }).finally(() => {
+      quitPromptOpen = false;
     });
   });
 
