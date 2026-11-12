@@ -277,6 +277,7 @@ async function diagnoseWithFired({
   };
 
   const extraSourceRoots = Array.isArray(scenario.extraSourceRoots) ? scenario.extraSourceRoots : [];
+  const toolMode = workspace.agent?.toolMode;
   const runLog = createRunLog(runDir);
   await runLog.info(`start scenario=${scenario.name} driver=${scenario.driverKind} question=${question || '-'}`);
   progress('prepare', '整理请求与证据', 'start');
@@ -382,14 +383,23 @@ async function diagnoseWithFired({
         cwd: inPlace.cwd,
         allowedRoots: inPlace.allowedRoots,
         writeRoots: inPlace.writeRoots,
-        toolMode: 'sandbox',
+        // Full mode uses the same in-place session; only Bash is additionally
+        // enabled by the permission layer.
+        toolMode: toolMode === 'full' ? 'full' : 'sandbox',
         systemPromptSuffix: inPlace.systemPromptSuffix,
         onBeforeWrite: inPlace.onBeforeWrite,
         onAfterWrite: inPlace.onAfterWrite,
       });
       sandboxRunCommand = inPlace.runCommand;
       workspaceNotice = { mode: 'in-place', code: 'ok', message: '原地工作区已就绪' };
-      progress('sandbox', '原地工作区已就绪，开放编辑与测试', 'done', inPlace.cwd);
+      progress(
+        'sandbox',
+        toolMode === 'full'
+          ? '原地工作区已就绪，开放编辑、Bash 与测试'
+          : '原地工作区已就绪，开放编辑与测试',
+        'done',
+        inPlace.cwd,
+      );
       await runLog.info(`in-place session repos=${inPlace.repos.length}`);
     } else if (inPlace?.reason === 'not-git') {
       try {
@@ -400,7 +410,7 @@ async function diagnoseWithFired({
           cwd: sandboxContext.dir,
           allowedRoots: [...sandboxWriteRoots, ...readOnlyRoots.map((entry) => entry.root)],
           writeRoots: sandboxWriteRoots,
-          toolMode: 'sandbox',
+          toolMode: toolMode === 'full' ? 'full' : 'sandbox',
           systemPromptSuffix: sandboxPromptFor(sandboxContext),
         });
         sandboxRunCommand = createSandboxCommandRunner({
@@ -546,7 +556,6 @@ async function diagnoseWithFired({
   };
 
   await runLog.info(`agent=${agent.id} mode=${agent.id === 'mock' ? 'mock' : 'live'}`);
-  const toolMode = workspace.agent?.toolMode;
   let wroteWorkspace = false;
   if (!sandbox && toolMode === 'full' && agent.id !== 'mock' && typeof agent.configureScope === 'function') {
     // Full-permission mode has no sandbox session to introspect; record writes
@@ -657,12 +666,16 @@ async function diagnoseWithFired({
           }
         }
         agentResult.fixes = [...previewedExtras, ...extractedFixes];
-        const selfCheck = (extracted.changedFiles?.length ?? 0) > 0
+        // Full mode can also modify files via Bash, which is not part of the
+        // Edit/Write snapshot map; use the tool-level write flag as fallback.
+        const hasWorkspaceChanges = (extracted.changedFiles?.length ?? 0) > 0
+          || (toolMode === 'full' && wroteWorkspace);
+        const selfCheck = hasWorkspaceChanges
           ? await sandboxContext.runSelfCheck()
           : {
               status: 'skipped',
               ok: true,
-              reason: '本轮没有修改工作区文件',
+              reason: '本轮没有检测到工作区修改',
               commands: [],
               durationMs: 0,
               output: '',

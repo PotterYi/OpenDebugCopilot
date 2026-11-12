@@ -906,7 +906,7 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
         activeDatabaseId: databaseConfig.activeId,
         approveWrite: createWriteApprover(event),
         verifyCommand: workspace.verifyCommand ?? '',
-        sandbox: toolMode === 'sandbox',
+        sandbox: toolMode === 'sandbox' || toolMode === 'full',
         onProgress: sendProgress,
       };
       const outcome = element
@@ -994,7 +994,7 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
       if (typeof agent.followUp !== 'function') throw new Error('当前 Agent 不支持继续诊断');
 
       let followRunCommand = null;
-      if (toolMode === 'sandbox'
+      if ((toolMode === 'sandbox' || toolMode === 'full')
         && agent.id !== 'mock'
         && typeof agent.configureScope === 'function') {
         const fixRoots = result.meta?.fixRoots ?? {};
@@ -1017,10 +1017,12 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
             roots: sandboxRoots,
             dirName: `sandbox-followup-${Date.now().toString(36)}`,
           });
+          const followSandboxRoots = followSandbox.roots.map((entry) => entry.sandboxRoot);
           agent.configureScope({
             cwd: followSandbox.dir,
-            allowedRoots: followSandbox.roots.map((entry) => entry.sandboxRoot),
-            toolMode: 'sandbox',
+            allowedRoots: followSandboxRoots,
+            writeRoots: followSandboxRoots,
+            toolMode: toolMode === 'full' ? 'full' : 'sandbox',
             systemPromptSuffix: sandboxPromptFor(followSandbox),
           });
           followRunCommand = createSandboxCommandRunner({

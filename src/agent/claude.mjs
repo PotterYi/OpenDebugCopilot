@@ -693,10 +693,10 @@ export function usageFromResult(resultMessage) {
 export const FULL_MODE_PROMPT = `
 
 # 完全权限模式
-你拥有最高权限：可以直接修改真实项目文件并执行 Bash 命令，不再逐次请求用户确认。请谨慎操作，避免破坏性命令。
+你拥有最高权限：可以直接修改当前工作区文件并执行 Bash 命令，不再逐次请求用户确认。请谨慎操作，避免破坏性命令。
 - 修改前先读取文件和引用，尽量给出最小、可编译的改动。
 - 直接修改并验证完成后，不要再把同样的修改重复写进 fixes；只有未直接修改的方案才放进 fixes。
-- 执行 Bash 时只运行必要的编译/测试命令，避免安装依赖、部署、推送、长时间运行或破坏性操作。
+- Bash 仅在必要时用于编译/测试或环境检查；不要访问当前工作区之外的路径，避免安装依赖、部署、推送、长时间运行或破坏性操作。
 - 用户拒绝的操作不要重复尝试。`;
 
 export function validationStrategyPrompt(toolMode = 'readonly') {

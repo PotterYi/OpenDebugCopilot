@@ -408,7 +408,7 @@ export async function main(argv = process.argv.slice(2), { root = ROOT } = {}) {
       activeDatabaseId: databaseConfig.activeId,
       verifyCommand: workspace.verifyCommand ?? '',
       workspace,
-      sandbox: toolMode === 'sandbox',
+      sandbox: toolMode === 'sandbox' || toolMode === 'full',
     });
     const { result, runDir, workspaceSession } = outcome;
     let workspaceUndecided = false;

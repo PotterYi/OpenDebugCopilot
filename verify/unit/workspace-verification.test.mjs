@@ -224,3 +224,65 @@ test('sandbox checks cannot escape the sandbox project root', async (t) => {
   assert.equal(await readFile(path.join(sandbox, 'ran'), 'utf8'), 'x');
   await assert.rejects(access(path.join(outside, 'ran')));
 });
+
+test('full mode reuses the in-place session instead of editing unmanaged files', async (t) => {
+  await rm(TMP, { recursive: true, force: true });
+  const repo = path.join(TMP, 'repo');
+  const file = path.join(repo, 'OrderService.java');
+  await mkdir(repo, { recursive: true });
+  await exec('git', ['-C', repo, 'init', '-q']);
+  await exec('git', ['-C', repo, 'config', 'user.email', 'test@example.com']);
+  await exec('git', ['-C', repo, 'config', 'user.name', 'Test']);
+  await writeFile(file, 'old\n', 'utf8');
+  await exec('git', ['-C', repo, 'add', '.']);
+  await exec('git', ['-C', repo, 'commit', '-q', '-m', 'base']);
+  t.after(async () => { await rm(TMP, { recursive: true, force: true }); });
+
+  let scopeToolMode = null;
+  const agent = {
+    id: 'full-agent',
+    scope: null,
+    configureScope(next) { this.scope = { ...(this.scope ?? {}), ...next }; },
+    async diagnose() {
+      scopeToolMode = this.scope.toolMode;
+      await this.scope.onBeforeWrite({ filePath: file });
+      await writeFile(file, 'full-edit\n', 'utf8');
+      await this.scope.onAfterWrite({ filePath: file });
+      return {
+        conclusion: '完全权限原地修改',
+        evidenceRefs: [{ type: 'request', ref: 'request' }],
+        confidence: 0.8,
+        needsMoreInfo: [],
+        fixes: [],
+      };
+    },
+  };
+
+  const outcome = await runCaptureDiagnosis(captureInput(), {
+    workspace: {
+      sourceRoot: repo,
+      logfiles: [],
+      window: { beforeMs: 1000, afterMs: 1000 },
+      agent: { toolMode: 'full' },
+    },
+    root: TMP,
+    runsDir: path.join(TMP, 'runs'),
+    agent,
+    verifyCommand: 'node -e "process.exit(0)"',
+    sandbox: true,
+  });
+  const { result } = outcome;
+
+  assert.equal(scopeToolMode, 'full');
+  assert.equal(result.agent.workspaceSession.status, 'pending');
+  assert.equal(result.agent.workspaceSession.mode, 'in-place');
+  assert.equal(result.agent.workspaceSession.selfCheck.status, 'passed');
+  assert.equal(result.agent.verification.mode, 'in-place');
+  assert.equal(await readFile(file, 'utf8'), 'full-edit\n');
+  await access(path.join(outcome.runDir, 'baseline'));
+  await access(path.join(outcome.runDir, 'workspace-journal.json'));
+
+  await outcome.workspaceSession.discard();
+  assert.equal(await readFile(file, 'utf8'), 'old\n');
+  await assert.rejects(access(path.join(outcome.runDir, 'baseline')));
+});
