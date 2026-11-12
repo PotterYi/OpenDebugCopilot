@@ -8,3 +8,4 @@ configs/profiles.json
 configs/databases.json
 configs/agent-auth.json
 logs/
+*.bundle
