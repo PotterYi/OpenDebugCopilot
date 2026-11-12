@@ -1,13 +1,10 @@
-import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { applyFix, revertFix } from './fix-apply.mjs';
 import { resolveFrontendProjectRoot } from './frontend-service.mjs';
 import { runVerifyCommand } from '../app/electron/verify-command.mjs';
 
 const DEFAULT_TIMEOUT_MS = 180_000;
 const MAX_RESULT_OUTPUT = 12_000;
-
-let validationQueue = Promise.resolve();
 
 async function exists(target) {
   try {
@@ -306,129 +303,4 @@ export function applyVerificationGate(gates, verification, { name = 'compile-sel
   gates.checks.push(check);
   gates.ok = gates.checks.every((item) => item.ok !== false || item.severity === 'warn');
   return gates;
-}
-
-async function runValidation(options) {
-  const {
-    fixes = [],
-    roots = {},
-    verifyCommand = '',
-    workspace = {},
-    projectRoot = process.cwd(),
-    runDir = null,
-    timeoutMs = DEFAULT_TIMEOUT_MS,
-  } = options;
-
-  const editFixes = fixes.filter((fix) => ['edit', 'create', 'delete'].includes(fix?.kind) && fix?.preview?.status === 'ready');
-  if (editFixes.length === 0) {
-    return { status: 'skipped', ok: true, reason: '没有可应用的代码修改', commands: [], applied: 0 };
-  }
-  const commands = await resolveValidationCommands({
-    fixes: editFixes,
-    roots,
-    verifyCommand,
-    workspace,
-    projectRoot,
-  });
-  if (commands.length === 0) {
-    return {
-      status: 'skipped',
-      ok: true,
-      reason: '未配置验证命令，且未识别到可用的编译命令',
-      commands: [],
-      applied: 0,
-    };
-  }
-
-  const baseDir = runDir ?? path.resolve('.tmp');
-  const backupDir = path.join(baseDir, `self-check-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`);
-  const applied = [];
-  const results = [];
-  const logParts = [];
-  let applyError = null;
-  let revertError = null;
-
-  try {
-    await mkdir(backupDir, { recursive: true });
-    for (let index = 0; index < editFixes.length; index += 1) {
-      const backup = path.join(backupDir, `fix-${index}.orig`);
-      try {
-        await applyFix({ fix: editFixes[index], roots, backupPath: backup });
-        applied.push({ fix: editFixes[index], backup });
-      } catch (error) {
-        applyError = `应用修改失败：${error?.message ?? error}`;
-        break;
-      }
-    }
-
-    if (!applyError) {
-      for (const target of commands) {
-        const result = await runVerifyCommand({
-          command: target.command,
-          cwd: target.cwd,
-          timeoutMs,
-        });
-        results.push(result);
-        logParts.push(`$ ${result.command}\n(cwd: ${target.cwd})\n${result.output}`);
-        if (!result.ok) break;
-      }
-    } else {
-      logParts.push(applyError);
-    }
-  } finally {
-    for (const item of [...applied].reverse()) {
-      try {
-        await revertFix({ fix: item.fix, roots, backupPath: item.backup });
-      } catch (error) {
-        revertError = `回滚修改失败：${error?.message ?? error}`;
-      }
-    }
-    if (revertError) {
-      logParts.push(`${revertError}；原文件备份保留在 ${backupDir}`);
-    } else {
-      await rm(backupDir, { recursive: true, force: true }).catch(() => {});
-    }
-  }
-
-  const failedRun = results.find((result) => !result.ok) ?? null;
-  const error = applyError
-    ?? revertError
-    ?? (failedRun
-      ? (failedRun.timedOut ? `编译自测超时：${failedRun.command}` : `编译自测失败：${failedRun.command}`)
-      : null);
-  const status = error ? 'failed' : 'passed';
-  const output = tail(logParts.join('\n\n'));
-  if (runDir) {
-    await writeFile(path.join(runDir, 'self-check.log'), `${status}\n\n${logParts.join('\n\n')}`, 'utf8')
-      .catch(() => {});
-  }
-
-  return {
-    status,
-    ok: !error,
-    error,
-    applied: applied.length,
-    commands: results.map((result) => ({
-      command: result.command,
-      cwd: result.cwd,
-      ok: result.ok,
-      exitCode: result.exitCode,
-      timedOut: result.timedOut,
-      durationMs: result.durationMs,
-    })),
-    durationMs: results.reduce((sum, result) => sum + (result.durationMs ?? 0), 0),
-    output,
-  };
-}
-
-/**
- * Apply all ready fixes, run the project self-check, then always restore the
- * original files. Validations are serialized so concurrent diagnoses cannot
- * mutate the same working tree at the same time.
- */
-export function validateFixes(options = {}) {
-  const run = () => runValidation(options);
-  const next = validationQueue.then(run, run);
-  validationQueue = next.catch(() => {});
-  return next;
 }
