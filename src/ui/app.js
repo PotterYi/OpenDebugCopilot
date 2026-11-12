@@ -1579,7 +1579,39 @@ function renderWorkspaceSession(session, view, runId, { readOnly = false } = {})
   }
   block.append(summary);
 
-  if (session.changedFiles?.length) {
+  const touchedFiles = Array.isArray(session.touchedFiles) ? session.touchedFiles : [];
+  if (touchedFiles.length > 0) {
+    const list = el('ul', 'evidence-list workspace-file-list');
+    for (const item of touchedFiles.slice(0, 20)) {
+      const row = el('li', 'workspace-file-row');
+      row.append(el('span', 'workspace-file-name', item.file ?? '(unknown)'));
+      const versions = Array.isArray(item.versions) ? item.versions : [];
+      if (versions.length > 1) {
+        const select = document.createElement('select');
+        select.className = 'workspace-version-select';
+        for (const version of versions) {
+          const option = document.createElement('option');
+          option.value = String(version.version);
+          option.selected = version.version === item.currentVersion;
+          option.textContent = version.version === 0
+            ? 'v0 原始'
+            : `v${version.version}${version.version === item.currentVersion ? '（当前）' : ''}`;
+          select.append(option);
+        }
+        const restore = el('button', 'secondary', '回退');
+        restore.type = 'button';
+        restore.disabled = status !== 'pending' || readOnly || !runId;
+        restore.addEventListener('click', () => {
+          runWorkspaceRestore(view, runId, item.file, Number(select.value)).catch(() => {});
+        });
+        row.append(select, restore);
+      } else {
+        row.append(el('span', 'muted small', '仅原始版本'));
+      }
+      list.append(row);
+    }
+    block.append(list);
+  } else if (session.changedFiles?.length) {
     const list = el('ul', 'evidence-list');
     for (const file of session.changedFiles.slice(0, 20)) list.append(el('li', null, file));
     block.append(list);
@@ -1610,6 +1642,29 @@ function renderWorkspaceSession(session, view, runId, { readOnly = false } = {})
     block.append(actions);
   }
   return block;
+}
+
+async function runWorkspaceRestore(view, runId, file, version) {
+  if (typeof window.confirm === 'function'
+    && !window.confirm(`将 ${file} 回退到 v${version}？当前内容会被覆盖。`)) {
+    return;
+  }
+  showMessage(view, `正在回退 ${file}…`, 'muted');
+  try {
+    const result = await api.workspace('restore-file', { runId, file, version });
+    if (result?.ok === false) {
+      showMessage(view, result.error ?? '回退失败', 'message error');
+      return;
+    }
+    const session = view.response?.result?.agent?.workspaceSession;
+    if (session && Array.isArray(result?.touchedFiles)) {
+      session.touchedFiles = result.touchedFiles;
+    }
+    renderRunInto(view);
+    showMessage(view, `已将 ${file} 回退到 v${version}`, 'message ok');
+  } catch (error) {
+    showMessage(view, `回退失败：${error.message}`, 'message error');
+  }
 }
 
 async function runWorkspaceAction(view, action) {

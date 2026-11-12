@@ -30,7 +30,11 @@ import { runVerifyCommand } from './verify-command.mjs';
 import { createTools } from '../../tools/index.mjs';
 import { readLogs } from '../../evidence/logs.mjs';
 import { runCaptureDiagnosis, runElementDiagnosis } from '../../diagnose/run.mjs';
-import { finalizeWorkspaceJournal, listPendingWorkspaceJournals } from '../../core/inplace-session.mjs';
+import {
+  finalizeWorkspaceJournal,
+  listPendingWorkspaceJournals,
+  restoreWorkspaceJournalFile,
+} from '../../core/inplace-session.mjs';
 import { resolveAgentAuth } from '../../core/agent-auth.mjs';
 import { createMockAgent } from '../../agent/mock.mjs';
 import { createClaudeAgent } from '../../agent/claude.mjs';
@@ -481,6 +485,28 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
     if (!runId) throw new Error('runId 不能为空');
     if (payload.action === 'keep' || payload.action === 'discard') {
       return finalizeWorkspaceSession(service, runId, payload.action);
+    }
+    if (payload.action === 'restore-file') {
+      const session = workspaceSessions.get(runId);
+      const restored = session?.restoreFileVersion
+        ? await session.restoreFileVersion(payload.file, payload.version)
+        : await restoreWorkspaceJournalFile(
+          path.join(service.runsRoot, runId, 'workspace-journal.json'),
+          payload.file,
+          payload.version,
+        );
+      if (restored?.ok && Array.isArray(restored.touchedFiles)) {
+        try {
+          const run = await service.getRun(runId);
+          if (run.result?.agent?.workspaceSession) {
+            run.result.agent.workspaceSession.touchedFiles = restored.touchedFiles;
+            await writeJsonAtomic(path.join(service.runsRoot, runId, 'result.json'), run.result);
+          }
+        } catch {
+          // Metadata refresh is best-effort; the file restore already succeeded.
+        }
+      }
+      return restored;
     }
     if (payload.action === 'status') {
       const run = await service.getRun(runId);

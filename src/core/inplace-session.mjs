@@ -95,9 +95,10 @@ function createBaseline({ runDir, roots, onChange = null }) {
 
   const rootFor = (absPath) => roots.find((entry) => inside(entry.root, absPath)) ?? null;
 
-  function backupPath(kind, repo, relative) {
+  function backupPath(kind, repo, relative, version = null) {
     const repoKey = createHash('sha256').update(path.resolve(repo)).digest('hex').slice(0, 12);
-    return path.join(baselineDir, kind, repoKey, relative);
+    const base = path.join(baselineDir, kind, repoKey, relative);
+    return version == null ? base : `${base}.v${version}`;
   }
 
   async function snapshotBeforeWrite(filePath) {
@@ -110,7 +111,7 @@ function createBaseline({ runDir, roots, onChange = null }) {
     const current = await readTextFile(absPath);
     if (current.tooLarge) throw new Error('文件过大，无法保存修改前快照');
     const relative = path.relative(descriptor.repo, absPath);
-    const backup = backupPath('prewrite', descriptor.repo, relative);
+    const backup = backupPath('prewrite', descriptor.repo, relative, 0);
     if (current.exists) await writeBackup(current, backup);
     touched.set(absPath, {
       descriptor,
@@ -121,6 +122,14 @@ function createBaseline({ runDir, roots, onChange = null }) {
       preHash: current.hash,
       lastHash: current.hash,
       lastExists: current.exists,
+      currentVersion: 0,
+      versions: [{
+        version: 0,
+        backup: current.exists ? backup : null,
+        exists: current.exists,
+        hash: current.hash,
+        at: Date.now(),
+      }],
     });
     await onChange?.();
   }
@@ -130,6 +139,17 @@ function createBaseline({ runDir, roots, onChange = null }) {
     const entry = touched.get(absPath);
     if (!entry) return;
     const current = await readTextFile(absPath);
+    const version = entry.versions.length;
+    const backup = backupPath('prewrite', entry.repo, entry.relative, version);
+    if (current.exists) await writeBackup(current, backup);
+    entry.versions.push({
+      version,
+      backup: current.exists ? backup : null,
+      exists: current.exists,
+      hash: current.hash,
+      at: Date.now(),
+    });
+    entry.currentVersion = version;
     entry.lastHash = current.hash;
     entry.lastExists = current.exists;
     await onChange?.();
@@ -151,10 +171,17 @@ function createBaseline({ runDir, roots, onChange = null }) {
         journalRelative: entry.relative,
         root: entry.descriptor.key,
         extraRoot: entry.descriptor.extraRoot ?? null,
-        preHash: entry.preHash,
+        preHash: entry.versions[0]?.hash ?? entry.preHash,
         lastHash: entry.lastHash,
-        existsBefore: entry.exists,
+        existsBefore: entry.versions[0]?.exists ?? entry.exists,
         existsAfter: entry.lastExists,
+        currentVersion: entry.currentVersion,
+        versions: entry.versions.map((version) => ({
+          version: version.version,
+          hash: version.hash,
+          exists: version.exists,
+          at: version.at,
+        })),
       });
 
       const current = await readTextFile(absPath);
@@ -241,6 +268,77 @@ function createBaseline({ runDir, roots, onChange = null }) {
     return { restored, conflicts };
   }
 
+  function displayFile(absPath, entry) {
+    return `${entry.descriptor.key}/${path.relative(entry.descriptor.root, absPath).split(path.sep).join('/')}`;
+  }
+
+  function describeTouchedFiles() {
+    return [...touched.entries()].map(([absPath, entry]) => ({
+      file: displayFile(absPath, entry),
+      relative: path.relative(entry.descriptor.root, absPath).split(path.sep).join('/'),
+      journalRelative: entry.relative,
+      root: entry.descriptor.key,
+      extraRoot: entry.descriptor.extraRoot ?? null,
+      preHash: entry.versions[0]?.hash ?? entry.preHash,
+      lastHash: entry.lastHash,
+      existsBefore: entry.versions[0]?.exists ?? entry.exists,
+      existsAfter: entry.lastExists,
+      currentVersion: entry.currentVersion,
+      versions: entry.versions.map((version) => ({
+        version: version.version,
+        hash: version.hash,
+        exists: version.exists,
+        at: version.at,
+      })),
+    }));
+  }
+
+  async function restoreVersion(absPath, version) {
+    const entry = touched.get(absPath);
+    if (!entry) return { ok: false, error: '未找到该文件的修改记录' };
+    const targetVersion = Number(version);
+    if (!Number.isInteger(targetVersion) || targetVersion < 0) {
+      return { ok: false, error: '版本号无效' };
+    }
+    const current = await readTextFile(absPath);
+    if (entry.lastHash && current.exists !== entry.lastExists) {
+      return { ok: false, error: '文件在诊断期间被外部修改，拒绝回退', conflict: true };
+    }
+    if (entry.lastHash && current.exists && current.hash !== entry.lastHash) {
+      return { ok: false, error: '文件在诊断期间被外部修改，拒绝回退', conflict: true };
+    }
+    if (targetVersion === entry.currentVersion) {
+      return { ok: true, file: displayFile(absPath, entry), version: targetVersion, touchedFiles: describeTouchedFiles() };
+    }
+    const target = entry.versions.find((item) => item.version === targetVersion);
+    if (!target) return { ok: false, error: '版本不存在' };
+    if (target.exists) {
+      if (!target.backup) return { ok: false, error: '缺少该版本快照' };
+      const backup = await readFile(target.backup);
+      await mkdir(path.dirname(absPath), { recursive: true });
+      await writeFile(absPath, backup);
+    } else {
+      await rm(absPath, { force: true });
+    }
+    entry.lastHash = target.hash;
+    entry.lastExists = target.exists;
+    entry.currentVersion = targetVersion;
+    await onChange?.();
+    return { ok: true, file: displayFile(absPath, entry), version: targetVersion, touchedFiles: describeTouchedFiles() };
+  }
+
+  function findTouched(file) {
+    const normalized = String(file ?? '').replace(/\\/g, '/');
+    const absolute = path.resolve(String(file ?? ''));
+    for (const [absPath, entry] of touched) {
+      if (absPath === absolute || normalized === displayFile(absPath, entry)
+        || normalized === path.relative(entry.descriptor.root, absPath).split(path.sep).join('/')) {
+        return { absPath, entry };
+      }
+    }
+    return null;
+  }
+
   return {
     baselineDir,
     touched,
@@ -248,6 +346,9 @@ function createBaseline({ runDir, roots, onChange = null }) {
     recordAfterWrite,
     extract,
     discard,
+    describeTouchedFiles,
+    findTouched,
+    restoreVersion,
   };
 }
 
@@ -312,16 +413,25 @@ export async function createInPlaceSession({
     if (!baseline) return;
     journal.touched = [...baseline.touched.entries()].map(([file, entry]) => ({
       file,
+      displayFile: `${entry.descriptor.key}/${path.relative(entry.descriptor.root, file).split(path.sep).join('/')}`,
       key: entry.descriptor.key,
       extraRoot: entry.descriptor.extraRoot ?? null,
       root: entry.descriptor.root,
       repo: entry.repo,
       relative: entry.relative,
       backup: entry.backup,
-      existsBefore: entry.exists,
-      preHash: entry.preHash,
+      existsBefore: entry.versions[0]?.exists ?? entry.exists,
+      preHash: entry.versions[0]?.hash ?? entry.preHash,
       lastHash: entry.lastHash,
       lastExists: entry.lastExists,
+      currentVersion: entry.currentVersion,
+      versions: entry.versions.map((version) => ({
+        version: version.version,
+        backup: version.backup,
+        exists: version.exists,
+        hash: version.hash,
+        at: version.at,
+      })),
     }));
     await writeJsonAtomic(journalPath, journal);
   }
@@ -391,6 +501,16 @@ export async function createInPlaceSession({
     await rm(baseline.baselineDir, { recursive: true, force: true }).catch(() => {});
   }
 
+  async function restoreFileVersion(file, version) {
+    const match = baseline.findTouched(file);
+    if (!match) return { ok: false, error: '未找到该文件的修改记录' };
+    return baseline.restoreVersion(match.absPath, version);
+  }
+
+  function describeTouchedFiles() {
+    return baseline.describeTouchedFiles();
+  }
+
   return {
     ok: true,
     mode: 'in-place',
@@ -407,6 +527,8 @@ export async function createInPlaceSession({
     runCommand,
     extract,
     runSelfCheck,
+    restoreFileVersion,
+    describeTouchedFiles,
     async discard() {
       const result = await baseline.discard();
       journal.status = result.conflicts?.length ? 'pending' : 'discarded';
@@ -541,6 +663,137 @@ export async function finalizeWorkspaceJournal(journalPath, action) {
     await writeJsonAtomic(journalPath, journal);
     if (conflicts.length === 0) await cleanupBaseline();
     return { ok: true, status: journal.status, restored, conflicts };
+  } finally {
+    await locks.release();
+  }
+}
+
+function journalVersions(entry = {}) {
+  if (Array.isArray(entry.versions) && entry.versions.length > 0) return entry.versions;
+  // Backward compatibility: older journals stored one pre-run snapshot.
+  return [
+    {
+      version: 0,
+      backup: entry.backup ?? null,
+      exists: entry.existsBefore === true,
+      hash: entry.preHash ?? null,
+      at: null,
+    },
+    {
+      version: 1,
+      backup: null,
+      exists: entry.lastExists === true,
+      hash: entry.lastHash ?? null,
+      at: null,
+    },
+  ];
+}
+
+function journalCurrentVersion(entry = {}) {
+  const versions = journalVersions(entry);
+  return Number.isInteger(entry.currentVersion)
+    && entry.currentVersion >= 0
+    && entry.currentVersion < versions.length
+    ? entry.currentVersion
+    : versions.length - 1;
+}
+
+function journalDisplayFile(entry = {}) {
+  return entry.displayFile ?? `${entry.key ?? 'backend'}/${entry.relative ?? entry.file ?? ''}`;
+}
+
+function journalTouchedFiles(journal = {}) {
+  return (journal.touched ?? []).map((entry) => {
+    const versions = journalVersions(entry);
+    const currentVersion = journalCurrentVersion(entry);
+    return {
+      file: journalDisplayFile(entry),
+      relative: entry.relative ?? null,
+      journalRelative: entry.relative ?? null,
+      root: entry.key ?? null,
+      extraRoot: entry.extraRoot ?? null,
+      preHash: versions[0]?.hash ?? entry.preHash ?? null,
+      lastHash: entry.lastHash ?? null,
+      existsBefore: versions[0]?.exists === true,
+      existsAfter: entry.lastExists === true,
+      currentVersion,
+      versions: versions.map((version) => ({
+        version: version.version,
+        hash: version.hash ?? null,
+        exists: version.exists === true,
+        at: version.at ?? null,
+      })),
+    };
+  });
+}
+
+/**
+ * Restore one file inside an unfinished journal to a recorded version. Used
+ * after an app restart when the live in-place session is gone.
+ */
+export async function restoreWorkspaceJournalFile(journalPath, file, version) {
+  let journal;
+  try {
+    journal = JSON.parse(await readFile(journalPath, 'utf8'));
+  } catch (error) {
+    return { ok: false, error: `读取工作区 journal 失败：${error?.message ?? error}` };
+  }
+  if (journal.status === 'kept' || journal.status === 'discarded') {
+    return { ok: false, error: '该诊断的工作区修改已结束，无法回退' };
+  }
+  const normalized = String(file ?? '').replaceAll('\\', '/');
+  const absolute = path.resolve(String(file ?? ''));
+  const entry = (journal.touched ?? []).find((item) => (
+    item.file === absolute
+    || journalDisplayFile(item) === normalized
+    || `${item.key ?? 'backend'}/${item.relative ?? ''}` === normalized
+    || item.relative === normalized
+  ));
+  if (!entry) return { ok: false, error: '未找到该文件的修改记录' };
+
+  const targetVersion = Number(version);
+  if (!Number.isInteger(targetVersion) || targetVersion < 0) {
+    return { ok: false, error: '版本号无效' };
+  }
+  const versions = journalVersions(entry);
+  const currentVersion = journalCurrentVersion(entry);
+  if (targetVersion === currentVersion) {
+    return { ok: true, file: journalDisplayFile(entry), version: targetVersion, touchedFiles: journalTouchedFiles(journal) };
+  }
+  const target = versions.find((item) => item.version === targetVersion);
+  if (!target) return { ok: false, error: '版本不存在' };
+
+  const repos = Array.isArray(journal.repos) ? journal.repos : [];
+  const locks = await acquireWorkspaceLocks(repos, { runId: `restore-${journal.runId ?? 'unknown'}` });
+  if (!locks.ok) {
+    return { ok: false, error: '工作区仍被其他诊断占用，暂时无法回退', busyRepo: locks.busyRepo };
+  }
+  try {
+    const current = await readTextFile(entry.file);
+    if (entry.lastHash && current.exists !== entry.lastExists) {
+      return { ok: false, error: '文件在诊断期间被外部修改，拒绝回退', conflict: true };
+    }
+    if (entry.lastHash && current.exists && current.hash !== entry.lastHash) {
+      return { ok: false, error: '文件在诊断期间被外部修改，拒绝回退', conflict: true };
+    }
+    if (target.exists) {
+      if (!target.backup) return { ok: false, error: '缺少该版本快照' };
+      const backup = await readFile(target.backup);
+      await mkdir(path.dirname(entry.file), { recursive: true });
+      await writeFile(entry.file, backup);
+    } else {
+      await rm(entry.file, { force: true });
+    }
+    entry.lastHash = target.hash ?? null;
+    entry.lastExists = target.exists === true;
+    entry.currentVersion = targetVersion;
+    await writeJsonAtomic(journalPath, journal);
+    return {
+      ok: true,
+      file: journalDisplayFile(entry),
+      version: targetVersion,
+      touchedFiles: journalTouchedFiles(journal),
+    };
   } finally {
     await locks.release();
   }

@@ -210,6 +210,8 @@ test('full mode reuses the in-place session instead of editing unmanaged files',
   assert.equal(touched.existsBefore, true);
   assert.match(touched.preHash, /^[a-f0-9]{64}$/);
   assert.match(touched.lastHash, /^[a-f0-9]{64}$/);
+  assert.equal(touched.currentVersion, 1);
+  assert.deepEqual(touched.versions.map((version) => version.version), [0, 1]);
 
   const persisted = JSON.parse(await readFile(path.join(outcome.runDir, 'result.json'), 'utf8'));
   assert.deepEqual(persisted.agent.workspaceSession.changedFiles, ['backend/OrderService.java']);

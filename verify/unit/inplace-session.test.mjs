@@ -10,6 +10,7 @@ import {
   createInPlaceSession,
   finalizeWorkspaceJournal,
   listPendingWorkspaceJournals,
+  restoreWorkspaceJournalFile,
 } from '../../src/core/inplace-session.mjs';
 import { tempDir } from './tmp.mjs';
 
@@ -322,4 +323,64 @@ test('busy workspace lock is surfaced in the diagnosis result', async (t) => {
   assert.equal(notice.owner.pid, process.pid);
   assert.ok(notice.owner.at > 0);
   await first.discard();
+});
+
+test('records one version per write and restores a single file to an earlier version', async (t) => {
+  const { repo, runDir } = await fixture(t);
+  const file = path.join(repo, 'OrderService.java');
+  const session = await startSession(repo, runDir, 'run-versions');
+  await applyAgentEdit(session, file, 'v1\n');
+  await applyAgentEdit(session, file, 'v2\n');
+  await applyAgentEdit(session, file, 'v3\n');
+
+  const extracted = await session.extract();
+  const touched = extracted.touchedFiles[0];
+  assert.deepEqual(touched.versions.map((version) => version.version), [0, 1, 2, 3]);
+  assert.equal(touched.currentVersion, 3);
+  assert.equal(await readFile(file, 'utf8'), 'v3\n');
+
+  const journal = JSON.parse(await readFile(journalPathOf(runDir), 'utf8'));
+  assert.equal(journal.touched[0].versions.length, 4);
+  assert.equal(journal.touched[0].currentVersion, 3);
+
+  const restored = await session.restoreFileVersion('backend/OrderService.java', 1);
+  assert.equal(restored.ok, true, JSON.stringify(restored));
+  assert.equal(await readFile(file, 'utf8'), 'v1\n');
+  assert.equal(restored.touchedFiles[0].currentVersion, 1);
+
+  const latest = await session.restoreFileVersion('backend/OrderService.java', 3);
+  assert.equal(latest.ok, true);
+  assert.equal(await readFile(file, 'utf8'), 'v3\n');
+
+  await writeFile(file, 'external\n', 'utf8');
+  const conflict = await session.restoreFileVersion('backend/OrderService.java', 0);
+  assert.equal(conflict.ok, false);
+  assert.match(conflict.error, /外部修改/);
+  await session.release();
+});
+
+test('restores a journal file version after a simulated restart', async (t) => {
+  const { repo, runDir } = await fixture(t);
+  const file = path.join(repo, 'OrderService.java');
+  const session = await startSession(repo, runDir, 'run-journal-versions');
+  await applyAgentEdit(session, file, 'v1\n');
+  await applyAgentEdit(session, file, 'v2\n');
+  await session.extract();
+  await rm(lockFileFor(repo), { force: true });
+
+  const restored = await restoreWorkspaceJournalFile(
+    journalPathOf(runDir),
+    'backend/OrderService.java',
+    1,
+  );
+  assert.equal(restored.ok, true, JSON.stringify(restored));
+  assert.equal(await readFile(file, 'utf8'), 'v1\n');
+  assert.equal(restored.touchedFiles[0].currentVersion, 1);
+
+  const journal = JSON.parse(await readFile(journalPathOf(runDir), 'utf8'));
+  assert.equal(journal.touched[0].currentVersion, 1);
+
+  const discarded = await finalizeWorkspaceJournal(journalPathOf(runDir), 'discard');
+  assert.equal(discarded.ok, true);
+  assert.equal(await readFile(file, 'utf8'), 'old\n');
 });
