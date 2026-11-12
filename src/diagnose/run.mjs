@@ -687,6 +687,7 @@ async function diagnoseWithFired({
           baselineDir: sandboxContext.baselineDir,
           repos: sandboxContext.repos,
           changedFiles: extracted.changedFiles,
+          touchedFiles: extracted.touchedFiles ?? [],
           skipped: extracted.skipped,
           conflicts: extracted.conflicts,
           selfCheck,

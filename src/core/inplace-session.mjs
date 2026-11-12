@@ -140,7 +140,23 @@ function createBaseline({ runDir, roots, onChange = null }) {
     const skipped = [];
     const conflicts = [];
     const changedFiles = [];
+    const touchedFiles = [];
     for (const [absPath, entry] of touched) {
+      const file = path.relative(entry.descriptor.root, absPath).split(path.sep).join('/');
+      const changedPath = `${entry.descriptor.key}/${file}`;
+      changedFiles.push(changedPath);
+      touchedFiles.push({
+        file: changedPath,
+        relative: file,
+        journalRelative: entry.relative,
+        root: entry.descriptor.key,
+        extraRoot: entry.descriptor.extraRoot ?? null,
+        preHash: entry.preHash,
+        lastHash: entry.lastHash,
+        existsBefore: entry.exists,
+        existsAfter: entry.lastExists,
+      });
+
       const current = await readTextFile(absPath);
       if (current.tooLarge) {
         skipped.push({ file: entry.relative, reason: '文件超过预览上限' });
@@ -151,7 +167,6 @@ function createBaseline({ runDir, roots, onChange = null }) {
         continue;
       }
       if (entry.lastHash && current.exists && current.hash !== entry.lastHash) {
-        const file = path.relative(entry.descriptor.root, absPath).split(path.sep).join('/');
         conflicts.push({ file, reason: '文件在诊断期间被外部修改' });
         continue;
       }
@@ -165,7 +180,6 @@ function createBaseline({ runDir, roots, onChange = null }) {
         }
         originalText = backup.text ?? '';
       }
-      const file = path.relative(entry.descriptor.root, absPath).split(path.sep).join('/');
       let fix = null;
       if (!entry.exists && current.exists) {
         fix = {
@@ -199,9 +213,8 @@ function createBaseline({ runDir, roots, onChange = null }) {
         };
       }
       fixes.push(previewFixFromTexts(fix, originalText, current.text));
-      changedFiles.push(`${entry.descriptor.key}/${file}`);
     }
-    return { fixes, skipped, conflicts, changedFiles };
+    return { fixes, skipped, conflicts, changedFiles, touchedFiles };
   }
 
   async function discard() {

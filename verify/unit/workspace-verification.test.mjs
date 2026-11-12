@@ -280,6 +280,18 @@ test('full mode reuses the in-place session instead of editing unmanaged files',
   assert.equal(result.agent.workspaceSession.mode, 'in-place');
   assert.equal(result.agent.workspaceSession.selfCheck.status, 'passed');
   assert.equal(result.agent.verification.mode, 'in-place');
+  assert.deepEqual(result.agent.workspaceSession.changedFiles, ['backend/OrderService.java']);
+  assert.equal(result.agent.workspaceSession.touchedFiles.length, 1);
+  const touched = result.agent.workspaceSession.touchedFiles[0];
+  assert.equal(touched.file, 'backend/OrderService.java');
+  assert.equal(touched.relative, 'OrderService.java');
+  assert.equal(touched.existsBefore, true);
+  assert.match(touched.preHash, /^[a-f0-9]{64}$/);
+  assert.match(touched.lastHash, /^[a-f0-9]{64}$/);
+
+  const persisted = JSON.parse(await readFile(path.join(outcome.runDir, 'result.json'), 'utf8'));
+  assert.deepEqual(persisted.agent.workspaceSession.changedFiles, ['backend/OrderService.java']);
+  assert.equal(persisted.agent.workspaceSession.touchedFiles[0].preHash, touched.preHash);
   assert.equal(await readFile(file, 'utf8'), 'full-edit\n');
   await access(path.join(outcome.runDir, 'baseline'));
   await access(path.join(outcome.runDir, 'baseline', 'prewrite'));
