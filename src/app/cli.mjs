@@ -26,22 +26,6 @@ function cliToolMode(workspace = {}) {
 }
 
 /** Full-permission CLI mode asks before every built-in write/command. */
-function createCliToolApprover() {
-  return async ({ toolName, input }) => {
-    if (!process.stdin.isTTY) return false;
-    if (toolName === 'Bash' && !/^(?:\.\/)?(?:mvn|mvnw|gradle|gradlew|npm|pnpm|yarn|npx|python|pytest|go|dotnet|cargo)\b/i.test(String(input?.command ?? ''))) {
-      return false;
-    }
-    const rl = createInterface({ input: process.stdin, output: process.stderr });
-    try {
-      const answer = await rl.question(`[确认] 允许 ${toolName} ${toolName === 'Bash' ? input.command : input.file_path}? [y/N] `);
-      return /^y(?:es)?$/i.test(answer.trim());
-    } finally {
-      rl.close();
-    }
-  };
-}
-
 const HELP = `DebugCopilot CLI
 
 Usage:
@@ -405,7 +389,6 @@ export async function main(argv = process.argv.slice(2), { root = ROOT } = {}) {
           allowedRoots,
           writeRoots,
           toolMode: toolMode === 'full' ? 'full' : 'readonly',
-          approval: createCliToolApprover(),
         });
 
     // CLI has no safeStorage: encrypted passwords cannot be decrypted here.

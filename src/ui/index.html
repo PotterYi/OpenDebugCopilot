@@ -379,10 +379,10 @@
         <select id="model-tool-mode">
           <option value="readonly">只读（Read / Grep / Glob）</option>
           <option value="sandbox">沙箱编辑（推荐：隔离副本中编辑并编译测试）</option>
-          <option value="full">完全权限（直接修改真实文件，每次操作确认）</option>
+          <option value="full">完全权限（最高权限：直接修改真实文件并执行命令，不再逐次确认）</option>
         </select>
       </label>
-      <p class="muted small">默认 60 轮、超时 600 秒；轮次留空表示不限制。完全权限会直接操作真实项目，所有 Edit/Write/Bash 都会弹窗确认。</p>
+      <p class="muted small">默认 60 轮、超时 600 秒；轮次留空表示不限制。完全权限会直接修改真实项目并执行命令，不再逐次弹窗确认，请仅在受控环境使用。</p>
 
       <div id="agent-auth-section" class="agent-auth">
         <h3>Claude 认证</h3>

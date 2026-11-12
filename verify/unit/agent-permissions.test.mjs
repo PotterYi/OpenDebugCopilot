@@ -73,39 +73,38 @@ test('sandbox mode allows Edit/Write only inside authorized roots', async (t) =>
   assert.equal(await behavior('Bash', { command: 'ls' }), 'deny');
 });
 
-test('full mode requires approval for Edit/Write/Bash', async (t) => {
+test('full mode runs Edit/Write/Bash without per-action approval', async (t) => {
   const { root, outside } = await fixture(t);
-  const allowed = [];
+  let approvalCalls = 0;
   const canUseTool = createToolPermission([root], {
     cwd: root,
     allowWrite: true,
     allowBash: true,
-    approve: async ({ toolName }) => {
-      allowed.push(toolName);
-      return true;
-    },
+    // A callback may still be passed, but full mode does not require approval.
+    approve: async () => { approvalCalls += 1; return true; },
   });
   const behavior = (toolName, input) => canUseTool(toolName, input).then((result) => result.behavior);
 
   assert.equal(await behavior('Bash', { command: 'mvn test' }), 'allow');
   assert.equal(await behavior('Edit', { file_path: path.join(root, 'src', 'app.js') }), 'allow');
   assert.equal(await behavior('Write', { file_path: path.join(root, 'src', 'new.js'), content: 'x' }), 'allow');
-  assert.deepEqual(allowed, ['Bash', 'Edit', 'Write']);
-  assert.equal(await behavior('Bash', { command: 'cat /etc/passwd' }), 'allow'); // user prompt decides
+  assert.equal(approvalCalls, 0);
+  assert.equal(await behavior('Bash', { command: 'cat /etc/passwd' }), 'allow');
   assert.equal(await behavior('Write', { file_path: path.join(outside, 'new.js') }), 'deny');
 });
 
-test('full mode denies Edit/Write/Bash when the user declines', async (t) => {
+test('requireApproval can still gate Edit/Write/Bash explicitly', async (t) => {
   const { root } = await fixture(t);
   const canUseTool = createToolPermission([root], {
     cwd: root,
     allowWrite: true,
     allowBash: true,
     approve: async () => false,
+    requireApproval: true,
   });
   assert.equal((await canUseTool('Bash', { command: 'mvn test' })).behavior, 'deny');
   assert.equal((await canUseTool('Edit', { file_path: path.join(root, 'src', 'app.js') })).behavior, 'deny');
-  assert.equal((await canUseTool('Write', { file_path: path.join(root, 'src', 'new.js') })).behavior, 'deny');
+  assert.equal((await canUseTool('Write', { file_path: path.join(root, 'src', 'new.js'), content: 'x' })).behavior, 'deny');
 });
 
 test('in-place write roots exclude extra roots and build directories', async (t) => {

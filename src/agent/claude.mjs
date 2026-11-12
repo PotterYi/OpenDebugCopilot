@@ -186,7 +186,8 @@ export function createToolPermission(allowedRoots = [], {
     if (toolName === 'Bash') {
       const command = String(input.command ?? '').trim();
       if (!command) return { behavior: 'deny', message: 'Bash 命令为空。' };
-      return askApproval('Bash', input);
+      if (requireApproval) return askApproval('Bash', input);
+      return { behavior: 'allow', updatedInput: input };
     }
     if (toolName === 'Glob') {
       const pattern = String(input.pattern ?? '');
@@ -223,7 +224,7 @@ export function createToolPermission(allowedRoots = [], {
         };
       }
     }
-    if (isWrite && (requireApproval || typeof approve === 'function')) {
+    if (isWrite && requireApproval) {
       return askApproval(toolName, input);
     }
     return { behavior: 'allow', updatedInput: input };
@@ -692,7 +693,7 @@ export function usageFromResult(resultMessage) {
 export const FULL_MODE_PROMPT = `
 
 # 完全权限模式
-你可以直接修改真实项目文件并执行 Bash 命令，但每次 Edit/Write/Bash 都会请求用户确认。
+你拥有最高权限：可以直接修改真实项目文件并执行 Bash 命令，不再逐次请求用户确认。请谨慎操作，避免破坏性命令。
 - 修改前先读取文件和引用，尽量给出最小、可编译的改动。
 - 直接修改并验证完成后，不要再把同样的修改重复写进 fixes；只有未直接修改的方案才放进 fixes。
 - 执行 Bash 时只运行必要的编译/测试命令，避免安装依赖、部署、推送、长时间运行或破坏性操作。
@@ -724,7 +725,6 @@ export function createClaudeAgent({
   allowedRoots = [],
   writeRoots = null,
   toolMode = 'readonly',
-  approval = null,
   onBeforeWrite = null,
   onAfterWrite = null,
   auth = null,
@@ -734,7 +734,6 @@ export function createClaudeAgent({
     allowedRoots: [...allowedRoots],
     writeRoots: writeRoots ? [...writeRoots] : null,
     toolMode,
-    approval,
     onBeforeWrite,
     onAfterWrite,
     auth,
@@ -760,8 +759,6 @@ export function createClaudeAgent({
         allowWrite: scope.toolMode !== 'readonly',
         writeRoots: scope.writeRoots,
         allowBash: scope.toolMode === 'full',
-        approve: scope.toolMode === 'full' ? (scope.approval ?? (async () => false)) : null,
-        requireApproval: scope.toolMode === 'full',
         onBeforeWrite: scope.onBeforeWrite,
       });
       const builtinTools = scope.toolMode === 'full'
@@ -912,8 +909,6 @@ export function createClaudeAgent({
         allowWrite: scope.toolMode !== 'readonly',
         writeRoots: scope.writeRoots,
         allowBash: scope.toolMode === 'full',
-        approve: scope.toolMode === 'full' ? (scope.approval ?? (async () => false)) : null,
-        requireApproval: scope.toolMode === 'full',
         onBeforeWrite: scope.onBeforeWrite,
       });
       const builtinTools = scope.toolMode === 'full'

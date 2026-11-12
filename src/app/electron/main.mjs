@@ -304,40 +304,6 @@ function createWriteApprover(event) {
 }
 
 /** Per-action confirmation for full-permission Edit/Write/Bash. */
-function createToolApprover(event) {
-  const parent = BrowserWindow.fromWebContents(event.sender) ?? mainWindow;
-  let queue = Promise.resolve();
-  return (request) => {
-    const next = queue.then(async () => {
-      if (smoke) return false;
-      const toolName = request?.toolName ?? '工具';
-      const input = request?.input ?? {};
-      let message;
-      let detail;
-      if (toolName === 'Bash') {
-        message = 'AI 请求执行命令';
-        detail = String(input.command ?? '');
-      } else {
-        message = toolName === 'Write' ? 'AI 请求写入文件' : 'AI 请求修改文件';
-        detail = [
-          String(input.file_path ?? ''),
-          '',
-          toolName === 'Write'
-            ? String(input.content ?? '').slice(0, 3000)
-            : `- ${String(input.old_string ?? '').slice(0, 1200)}\n+ ${String(input.new_string ?? '').slice(0, 1200)}`,
-        ].join('\n');
-      }
-      return confirmFixDialog(parent, {
-        title: '确认 AI 操作',
-        message,
-        detail: detail || '(无详情)',
-      });
-    });
-    queue = next.catch(() => false);
-    return next;
-  };
-}
-
 function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
   const handle = (channel, fn) => ipcMain.handle(channel, async (event, payload) => {
     try {
@@ -905,7 +871,6 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
         // Fail closed: sandbox config is applied only after the isolated copy
         // exists. Full mode is the only mode constructed with write access.
         toolMode: toolMode === 'full' ? 'full' : 'readonly',
-        approval: createToolApprover(event),
         auth,
       });
 
@@ -1004,7 +969,6 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
             extraSourceRoots: result.meta?.logContext?.extraSourceRoots ?? [],
           }),
           toolMode: toolMode === 'full' ? 'full' : 'readonly',
-          approval: createToolApprover(event),
           auth,
         });
       if (typeof agent.followUp !== 'function') throw new Error('当前 Agent 不支持继续诊断');
