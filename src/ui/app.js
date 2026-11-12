@@ -635,7 +635,26 @@ async function loadRuns() {
         const ok = window.confirm(`删除诊断 ${run.runId}？\n\n该诊断的结果、日志、备份和数据库查询结果都会删除，且不可恢复。`);
         if (!ok) return;
         try {
-          const deleted = await api.deleteRun(run.runId);
+          let deleted = await api.deleteRun(run.runId);
+          if (deleted?.requiresKeepConfirmation) {
+            const pending = deleted.pending ?? {};
+            const files = Array.isArray(pending.files) && pending.files.length > 0
+              ? `\n\n当前修改文件：\n${pending.files.slice(0, 8).join('\n')}${pending.files.length > 8 ? '\n…' : ''}`
+              : '';
+            const keep = window.confirm(
+              '该诊断仍有未收尾的工作区修改。\n\n'
+                + '删除诊断将默认保留当前文件修改（不会回滚），'
+                + '并先释放仓库锁、清理 baseline/journal，然后永久删除诊断记录。'
+                + `${files}\n\n是否继续删除并保留修改？`,
+            );
+            if (!keep) return;
+            deleted = await api.deleteRun(run.runId, { keepPending: true });
+          }
+          if (deleted?.ok === false) {
+            historyMessageEl.textContent = `删除失败：${deleted.error ?? '保留工作区修改失败'}`;
+            historyMessageEl.className = 'message error';
+            return;
+          }
           if (selectedRunId === run.runId) {
             selectedRunId = null;
             currentRunView = null;
@@ -646,7 +665,8 @@ async function loadRuns() {
           const queryNote = deleted?.databaseQueries
             ? `（同时删除 ${deleted.databaseQueries} 条数据库查询结果）`
             : '';
-          historyMessageEl.textContent = `已删除 ${run.runId}${queryNote}`;
+          const keptNote = deleted?.keptWorkspace ? '，工作区修改已默认保留' : '';
+          historyMessageEl.textContent = `已删除 ${run.runId}${queryNote}${keptNote}`;
           historyMessageEl.className = 'message ok';
           await loadRuns();
           await loadWorkspacePending();

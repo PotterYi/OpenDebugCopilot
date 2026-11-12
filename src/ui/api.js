@@ -61,9 +61,19 @@ export const api = {
     if (dc?.invoke) return dc.invoke('dc:runs', { action: 'get', runId });
     return http(`/api/runs/${encodeURIComponent(runId)}`);
   },
-  async deleteRun(runId) {
-    if (dc?.invoke) return dc.invoke('dc:runs', { action: 'delete', runId });
-    return http(`/api/runs/${encodeURIComponent(runId)}`, { method: 'DELETE' });
+  async deleteRun(runId, options = {}) {
+    const keepPending = options.keepPending === true;
+    if (dc?.invoke) {
+      return dc.invoke('dc:runs', { action: 'delete', runId, keepPending });
+    }
+    const response = await fetch(
+      `/api/runs/${encodeURIComponent(runId)}${keepPending ? '?keep=1' : ''}`,
+      { method: 'DELETE' },
+    );
+    const data = await response.json().catch(() => ({}));
+    if (response.status === 409) return data;
+    if (!response.ok) throw new Error(data.message || data.error || response.statusText);
+    return data;
   },
   async browser(action, payload = {}) {
     if (!dc?.invoke) return { pending: true };

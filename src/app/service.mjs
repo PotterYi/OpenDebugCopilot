@@ -4,6 +4,7 @@ import { AppError } from '../core/errors.mjs';
 import { createStore } from '../core/store.mjs';
 import { createDatabaseStore } from '../core/database-store.mjs';
 import { createAgentAuthStore } from '../core/agent-auth-store.mjs';
+import { finalizeWorkspaceJournal } from '../core/inplace-session.mjs';
 import { checkDatabases } from '../evidence/db.mjs';
 import { getLogFile } from '../core/logger.mjs';
 
@@ -128,6 +129,32 @@ export function createService({ root = process.cwd(), configDir, runsDir, secret
     return { runId, deleted: true, databaseQueries };
   }
 
+  function journalPathFor(runId) {
+    if (!RUN_ID_PATTERN.test(String(runId))) {
+      throw new AppError('RUN_ID_INVALID', `Invalid run id: ${runId}`, { exitCode: 2 });
+    }
+    return path.join(runsRoot, String(runId), 'workspace-journal.json');
+  }
+
+  async function getRunWorkspacePending(runId) {
+    try {
+      const journal = JSON.parse(await readFile(journalPathFor(runId), 'utf8'));
+      if (!['editing', 'pending'].includes(journal.status)) return null;
+      const files = (journal.touched ?? [])
+        .map((entry) => entry.displayFile
+          ?? `${entry.key ?? 'backend'}/${entry.relative ?? ''}`)
+        .filter(Boolean)
+        .slice(0, 20);
+      return { kind: 'journal', status: journal.status, files };
+    } catch {
+      return null;
+    }
+  }
+
+  async function keepRunWorkspace(runId) {
+    return finalizeWorkspaceJournal(journalPathFor(runId), 'keep');
+  }
+
   async function listProfiles() {
     return store.listProfiles();
   }
@@ -203,6 +230,8 @@ export function createService({ root = process.cwd(), configDir, runsDir, secret
     listRuns,
     getRun,
     deleteRun,
+    getRunWorkspacePending,
+    keepRunWorkspace,
     listProfiles,
     createProfile,
     switchProfile,

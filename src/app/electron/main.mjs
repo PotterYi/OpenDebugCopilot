@@ -36,6 +36,7 @@ import {
   restoreWorkspaceJournalFile,
 } from '../../core/inplace-session.mjs';
 import { resolveAgentAuth } from '../../core/agent-auth.mjs';
+import { deleteRunWithWorkspacePolicy } from '../../core/run-delete.mjs';
 import { createMockAgent } from '../../agent/mock.mjs';
 import { createClaudeAgent } from '../../agent/claude.mjs';
 import { getLogFile, log, setLogFile } from '../../core/logger.mjs';
@@ -464,10 +465,12 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
     if (payload.action === 'list') return { runs: await service.listRuns() };
     if (payload.action === 'get') return service.getRun(payload.runId);
     if (payload.action === 'delete') {
-      if (workspaceSessions.has(payload.runId)) {
-        throw new Error('该诊断仍有未决定的工作区修改，请先保留或丢弃');
-      }
-      return service.deleteRun(payload.runId);
+      return deleteRunWithWorkspacePolicy({
+        service,
+        runId: payload.runId,
+        workspaceSessions,
+        confirmedKeep: payload.keepPending === true,
+      });
     }
     throw new Error(`dc:runs: unknown action ${payload.action}`);
   });

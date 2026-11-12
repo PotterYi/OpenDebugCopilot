@@ -173,7 +173,29 @@ export async function startServer({ service, uiDir, host = '127.0.0.1', port = 7
         return;
       }
       if (runMatch && req.method === 'DELETE') {
-        sendJson(res, 200, await service.deleteRun(decodeURIComponent(runMatch[1])));
+        const runId = decodeURIComponent(runMatch[1]);
+        const pending = await service.getRunWorkspacePending(runId);
+        const keep = url.searchParams.get('keep') === '1';
+        if (pending && !keep) {
+          sendJson(res, 409, {
+            ok: false,
+            requiresKeepConfirmation: true,
+            pending,
+          });
+          return;
+        }
+        if (pending) {
+          const kept = await service.keepRunWorkspace(runId);
+          if (!kept?.ok) {
+            sendJson(res, 409, {
+              ok: false,
+              error: kept?.error ?? '保留工作区修改失败',
+              pending,
+            });
+            return;
+          }
+        }
+        sendJson(res, 200, await service.deleteRun(runId));
         return;
       }
       if (pathname.startsWith('/api/')) {
