@@ -97,3 +97,17 @@ test('allows a tracked source folder named build inside a Git project', async (t
   });
   assert.equal(result.behavior, 'allow', JSON.stringify(result));
 });
+
+test('denies additional build/cache output directories', async (t) => {
+  await fixture(t);
+  const root = path.join(TMP, 'repo');
+  await mkdir(root, { recursive: true });
+  const permission = permissionFor(root);
+  for (const dir of ['bin', 'obj', '__pycache__', '.gradle', '.cache']) {
+    const result = await permission('Write', {
+      file_path: path.join(root, dir, 'artifact.bin'),
+      content: 'x',
+    });
+    assert.equal(result.behavior, 'deny', `${dir}: ${JSON.stringify(result)}`);
+  }
+});

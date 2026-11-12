@@ -55,8 +55,9 @@ const SENSITIVE_NAME = /^(?:\.env(?:\..*)?|.*\.(?:pem|key|p12|pfx)|id_(?:rsa|dsa
 const SENSITIVE_PATH = /(?:^|[\\/])\.git[\\/]config$|(?:^|[\\/])\.ssh[\\/]|(?:^|[\\/])\.aws[\\/]|(?:^|[\\/])\.kube[\\/]|(?:^|[\\/])\.docker[\\/]config\.json$/i;
 const WRITE_DENY_ANYWHERE = new Set(['.git', 'node_modules']);
 const WRITE_OUTPUT_SEGMENTS = new Set([
-  'target', 'dist', 'build', 'out', 'logs', 'runs',
-  'coverage', '.next', '.nuxt', '.idea', '.vscode', 'vendor',
+  'target', 'dist', 'build', 'out', 'bin', 'obj', 'logs', 'runs',
+  'coverage', '__pycache__', '.gradle', '.cache',
+  '.next', '.nuxt', '.idea', '.vscode', 'vendor',
 ]);
 const execFileAsync = promisify(execFile);
 
