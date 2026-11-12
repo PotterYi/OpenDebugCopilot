@@ -1301,6 +1301,8 @@ async function runFollowUp(view, input, button) {
       requestAnimationFrame(() => {
         currentRunView.container.scrollTop = currentRunView.container.scrollHeight;
       });
+      await loadRuns();
+      await loadWorkspacePending();
     }
   } catch (error) {
     // Keep the error on the run so returning to it later still explains what

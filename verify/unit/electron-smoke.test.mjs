@@ -798,6 +798,9 @@ test('history runs behave as an accordion', {
       agent: {
         conclusion,
         evidenceRefs: [{ type: 'request', ref: 'request' }],
+        workspaceSession: runId === 'run-a'
+          ? { mode: 'in-place', status: 'pending' }
+          : undefined,
         fixes: runId === 'run-b'
           ? [{
               summary: '已应用的修改',
@@ -816,6 +819,22 @@ test('history runs behave as an accordion', {
           : undefined,
       },
     }, null, 2), 'utf8');
+    if (runId === 'run-a') {
+      await writeFile(path.join(dir, 'workspace-journal.json'), JSON.stringify({
+        version: 1,
+        runId,
+        mode: 'in-place',
+        status: 'pending',
+        pid: process.pid,
+        startedAt: now,
+        repos: [],
+        touched: [],
+        changedFiles: [],
+        skipped: [],
+        conflicts: [],
+        selfCheck: null,
+      }, null, 2), 'utf8');
+    }
   }
 
   const uiScript = `(async () => {
@@ -923,22 +942,20 @@ test('history runs behave as an accordion', {
     const chatB = report.querySelector('.chat-panel');
     const inputB = chatB?.querySelector('.chat-input');
     const sendB = chatB?.querySelector('.chat-input-row button');
-    let rejected = null;
+    let appliedFollowUp = null;
     if (inputB && sendB) {
       inputB.value = '有修改时继续诊断';
       sendB.click();
-      await waitFor(() => message.textContent.includes('请先撤销已应用的修改'));
-      const steps = [...report.querySelectorAll('.followup-progress .diagnose-step')];
+      await waitFor(() => report.textContent.includes('继续诊断：有修改时继续诊断'));
       const sendAfter = report.querySelector('.chat-panel .chat-input-row button');
-      rejected = {
+      appliedFollowUp = {
+        succeeded: report.textContent.includes('继续诊断：有修改时继续诊断'),
         errorShown: message.textContent.includes('继续诊断失败'),
-        spinnerSteps: report.querySelectorAll('.followup-progress .diagnose-step.start').length,
-        allStepsStopped: steps.length > 0 && steps.every((step) => !step.classList.contains('start')),
         buttonEnabled: Boolean(sendAfter && !sendAfter.disabled),
         buttonLabel: sendAfter?.textContent ?? '',
       };
     }
-    return { initial, opened, closed, secondOpen, rejected };
+    return { initial, opened, closed, secondOpen, appliedFollowUp };
   })()`;
 
   const child = spawn(electronPath, [
@@ -970,6 +987,10 @@ test('history runs behave as an accordion', {
     opened.restoredProgress?.labels?.some((label) => label.includes('AI 正在继续分析') || label.includes('AI 正在思考')),
     JSON.stringify(opened.restoredProgress),
   );
+  assert.ok(
+    opened.restoredProgress?.labels?.some((label) => label.includes('保留上一轮工作区修改')),
+    JSON.stringify(opened.restoredProgress),
+  );
   assert.equal(opened.restoredProgress?.sendDisabled, true);
   assert.equal(opened.restoredProgress?.inputDisabled, true);
   assert.equal(opened.restoredProgress?.inputValue, '补充信息');
@@ -998,10 +1019,9 @@ test('history runs behave as an accordion', {
       questionTruncated: true,
       questionTooltip: true,
     },
-    rejected: {
-      errorShown: true,
-      spinnerSteps: 0,
-      allStepsStopped: true,
+    appliedFollowUp: {
+      succeeded: true,
+      errorShown: false,
       buttonEnabled: true,
       buttonLabel: '继续诊断',
     },

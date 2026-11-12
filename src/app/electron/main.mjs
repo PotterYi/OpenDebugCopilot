@@ -947,14 +947,34 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
       try {
         const question = String(payload.question ?? '').trim();
         if (!question) throw new Error('请输入继续诊断的内容');
-        const { runId, result } = await service.getRun(targetRunId);
-      if (result.agent?.workspaceSession?.status === 'pending') {
-        throw new Error('该诊断仍有未决定的工作区修改，请先保留或丢弃');
-      }
-      if (result.agent?.fixes?.some((fix) => fix?.applied && !fix.applied.revertedAt)) {
-        throw new Error('请先撤销已应用的修改，再继续诊断');
-      }
-      sendProgress({ id: 'prepare', label: '整理上一轮诊断', status: 'done' });
+        const runId = targetRunId;
+        let { result } = await service.getRun(targetRunId);
+        if (result.agent?.workspaceSession?.status === 'pending') {
+          // Continuing implies accepting the current files as the new base.
+          // Keep the pending in-place edits explicitly instead of blocking.
+          sendProgress({
+            id: 'workspace',
+            label: '保留上一轮工作区修改作为继续诊断基线',
+            status: 'start',
+          });
+          const finalized = await finalizeWorkspaceSession(service, runId, 'keep');
+          if (!finalized.ok) {
+            sendProgress({
+              id: 'workspace',
+              label: '无法保留上一轮工作区修改',
+              status: 'error',
+              detail: finalized.error,
+            });
+            throw new Error(finalized.error ?? '上一轮工作区修改仍处于待决定状态');
+          }
+          result = (await service.getRun(runId)).result;
+          sendProgress({
+            id: 'workspace',
+            label: '已保留上一轮工作区修改',
+            status: 'done',
+          });
+        }
+        sendProgress({ id: 'prepare', label: '整理上一轮诊断', status: 'done' });
 
       const workspace = (await service.getConfig()).workspace;
       const runDir = path.join(service.runsRoot, runId);
