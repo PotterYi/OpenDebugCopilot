@@ -4,9 +4,9 @@
 | --- | --- |
 | 产品名 | DebugCopilot |
 | 定位 | 本地运行的后端开发辅助软件：内嵌浏览器 + 流量路由控制 + 请求/日志/源码聚合 + AI 诊断 |
-| 文档版本 | v1.10 |
-| 更新日期 | 2026-11-16 |
-| 仓库路径 | G:\develop\project\DebugCopilot |
+| 文档版本 | v1.11 |
+| 更新日期 | 2026-11-17 |
+| 仓库路径 | G:\develop\project\OpenDebugCopilot |
 
 > 本索引是文档集的唯一入口。任何文档超过 500 行都必须拆分并在此登记；
 > 查找信息请先看下方「按问题找文档」，不要通读全部文档。
@@ -77,6 +77,7 @@
 
 | 版本 | 日期 | 变更内容 |
 | --- | --- | --- |
+| v1.11 | 2026-11-17 | 仓库迁移：公开仓库 OpenDebugCopilot 设为主开发仓库，本地路径改为 `G:\develop\project\OpenDebugCopilot`；旧主仓库仅保留历史参考 |
 | v1.10 | 2026-11-16 | 用量与缓存诊断：usage 保留 per-model provider/canonicalModel/costBasis/cache 明细与逐轮摘要；UI/报告展示缓存读/写、模型/供应商与成本，非官方 provider 标“估算”；DC_DEBUG_USAGE=1 时写入 run.log；systemPrompt 改为静态前缀 + SYSTEM_PROMPT_DYNAMIC_BOUNDARY + 动态后缀，提升跨会话缓存命中；确认当前 1.93M cache read / 0 cache creation 与 DeepSeek Anthropic 兼容端点一致（命中生效，但不报 cache write）；2 个新增测试，全量 340 个测试通过 |
 | v1.09 | 2026-11-16 | Maven 结果复用：`run_command` 对重复 Maven 查询和成功 compile 做 per-run 缓存（pom/settings fingerprint，TTL 5 分钟，写入后清空，返回 cached/cacheAgeMs）；新增 `maven_dependencies` 原子工具，一次全量 dependency:tree、内部过滤 includes/excludes/scope，并可生成 declaredFile 供 runtime_classpath；避免模型拼 -Dincludes 和重复启动 Maven；docs/05 登记依赖元数据出站；2 个新增测试，全量 338 个测试通过 |
 | v1.08 | 2026-11-16 | 工具边界可发现：`safe()` 保留 AppError details，边界错误返回结构化 `details/hint/usage`；同一工具同类错误连续 2 次追加 `guardrail`，同一工具成功清零；`agent-sandbox` 的 COMMAND_DENIED 附带 reason 与实际探测命令；完全权限 Bash 拒绝同样带 usage/护栏；system prompt/工具描述增加边界表与示例，明确不要用 python -V/echo/print 试探；错误分支参数统一脱敏；3 个新增测试，全量 336 个测试通过 |
