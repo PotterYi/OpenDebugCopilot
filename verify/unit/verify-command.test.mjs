@@ -7,9 +7,12 @@ import { runVerifyCommand } from '../../src/app/electron/verify-command.mjs';
 
 const TMP = tempDir('verify-command-test');
 
+// Windows may still hold the directory briefly after a killed child process.
+const cleanup = () => rm(TMP, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+
 async function fixture(t, script) {
-  await rm(TMP, { recursive: true, force: true });
-  t.after(async () => { await rm(TMP, { recursive: true, force: true }); });
+  await cleanup();
+  t.after(cleanup);
   await mkdir(TMP, { recursive: true });
   await writeFile(path.join(TMP, 'verify.mjs'), script, 'utf8');
   return TMP;

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { redactSecrets, redactValue } from '../../src/core/redact.mjs';
+import { redactCommand, redactSecrets, redactValue } from '../../src/core/redact.mjs';
 
 test('redacts credential patterns while keeping key names and context', () => {
   const cases = [
@@ -50,6 +50,26 @@ test('redacts nested values, sensitive keys and never mutates the input', () => 
   assert.equal(out.nil, null);
   assert.equal(input.auth.token, 'opaque-token-value');
   assert.equal(input.row.password, 'hunter2secret');
+});
+
+test('redacts secrets in process command lines, including space-separated values', () => {
+  const cases = [
+    ['java -Ddb.password=hunter2 -jar app.jar', 'java -Ddb.password=<redacted> -jar app.jar'],
+    ['java --spring.datasource.password hunter2 -jar app.jar', 'java --spring.datasource.password <redacted> -jar app.jar'],
+    ['java -Daws.secretKey=AKIAABCDEFGHIJKLMNOP -jar app.jar', 'java -Daws.secretKey=<redacted> -jar app.jar'],
+    ['java --secret-access-key abc123def -jar app.jar', 'java --secret-access-key <redacted> -jar app.jar'],
+    ['java -Ddb.pass=hunter2 -jar app.jar', 'java -Ddb.pass=<redacted> -jar app.jar'],
+    ['java --api-key "abc def" -jar app.jar', 'java --api-key "<redacted>" -jar app.jar'],
+    ['java -Djavax.net.ssl.keyStorePassword=hunter2 -jar app.jar', 'java -Djavax.net.ssl.keyStorePassword=<redacted> -jar app.jar'],
+  ];
+  for (const [input, expected] of cases) {
+    assert.equal(redactCommand(input), expected);
+    assert.doesNotMatch(redactCommand(input), /hunter2|abc123def|AKIA/);
+  }
+  const ordinary = 'java -Dfile.encoding=UTF-8 --server.port=8080 --bypass=true --classpath lib/a.jar -jar app.jar';
+  assert.equal(redactCommand(ordinary), ordinary);
+  const once = redactCommand('java -Ddb.password=hunter2 -jar app.jar');
+  assert.equal(redactCommand(once), once);
 });
 
 test('redaction is idempotent and depth-limited', () => {

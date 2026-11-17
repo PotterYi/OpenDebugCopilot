@@ -3,6 +3,7 @@ import { buildProgressView, resolveFollowUpRunId, upsertProgressStep } from './p
 import { deriveCandidateRules } from './routing-assist.mjs';
 import { formatBodyText } from './format-body.mjs';
 import { REQUEST_FILTERS, matchesRequestFilter } from './request-filter.mjs';
+import { TRIAGE_FIELDS, TRIAGE_OPTIONS } from './triage-options.mjs';
 
 const $ = (id) => document.getElementById(id);
 const statusEl = $('status');
@@ -46,6 +47,13 @@ const routingMessage = $('routing-message');
 const diagnoseQuestion = $('diagnose-question');
 const diagnoseMessage = $('diagnose-message');
 const diagnoseProgressEl = $('diagnose-progress');
+const triageDetails = $('triage-details');
+const triageFields = $('triage-fields');
+const triageNote = $('triage-note');
+const elementTriageModal = $('element-triage-modal');
+const elementTriageQuestion = $('element-triage-question');
+const elementTriageFields = $('element-triage-fields');
+const elementTriageNote = $('element-triage-note');
 const consoleList = $('console-list');
 const consoleCount = $('console-count');
 const diagnoseResult = $('diagnose-result');
@@ -121,6 +129,7 @@ const diagnosisStates = new Map();
 let activeDiagnosisKey = null;
 let elementPicking = false;
 let pendingElement = null;
+let pendingElementTriage = null;
 let pendingWorkspaceSessions = [];
 const elementComposerEl = $('element-composer');
 const elementComposerMeta = $('element-composer-meta');
@@ -729,6 +738,53 @@ function requestPath(url) {
   }
 }
 
+function buildTriageFields(host) {
+  if (!host) return;
+  host.textContent = '';
+  for (const field of TRIAGE_FIELDS) {
+    const label = document.createElement('label');
+    label.textContent = field.label;
+    const select = document.createElement('select');
+    select.dataset.triageKey = field.key;
+    for (const option of TRIAGE_OPTIONS[field.key] ?? []) {
+      const item = document.createElement('option');
+      item.value = option.value;
+      item.textContent = option.label;
+      select.append(item);
+    }
+    label.append(select);
+    host.append(label);
+  }
+}
+
+function readTriage(host, noteInput) {
+  const answers = {};
+  for (const field of TRIAGE_FIELDS) {
+    const select = host?.querySelector(`select[data-triage-key="${field.key}"]`);
+    const value = select?.value ?? 'unknown';
+    if (value !== 'unknown') answers[field.key] = value;
+  }
+  const note = noteInput?.value.trim() ?? '';
+  const skipped = !note && Object.keys(answers).length === 0;
+  return { asked: true, skipped, answers, note: note || null, askedAt: new Date().toISOString() };
+}
+
+function applyTriage(host, noteInput, triage, details = null) {
+  for (const field of TRIAGE_FIELDS) {
+    const select = host?.querySelector(`select[data-triage-key="${field.key}"]`);
+    if (select) select.value = triage?.answers?.[field.key] ?? 'unknown';
+  }
+  if (noteInput) noteInput.value = triage?.note ?? '';
+  if (details) {
+    const values = Object.values(triage?.answers ?? {});
+    details.open = !triage || values.length === 0 || values.every((value) => value === 'unknown');
+  }
+}
+
+function skippedTriage() {
+  return { asked: true, skipped: true, answers: {}, note: null, askedAt: new Date().toISOString() };
+}
+
 function requestDiagnosisKey(id) {
   return `request:${String(id)}`;
 }
@@ -991,10 +1047,21 @@ function formatTokenUsage(usage) {
   if (!Number.isFinite(total)) return '—';
   const input = Number(usage?.totalInputTokens);
   const output = Number(usage?.outputTokens);
+  const cacheRead = Number(usage?.cacheReadInputTokens);
+  const cacheCreation = Number(usage?.cacheCreationInputTokens);
+  const cacheDetail = Number.isFinite(cacheRead) || Number.isFinite(cacheCreation)
+    ? `，缓存读 ${(cacheRead || 0).toLocaleString()} / 写 ${(cacheCreation || 0).toLocaleString()}`
+    : '';
   const detail = Number.isFinite(input) && Number.isFinite(output)
-    ? `（入 ${input.toLocaleString()} / 出 ${output.toLocaleString()}）`
+    ? `（入 ${input.toLocaleString()} / 出 ${output.toLocaleString()}${cacheDetail}）`
     : '';
   return `${total.toLocaleString()}${detail}`;
+}
+
+function formatCost(usage) {
+  const cost = Number(usage?.costUsd);
+  if (!Number.isFinite(cost)) return '—';
+  return `$${cost.toFixed(4)}${usage?.costEstimated ? '（估算）' : ''}`;
 }
 
 function preBlock(text) {
@@ -1244,8 +1311,16 @@ function conversationFor(result) {
     return result.conversation;
   }
   const messages = [];
-  if (result?.meta?.question) {
-    messages.push({ role: 'user', text: result.meta.question });
+  const triage = result?.meta?.triage;
+  const triageParts = TRIAGE_FIELDS
+    .filter((field) => triage?.labels?.[field.key])
+    .map((field) => triage.labels[field.key]);
+  const userText = [
+    result?.meta?.question ?? '',
+    triageParts.length > 0 ? `诊断前提：${triageParts.join(' / ')}` : '',
+  ].filter(Boolean).join('\n');
+  if (userText) {
+    messages.push({ role: 'user', text: userText });
   }
   if (result?.agent) {
     messages.push({ role: 'assistant', text: result.agent.conclusion ?? '', agent: result.agent });
@@ -1555,9 +1630,10 @@ function renderWorkspaceNotice(notice, view) {
 
 function retryWorkspaceDiagnosis(state) {
   if (!state) return undefined;
-  if (state.element) return runElementDiagnosisPayload(state.element, state.question);
+  if (state.element) return runElementDiagnosisPayload(state.element, state.question, state.triage ?? null);
   if (state.payload) {
     diagnoseQuestion.value = state.question ?? '';
+    applyTriage(triageFields, triageNote, state.triage ?? null, triageDetails);
     return runDiagnosisPayload(state.payload, state.label);
   }
   return undefined;
@@ -1861,6 +1937,14 @@ function renderRunBody(container, result, agent, view, { readOnly = false, showH
     container.append(el('p', 'error-text small', `未完成：${reasonLabel}`));
   }
 
+  const triage = result.meta?.triage;
+  const triageRows = TRIAGE_FIELDS
+    .filter((field) => triage?.labels?.[field.key])
+    .map((field) => [field.label, triage.labels[field.key]]);
+  if (triageRows.length === 0) triageRows.push(['前提信息', '未提供（诊断前已跳过）']);
+  if (triage?.note) triageRows.push(['备注', triage.note]);
+  container.append(section('诊断前提', kv(triageRows)));
+
   container.append(section('结论', el('p', 'conclusion', agent?.conclusion ?? '(无结论)')));
   if (result.databases?.notice && agent === result.agent) {
     container.append(el('p', 'error-text small', `⚠ ${result.databases.notice}`));
@@ -1906,6 +1990,9 @@ function renderRunBody(container, result, agent, view, { readOnly = false, showH
     ['前端源码', String(result.frontend?.files?.length ?? 0)],
     ['轮次', agent?.usage?.numTurns != null ? String(agent.usage.numTurns) : '—'],
     ['消耗 Token', formatTokenUsage(agent?.usage)],
+    ['缓存读/写', `${Number(agent?.usage?.cacheReadInputTokens ?? 0).toLocaleString()} / ${Number(agent?.usage?.cacheCreationInputTokens ?? 0).toLocaleString()}`],
+    ['模型/供应商', `${agent?.usage?.canonicalModel || '—'} / ${agent?.usage?.provider || '—'}`],
+    ['成本', formatCost(agent?.usage)],
     ['耗时', `${result.meta?.durationMs ?? 0} ms`],
   ])));
   if (correlationInfo.warning) {
@@ -2033,6 +2120,8 @@ async function showRequest(id) {
   activeDiagnosisKey = requestDiagnosisKey(id);
   const diagnosis = diagnosisStates.get(activeDiagnosisKey);
   diagnoseQuestion.value = diagnosis?.question ?? '';
+  applyTriage(triageFields, triageNote, diagnosis?.triage ?? null, triageDetails);
+  if (!diagnosis && triageDetails) triageDetails.open = !diagnoseQuestion.value.trim();
   renderRequests();
   renderDiagnosisState();
   requestTitle.textContent = '加载中…';
@@ -2548,12 +2637,14 @@ async function runDiagnosisPayload(payload, label) {
   if (diagnosisStates.get(key)?.status === 'running') return;
 
   const question = diagnoseQuestion.value.trim();
+  const triage = readTriage(triageFields, triageNote);
   const state = {
     key,
     requestId,
     consoleId,
     label,
     question,
+    triage,
     payload: { ...payload },
     status: 'running',
     progressSteps: [],
@@ -2573,6 +2664,7 @@ async function runDiagnosisPayload(payload, label) {
     const response = await api.diagnose({
       ...payload,
       question,
+      triage,
       allowExtraSources: $('allow-extra-sources').checked,
       mock: false,
       recheck: 1,
@@ -2629,6 +2721,36 @@ async function cancelElementComposer() {
   setStatus('已取消元素选择', 'ok');
 }
 
+function openElementTriage(element, question) {
+  if (!element || !question) return;
+  const elementId = String(element.id ?? `element-${Date.now().toString(36)}`);
+  const key = elementDiagnosisKey(elementId);
+  const previous = diagnosisStates.get(key);
+  pendingElementTriage = { element, question, elementId };
+  elementTriageQuestion.textContent = question;
+  applyTriage(elementTriageFields, elementTriageNote, previous?.triage ?? null);
+  elementTriageModal.hidden = false;
+}
+
+function closeElementTriage() {
+  elementTriageModal.hidden = true;
+  pendingElementTriage = null;
+}
+
+function startElementTriage({ skip = false } = {}) {
+  const pending = pendingElementTriage;
+  if (!pending) return;
+  const triage = skip ? skippedTriage() : readTriage(elementTriageFields, elementTriageNote);
+  const { element, question } = pending;
+  closeElementTriage();
+  hideElementComposerBar();
+  setElementPicking(false);
+  setStatus('元素诊断已开始', 'ok');
+  runElementDiagnosisPayload(element, question, triage).catch((error) => {
+    setStatus(`元素诊断启动失败：${error.message}`, 'error');
+  });
+}
+
 function submitElementComposer() {
   const element = pendingElement;
   if (!element) return;
@@ -2637,12 +2759,7 @@ function submitElementComposer() {
     elementComposerInput.focus();
     return;
   }
-  hideElementComposerBar();
-  setElementPicking(false);
-  setStatus('元素诊断已开始', 'ok');
-  runElementDiagnosisPayload(element, question).catch((error) => {
-    setStatus(`元素诊断启动失败：${error.message}`, 'error');
-  });
+  openElementTriage(element, question);
 }
 
 function renderElementDetail(state) {
@@ -2736,7 +2853,7 @@ function showElementState(key) {
   renderRequests();
 }
 
-async function runElementDiagnosisPayload(element, question) {
+async function runElementDiagnosisPayload(element, question, triage = null) {
   if (!element) return;
   const elementId = String(element.id ?? `element-${Date.now().toString(36)}`);
   const key = elementDiagnosisKey(elementId);
@@ -2747,6 +2864,7 @@ async function runElementDiagnosisPayload(element, question) {
     element: { ...element, id: elementId },
     label: '元素',
     question: question ?? '',
+    triage,
     status: 'running',
     progressSteps: [],
     response: null,
@@ -2771,6 +2889,7 @@ async function runElementDiagnosisPayload(element, question) {
     const response = await api.diagnose({
       element: state.element,
       question: state.question,
+      triage: state.triage,
       allowExtraSources: $('allow-extra-sources').checked,
       mock: false,
       recheck: 1,
@@ -3369,12 +3488,8 @@ api.onElementEvent((event) => {
     showElementComposerBar(event.element);
     setStatus('已选中元素，请在浏览器下方输入问题');
   } else if (event.type === 'element-submit') {
-    hideElementComposerBar();
     setElementPicking(false);
-    setStatus('元素诊断已开始', 'ok');
-    runElementDiagnosisPayload(event.element, event.question).catch((error) => {
-      setStatus(`元素诊断启动失败：${error.message}`, 'error');
-    });
+    openElementTriage(event.element, event.question);
   } else if (event.type === 'element-pick-cancel') {
     hideElementComposerBar();
     setElementPicking(false);
@@ -3661,6 +3776,12 @@ window.addEventListener('resize', () => requestAnimationFrame(syncBounds));
 if (typeof ResizeObserver !== 'undefined') {
   new ResizeObserver(() => requestAnimationFrame(syncBounds)).observe(browserSlot);
 }
+
+buildTriageFields(triageFields);
+buildTriageFields(elementTriageFields);
+$('element-triage-start').addEventListener('click', () => startElementTriage());
+$('element-triage-skip').addEventListener('click', () => startElementTriage({ skip: true }));
+$('element-triage-cancel').addEventListener('click', closeElementTriage);
 
 const initialConfig = await loadConfig();
 if (initialConfig?.workspace?.frontendUrl) browserUrlInput.value = initialConfig.workspace.frontendUrl;

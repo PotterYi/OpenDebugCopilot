@@ -4,8 +4,8 @@
 | --- | --- |
 | 产品名 | DebugCopilot |
 | 定位 | 本地运行的后端开发辅助软件：内嵌浏览器 + 流量路由控制 + 请求/日志/源码聚合 + AI 诊断 |
-| 文档版本 | v0.89 |
-| 更新日期 | 2026-11-05 |
+| 文档版本 | v1.10 |
+| 更新日期 | 2026-11-16 |
 | 仓库路径 | G:\develop\project\DebugCopilot |
 
 > 本索引是文档集的唯一入口。任何文档超过 500 行都必须拆分并在此登记；
@@ -19,10 +19,10 @@
 | --- | --- | --- | --- |
 | — | [README.md](./README.md) | 索引、变更记录、文档规范 | 本文件 |
 | 01 | [01-概述与使用场景.md](./01-概述与使用场景.md) | 背景痛点、产品定位、目标用户、设计原则、非目标、核心场景与使用流程 | 86 |
-| 02 | [02-功能需求.md](./02-功能需求.md) | FR-01 ~ FR-97，按 10 个域划分，P0/P1/P2 分级 | 108 |
-| 03 | [03-总体架构.md](./03-总体架构.md) | 分层架构、模块职责、关键数据流、拦截方案选型、规则引擎、日志采集、堆栈映射、诊断编排 | 222 |
-| 04 | [04-数据模型与接口.md](./04-数据模型与接口.md) | 文件化数据模型（无数据库）、模块接口与运行目录 | 81 |
-| 05 | [05-技术选型与安全.md](./05-技术选型与安全.md) | 技术选型、安全与隐私、非功能指标 | 73 |
+| 02 | [02-功能需求.md](./02-功能需求.md) | FR-01 ~ FR-97，按 10 个域划分，P0/P1/P2 分级 | 114 |
+| 03 | [03-总体架构.md](./03-总体架构.md) | 分层架构、模块职责、关键数据流、拦截方案选型、规则引擎、日志采集、堆栈映射、诊断编排 | 258 |
+| 04 | [04-数据模型与接口.md](./04-数据模型与接口.md) | 文件化数据模型（无数据库）、模块接口与运行目录 | 123 |
+| 05 | [05-技术选型与安全.md](./05-技术选型与安全.md) | 技术选型、安全与隐私、非功能指标 | 81 |
 | 06 | [06-里程碑与待确认.md](./06-里程碑与待确认.md) | 里程碑 M0~M5、待确认 Q1~Q9、待补充 T1~T21 | 64 |
 | 07 | [07-术语与同步约定.md](./07-术语与同步约定.md) | 术语表、文档同步约定 | 31 |
 | 08 | [08-DEMO实现现状.md](./08-DEMO实现现状.md) | 三种入口与进程模型、两条捕获路径、三钩子路由、诊断流程与稳定性、证据工具、差异对照 | 211 |
@@ -77,6 +77,13 @@
 
 | 版本 | 日期 | 变更内容 |
 | --- | --- | --- |
+| v1.10 | 2026-11-16 | 用量与缓存诊断：usage 保留 per-model provider/canonicalModel/costBasis/cache 明细与逐轮摘要；UI/报告展示缓存读/写、模型/供应商与成本，非官方 provider 标“估算”；DC_DEBUG_USAGE=1 时写入 run.log；systemPrompt 改为静态前缀 + SYSTEM_PROMPT_DYNAMIC_BOUNDARY + 动态后缀，提升跨会话缓存命中；确认当前 1.93M cache read / 0 cache creation 与 DeepSeek Anthropic 兼容端点一致（命中生效，但不报 cache write）；2 个新增测试，全量 340 个测试通过 |
+| v1.09 | 2026-11-16 | Maven 结果复用：`run_command` 对重复 Maven 查询和成功 compile 做 per-run 缓存（pom/settings fingerprint，TTL 5 分钟，写入后清空，返回 cached/cacheAgeMs）；新增 `maven_dependencies` 原子工具，一次全量 dependency:tree、内部过滤 includes/excludes/scope，并可生成 declaredFile 供 runtime_classpath；避免模型拼 -Dincludes 和重复启动 Maven；docs/05 登记依赖元数据出站；2 个新增测试，全量 338 个测试通过 |
+| v1.08 | 2026-11-16 | 工具边界可发现：`safe()` 保留 AppError details，边界错误返回结构化 `details/hint/usage`；同一工具同类错误连续 2 次追加 `guardrail`，同一工具成功清零；`agent-sandbox` 的 COMMAND_DENIED 附带 reason 与实际探测命令；完全权限 Bash 拒绝同样带 usage/护栏；system prompt/工具描述增加边界表与示例，明确不要用 python -V/echo/print 试探；错误分支参数统一脱敏；3 个新增测试，全量 336 个测试通过 |
+| v1.07 | 2026-11-15 | 新增只读文件/Git 工具：`list_dir` / `stat_file` 返回相对路径、类型、大小、mtime；`git_status` / `git_log` / `git_diff` 返回只读 Git 元数据，默认 stat、隐藏敏感路径、不返回作者邮箱/commit body；完整 patch 需显式单文件路径并脱敏截断。Git 固定禁用 pager、外部 diff、textconv、fsmonitor 与 optional locks；路径统一走 `core/path-policy.mjs`；`read`/`run_command` 错误提示引导到新工具；docs/05 §8 登记文件元数据与 Git 元数据出站；12 个新增测试，全量 333 个测试通过 |
+| v1.06 | 2026-11-14 | 新增诊断前 Triage：桌面端在诊断前收集复现环境/影响范围/最近变更（默认不确定、可跳过，元素诊断使用紧凑弹窗）；答案写入 `evidence.triage`/`result.meta.triage`，prompt 放在症状之后、证据之前，报告新增「诊断前提」并置于结论之前；Agent 不得重复询问已回答问题；CLI 新增 `--triage`/`--triage-note`/`--triage-file`；docs/05 §8 登记该出站数据；7 个新增测试，全量 321 个测试通过 |
+| v1.05 | 2026-11-14 | 新增运行进程识别：`list_processes` 返回 pid/ppid/name/startedAt 与脱敏 command，默认当前用户/会话，支持 pid/port/name/commandContains/javaOnly；`core/redact.mjs` 新增 `redactCommand`，覆盖 `--key value`、`secretKey=`、`pass=` 等命令行写法；进程 command 先脱敏再截断，并由 docs/05 §8 记录为新增出站数据类别；8 个新增测试，全量 314 个测试通过 |
+| v1.04 | 2026-11-14 | 新增运行侧 classpath 诊断：`list_java_processes` + `runtime_classpath` 读取目标 JVM 的 `java.class.path`、`loader.path`、executable jar manifest 与 `BOOT-INF/lib` / `WEB-INF/lib`，在工具内部与声明侧清单求差集，只返回 missing / versionMismatch / runtimeOnly；声明文件限制在源码根、run 目录或工作区，不注入 agent，不返回完整 classpath；15 个新增测试，全量 306 个测试通过 |
 | v0.89 | 2026-11-05 | 报告/UI 展示真实日志关联方式，time-window 标注兜底风险，capture 不再显示误导的 marker 未匹配；业务 ID 扫描扩展到 headers/path，支持 empNum/courseCode 等后缀并过滤通用 code/status；marker 明确为 CLI fire 模式专用；179 个测试通过 |
 | v0.88 | 2026-11-05 | 保存配置现在会读取浏览器地址栏的当前值作为 frontendUrl，不再必须点击打开/回车才保存；175 个测试通过 |
 | v0.87 | 2026-11-05 | 「保存为」按名称去重：同名配置直接覆盖原快照并保持同一 id/active，不再无限新增；174 个测试通过 |

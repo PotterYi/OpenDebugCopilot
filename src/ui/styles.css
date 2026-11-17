@@ -783,6 +783,40 @@ button:disabled:hover { filter: grayscale(0.55); }
   font: inherit;
   resize: vertical;
 }
+.triage-card { margin-bottom: 8px; }
+.triage-card summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+  user-select: none;
+}
+.triage-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 6px;
+}
+.triage-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.triage-grid select,
+.triage-note {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 6px 8px;
+  font: inherit;
+}
+.triage-note { width: 100%; margin-top: 6px; }
+.modal .triage-grid { grid-template-columns: 1fr; }
+@media (max-width: 760px) {
+  .triage-grid { grid-template-columns: 1fr; }
+}
 .console-panel {
   margin-top: 10px;
   border-top: 1px solid var(--border);

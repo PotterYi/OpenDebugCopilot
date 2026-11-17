@@ -4,6 +4,7 @@ import { AppError } from '../core/errors.mjs';
 import { redactHeaders } from '../core/redact.mjs';
 import { newRunId } from '../core/ids.mjs';
 import { resolveScenarioPaths } from '../core/scenario.mjs';
+import { normalizeTriage } from '../core/triage.mjs';
 import { resolveFrontendSources } from '../evidence/frontend.mjs';
 import { collectElementEvidence } from '../evidence/element.mjs';
 import { buildFixPreviews, extraRootFixes, mergeExtractedFixes } from '../core/fixes.mjs';
@@ -240,6 +241,7 @@ async function diagnoseWithFired({
   runId,
   runDir,
   question,
+  triage = null,
   agent,
   recheck,
   markerTimeoutMs,
@@ -257,6 +259,7 @@ async function diagnoseWithFired({
   element = null,
   onProgress = () => {},
 }) {
+  const normalizedTriage = normalizeTriage(triage);
   const progress = (id, label, status = 'done', detail = null) => {
     try {
       onProgress({ id, label, status, detail, at: Date.now() });
@@ -271,6 +274,15 @@ async function diagnoseWithFired({
     read_source: '读取源码',
     search_source: '搜索源码',
     read: '读取工具结果',
+    list_java_processes: '查找 Java 进程',
+    list_processes: '查看运行进程',
+    list_dir: '查看目录',
+    stat_file: '查看文件时间',
+    git_status: '查看 Git 状态',
+    git_log: '查看最近提交',
+    git_diff: '查看代码变更',
+    maven_dependencies: '分析 Maven 依赖',
+    runtime_classpath: '对比运行 classpath',
     query_db: '查询数据库',
     write_db: '写入数据库',
     run_command: '运行编译/测试',
@@ -482,6 +494,7 @@ async function diagnoseWithFired({
     approveWrite,
     databaseConnect,
     runCommand: sandboxRunCommand,
+    toolMode: toolMode === 'full' ? 'full' : (sandboxRunCommand ? 'sandbox' : 'readonly'),
     window: timeWindow,
     onCall: (call) => {
       const label = TOOL_LABELS[call.name] ?? call.name;
@@ -505,6 +518,7 @@ async function diagnoseWithFired({
 
   const evidence = {
     symptom: { question, pageUrl: element?.page?.url ?? fired.request?.url ?? null },
+    triage: normalizedTriage ?? undefined,
     element: elementContext ?? undefined,
     request: {
       method: fired.request?.method,
@@ -580,6 +594,9 @@ async function diagnoseWithFired({
             && ['Edit', 'Write', 'Bash'].includes(tool.name)) {
             wroteWorkspace = true;
           }
+          if (tool.stage === 'done' && !tool.error && ['Edit', 'Write', 'Bash'].includes(tool.name)) {
+            toolsBundle.resetCommandCache();
+          }
           const toolLabel = tool.name
             ? (BUILTIN_TOOL_LABELS[tool.name] ?? tool.name)
             : null;
@@ -607,6 +624,9 @@ async function diagnoseWithFired({
       agentResult.incomplete ? 'AI 未完成，已保留部分结论' : 'AI 已给出结论',
       agentResult.incomplete ? 'error' : 'done',
     );
+    if (process.env.DC_DEBUG_USAGE === '1' && agentResult.usage) {
+      await runLog.info(`usage ${JSON.stringify(agentResult.usage)}`);
+    }
   } catch (error) {
     progress('agent', 'AI 分析失败', 'error');
     if (sandboxContext) {
@@ -988,6 +1008,7 @@ async function diagnoseWithFired({
       endedAt,
       durationMs: endedAt - startedAt,
       question,
+      triage: normalizedTriage,
       runLog: 'run.log',
       incomplete: Boolean(agentResult.incomplete),
       incompleteReason: agentResult.incompleteReason ?? null,
@@ -1074,6 +1095,7 @@ export async function runDiagnosis(scenario, options = {}) {
     runId = newRunId(),
     runsDir = path.resolve('runs'),
     question = '',
+    triage = null,
     agent = createMockAgent(),
     recheck = 1,
     markerTimeoutMs = DEFAULT_MARKER_TIMEOUT_MS,
@@ -1121,6 +1143,7 @@ export async function runDiagnosis(scenario, options = {}) {
     runId,
     runDir,
     question,
+    triage,
     agent,
     recheck,
     markerTimeoutMs,
@@ -1162,6 +1185,7 @@ export async function runCaptureDiagnosis(observation, options = {}) {
     runId = newRunId(),
     runsDir = path.resolve('runs'),
     question = '',
+    triage = null,
     agent = createMockAgent(),
     recheck = 1,
     markerTimeoutMs = DEFAULT_MARKER_TIMEOUT_MS,
@@ -1263,6 +1287,7 @@ export async function runCaptureDiagnosis(observation, options = {}) {
     runId,
     runDir,
     question,
+    triage,
     agent,
     recheck,
     markerTimeoutMs,
@@ -1295,6 +1320,7 @@ export async function runElementDiagnosis(element, options = {}) {
     runId = newRunId(),
     runsDir = path.resolve('runs'),
     question = '',
+    triage = null,
     agent = createMockAgent(),
     recheck = 1,
     markerTimeoutMs = DEFAULT_MARKER_TIMEOUT_MS,
@@ -1419,6 +1445,7 @@ export async function runElementDiagnosis(element, options = {}) {
     runId,
     runDir,
     question,
+    triage,
     agent,
     recheck,
     markerTimeoutMs,

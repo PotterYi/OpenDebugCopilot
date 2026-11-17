@@ -71,19 +71,27 @@ test('run_command allows build/test tooling and rejects shell escapes', async (t
 
   await assert.rejects(
     runCommand({ command: 'npm install' }),
-    (error) => error?.code === 'COMMAND_DENIED',
+    (error) => error?.code === 'COMMAND_DENIED'
+      && error.details?.reason === 'risky'
+      && error.details.examples.includes('npm run build'),
   );
   await assert.rejects(
     runCommand({ command: 'npm run build && echo hacked' }),
-    (error) => error?.code === 'COMMAND_DENIED',
+    (error) => error?.code === 'COMMAND_DENIED'
+      && error.details?.reason === 'shell-syntax'
+      && error.details.examples.includes('npm run build'),
   );
   await assert.rejects(
     runCommand({ command: 'echo hi' }),
-    (error) => error?.code === 'COMMAND_DENIED',
+    (error) => error?.code === 'COMMAND_DENIED'
+      && error.details?.reason === 'toolchain'
+      && error.details.examples.includes('npm run build'),
   );
   await assert.rejects(
     runCommand({ command: 'npm run build', cwd: '../' }),
-    (error) => error?.code === 'COMMAND_CWD_DENIED',
+    (error) => error?.code === 'COMMAND_CWD_DENIED'
+      && error.details?.reason === 'cwd'
+      && error.details.roots.includes('backend'),
   );
   await cleanupAgentSandbox(sandbox);
 });

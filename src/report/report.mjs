@@ -1,4 +1,6 @@
 import { normalizeFixList } from '../core/fixes.mjs';
+import { redactSecrets } from '../core/redact.mjs';
+import { TRIAGE_FIELDS, triageSummary } from '../core/triage.mjs';
 
 /**
  * Whitelist projection + Markdown rendering for the redacted report.
@@ -42,12 +44,21 @@ function requestPath(url) {
 export function buildReport(result) {
   const logs = result.logs ?? {};
   const agent = result.agent ?? {};
+  const triage = result.meta?.triage ?? null;
   return {
     target: {
       scenario: result.meta?.scenario ?? '(unknown)',
       driver: result.target?.driver ?? '(unknown)',
     },
     symptom: scrubText(result.meta?.question?.trim() ? result.meta.question : '(未提供描述)'),
+    triage: {
+      summary: scrubText(redactSecrets(triageSummary(triage))),
+      entries: TRIAGE_FIELDS
+        .filter((field) => triage?.labels?.[field.key])
+        .map((field) => ({ label: field.label, value: scrubText(triage.labels[field.key]) })),
+      note: triage?.note ? scrubText(redactSecrets(triage.note)) : null,
+      skipped: !triage || Boolean(triage.skipped),
+    },
     element: result.element
       ? {
           pageUrl: scrubText(result.element.page?.url ?? ''),
@@ -100,6 +111,13 @@ export function buildReport(result) {
       toolCalls: agent.toolCalls?.length ?? 0,
       turns: agent.usage?.numTurns ?? null,
       tokens: agent.usage?.totalTokens ?? null,
+      cacheReadTokens: agent.usage?.cacheReadInputTokens ?? null,
+      cacheCreationTokens: agent.usage?.cacheCreationInputTokens ?? null,
+      provider: agent.usage?.provider ?? null,
+      canonicalModel: agent.usage?.canonicalModel ?? null,
+      costBasis: agent.usage?.costBasis ?? null,
+      costEstimated: agent.usage?.costEstimated ?? null,
+      costUsd: agent.usage?.costUsd ?? null,
       confidence: agent.confidence ?? null,
       correlation: result.logs?.correlation?.strategy ?? null,
       correlationId: result.logs?.correlation?.matchedId ?? null,
@@ -169,6 +187,13 @@ export function renderMarkdown(report) {
       ? [`- 状态：未完成（${report.meta.incompleteReason ?? 'unknown'}）`]
       : []),
     '',
+    '## 诊断前提',
+    '',
+    ...(report.triage.entries.length > 0
+      ? report.triage.entries.map((entry) => `- ${entry.label}：${entry.value}`)
+      : ['- 前提信息：未提供（诊断前已跳过）']),
+    ...(report.triage.note ? [`- 备注：${report.triage.note}`] : []),
+    '',
     '## 结论',
     '',
     report.conclusion || '(无结论)',
@@ -219,6 +244,15 @@ export function renderMarkdown(report) {
     `- 工具调用：${report.summary.toolCalls} 次`,
     ...(report.summary.turns != null ? [`- 轮次：${report.summary.turns}`] : []),
     ...(report.summary.tokens != null ? [`- 消耗 Token：${report.summary.tokens}`] : []),
+    ...(report.summary.cacheReadTokens != null
+      ? [`- 缓存读/写：${report.summary.cacheReadTokens} / ${report.summary.cacheCreationTokens ?? 0}`]
+      : []),
+    ...(report.summary.provider || report.summary.canonicalModel
+      ? [`- 模型/供应商：${report.summary.canonicalModel || '—'} / ${report.summary.provider || '—'}`]
+      : []),
+    ...(report.summary.costUsd != null
+      ? [`- 成本：$${Number(report.summary.costUsd).toFixed(4)}${report.summary.costEstimated ? '（估算）' : ''}`]
+      : []),
     ...(report.summary.frontendErrors
       ? [`- 前端错误：${report.summary.frontendErrors} 条（源码片段 ${report.summary.frontendSources} 处）`]
       : []),

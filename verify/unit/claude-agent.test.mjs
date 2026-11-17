@@ -3,8 +3,11 @@ import assert from 'node:assert/strict';
 import { z } from 'zod';
 import {
   CLAUDE_SETTING_SOURCES,
+  buildCachedSystemPrompt,
   buildFollowUpPrompt,
+  buildPrompt,
   buildToolShapes,
+  turnUsageFromMessage,
   createClaudeAgent,
   redactToolOutputHook,
   sdkAuthOptions,
@@ -12,6 +15,33 @@ import {
   validationStrategyPrompt,
 } from '../../src/agent/claude.mjs';
 import { toolSpecs } from '../../src/tools/index.mjs';
+
+test('puts triage answers at the start of the diagnosis prompt', () => {
+  const triage = {
+    asked: true,
+    skipped: false,
+    answers: { environment: 'deploy-only', scope: 'endpoint', change: 'dependency' },
+    labels: {
+      environment: '仅部署环境复现',
+      scope: '仅当前接口/页面',
+      change: '依赖或版本升级',
+    },
+    note: '升级后出现',
+    askedAt: '2026-11-14T10:00:00.000Z',
+  };
+  const prompt = buildPrompt('下单失败', { symptom: { question: '下单失败' }, triage });
+  assert.match(prompt, /# 诊断前确认/);
+  assert.match(prompt, /仅部署环境复现/);
+  assert.match(prompt, /升级后出现/);
+  assert.match(prompt, /不要重复询问已经回答的问题/);
+  assert.ok(prompt.indexOf('# 诊断前确认') < prompt.indexOf('# 已采集的证据包'));
+
+  const follow = buildFollowUpPrompt('继续分析', {
+    meta: { question: '下单失败', triage },
+    agent: { conclusion: '旧结论' },
+  });
+  assert.match(follow, /仅部署环境复现/);
+});
 
 test('creates the live Claude agent adapter without spawning', () => {
   const agent = createClaudeAgent({ model: 'claude-sonnet-5', maxTurns: 12 });
@@ -40,25 +70,40 @@ test('usageFromResult sums modelUsage tokens (including cache) and falls back to
     total_cost_usd: 0.12,
     duration_ms: 900,
     modelUsage: {
-      'claude-a': {
+      'deepseek-flash': {
         inputTokens: 100,
         outputTokens: 40,
         cacheReadInputTokens: 20,
-        cacheCreationInputTokens: 5,
+        cacheCreationInputTokens: 0,
+        provider: 'gateway',
+        canonicalModel: 'deepseek-flash',
+        costBasis: 'unknown',
       },
       'claude-b': {
         inputTokens: 60,
         outputTokens: 10,
         cacheReadInputTokens: 4,
         cacheCreationInputTokens: 1,
+        provider: 'firstParty',
+        costBasis: 'list',
       },
     },
+  }, {
+    turns: [{ id: 'm1', inputTokens: 1, outputTokens: 2, cacheReadInputTokens: 3, cacheCreationInputTokens: 0 }],
   });
   assert.equal(fromModels.numTurns, 7);
   assert.equal(fromModels.inputTokens, 160);
   assert.equal(fromModels.outputTokens, 50);
-  assert.equal(fromModels.totalInputTokens, 160 + 24 + 6);
-  assert.equal(fromModels.totalTokens, 160 + 24 + 6 + 50);
+  assert.equal(fromModels.totalInputTokens, 160 + 24 + 1);
+  assert.equal(fromModels.totalTokens, 160 + 24 + 1 + 50);
+  assert.equal(fromModels.provider, 'gateway');
+  assert.equal(fromModels.canonicalModel, 'deepseek-flash');
+  assert.equal(fromModels.costEstimated, true);
+  assert.equal(fromModels.models.length, 2);
+  assert.equal(fromModels.models[0].provider, 'gateway');
+  assert.deepEqual(fromModels.perTurn, [
+    { id: 'm1', inputTokens: 1, outputTokens: 2, cacheReadInputTokens: 3, cacheCreationInputTokens: 0 },
+  ]);
 
   const fallback = usageFromResult({
     num_turns: 2,
@@ -70,6 +115,31 @@ test('usageFromResult sums modelUsage tokens (including cache) and falls back to
     },
   });
   assert.equal(fallback.totalTokens, 18);
+});
+
+test('extracts per-turn usage and builds a cacheable system prompt', () => {
+  const turn = turnUsageFromMessage({
+    type: 'assistant',
+    message: {
+      id: 'msg-1',
+      model: 'deepseek-flash',
+      usage: {
+        input_tokens: 10,
+        output_tokens: 4,
+        cache_read_input_tokens: 100,
+        cache_creation_input_tokens: 0,
+        cache_creation: { ephemeral_5m_input_tokens: 2 },
+      },
+    },
+  });
+  assert.equal(turn.id, 'msg-1');
+  assert.equal(turn.model, 'deepseek-flash');
+  assert.equal(turn.cacheReadInputTokens, 100);
+  assert.equal(turn.cacheCreationInputTokens, 0);
+  assert.equal(turn.cacheCreationEphemeral5mInputTokens, 2);
+
+  const prompt = buildCachedSystemPrompt('static rules', 'dynamic workspace', 'BOUNDARY');
+  assert.deepEqual(prompt, ['static rules', 'BOUNDARY', 'dynamic workspace']);
 });
 
 test('follow-up snapshot carries validation output, withheld fixes and sandbox skips', () => {

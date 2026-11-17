@@ -36,6 +36,32 @@ export function redactSecrets(text) {
   return out;
 }
 
+// Command lines need a wider key vocabulary than JSON/HTTP text: Java system
+// properties and Spring Boot arguments commonly use dotted/suffixed keys such
+// as -Daws.secretKey or --spring.datasource.password, and the value may be
+// separated by a space instead of '='. Keep this in core so every caller uses
+// the same rule before a command line can reach the model.
+const COMMAND_KEY_BOUNDARY = String.raw`(?:^|[.\-_/])`;
+const COMMAND_SENSITIVE_KEY = String.raw`(?:pass(?:word|wd|phrase|code)?|secret[\w.-]*|token[\w.-]*|credential[s]?|api[_-]?key|access[_-]?key|private[_-]?key|auth[_-]?token|client[_-]?secret)`;
+const COMMAND_PATTERNS = [
+  [new RegExp(`(${COMMAND_KEY_BOUNDARY}${COMMAND_SENSITIVE_KEY}\\s*=\\s*)(["'])([^"']*)(\\2)`, 'gi'), '$1$2<redacted>$4'],
+  [new RegExp(`(${COMMAND_KEY_BOUNDARY}${COMMAND_SENSITIVE_KEY}\\s*=\\s*)([^\\s"',;]+)`, 'gi'), '$1<redacted>'],
+  [new RegExp(`(${COMMAND_KEY_BOUNDARY}${COMMAND_SENSITIVE_KEY}\\s+)(["'])([^"']*)(\\2)`, 'gi'), '$1$2<redacted>$4'],
+  [new RegExp(`(${COMMAND_KEY_BOUNDARY}${COMMAND_SENSITIVE_KEY}\\s+)([^\\s"',;]+)`, 'gi'), '$1<redacted>'],
+];
+
+/**
+ * Redact a process command line before it can leave the machine.
+ * Run redaction before truncation so a cut cannot expose half a secret.
+ */
+export function redactCommand(text) {
+  let out = redactSecrets(text);
+  for (const [pattern, replacement] of COMMAND_PATTERNS) {
+    out = out.replace(pattern, replacement);
+  }
+  return out;
+}
+
 export function redactValue(value, depth = 0) {
   if (typeof value === 'string') return redactSecrets(value);
   if (value === null || value === undefined) return value;

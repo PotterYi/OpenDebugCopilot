@@ -69,9 +69,13 @@ test('runs the full diagnosis loop with mock agent', async (t) => {
     const preflight = await runPreflight(scenario);
     assert.equal(preflight.ok, true, JSON.stringify(preflight.checks));
 
-    const { result, runDir } = await runDiagnosis(scenario, {
+    const { result, runDir, report } = await runDiagnosis(scenario, {
       runsDir: RUNS,
       question: '下单失败了',
+      triage: {
+        answers: { environment: 'deploy-only', scope: 'endpoint', change: 'dependency' },
+        note: '升级依赖后出现',
+      },
       recheck: 3,
       markerTimeoutMs: 1500,
       pollIntervalMs: 100,
@@ -79,6 +83,10 @@ test('runs the full diagnosis loop with mock agent', async (t) => {
     });
 
     assert.equal(result.meta.mode, 'mock');
+    assert.equal(result.meta.triage.answers.environment, 'deploy-only');
+    assert.equal(result.meta.triage.labels.scope, '仅当前接口/页面');
+    assert.equal(report.triage.entries.length, 3);
+    assert.equal(report.triage.note, '升级依赖后出现');
     assert.equal(result.marker.injected, true);
     assert.equal(result.marker.targets.body, true);
     assert.equal(result.logs.markerMatched, true);

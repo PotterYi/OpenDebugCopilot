@@ -157,6 +157,13 @@
             <div class="question-row">
               <textarea id="diagnose-question" class="question-input" rows="2" placeholder="描述现象（可选），例如：登录后用户列表报错"></textarea>
             </div>
+            <div id="triage-card" class="triage-card">
+              <details id="triage-details">
+                <summary>诊断前提（可选，帮助缩小排查范围）</summary>
+                <div id="triage-fields" class="triage-grid"></div>
+                <input id="triage-note" class="triage-note" placeholder="补充说明（可选），例如：升级依赖后出现" />
+              </details>
+            </div>
             <div class="toolbar diagnose-toolbar">
               <button id="diagnose-request" type="button">诊断此请求</button>
               <label class="inline" title="勾选后才允许读取和修改「其他后端源码目录」中的代码">
@@ -243,6 +250,20 @@
       </div>
     </section>
   </main>
+
+  <div id="element-triage-modal" class="modal-backdrop" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="element-triage-title">
+      <h2 id="element-triage-title">诊断前提</h2>
+      <p id="element-triage-question" class="muted small"></p>
+      <div id="element-triage-fields" class="triage-grid"></div>
+      <input id="element-triage-note" class="triage-note" placeholder="补充说明（可选）" />
+      <div class="modal-actions">
+        <button id="element-triage-cancel" type="button" class="secondary">取消</button>
+        <button id="element-triage-skip" type="button" class="secondary">跳过并诊断</button>
+        <button id="element-triage-start" type="button">开始诊断</button>
+      </div>
+    </div>
+  </div>
 
   <div id="database-modal" class="modal-backdrop" hidden>
     <div class="modal database-modal" role="dialog" aria-modal="true" aria-labelledby="database-modal-title">

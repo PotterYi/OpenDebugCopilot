@@ -59,6 +59,8 @@ test('denies every non-read-only built-in tool', async (t) => {
   for (const name of ['Bash', 'Edit', 'Write', 'NotebookEdit', 'WebFetch']) {
     assert.equal((await canUseTool(name, {})).behavior, 'deny', name);
   }
+  const bashDenied = await canUseTool('Bash', { command: 'ls' });
+  assert.match(bashDenied.message, /list_dir|stat_file/);
 });
 
 test('sandbox mode allows Edit/Write only inside authorized roots', async (t) => {
@@ -90,7 +92,12 @@ test('full mode runs Edit/Write and safe Bash without per-action approval', asyn
   assert.equal(await behavior('Write', { file_path: path.join(root, 'src', 'new.js'), content: 'x' }), 'allow');
   assert.equal(approvalCalls, 0);
   // Risky Bash is denied when no dangerous-action approver is configured.
-  assert.equal(await behavior('Bash', { command: 'cat /etc/passwd' }), 'deny');
+  const riskyBash = await canUseTool('Bash', { command: 'cat /etc/passwd' });
+  assert.equal(riskyBash.behavior, 'deny');
+  assert.match(riskyBash.message, /mvn|npm/);
+  const secondBash = await canUseTool('Bash', { command: 'ls' });
+  assert.equal(secondBash.behavior, 'deny');
+  assert.match(secondBash.message, /连续 2 次/);
   assert.equal(await behavior('Write', { file_path: path.join(outside, 'new.js') }), 'deny');
 });
 

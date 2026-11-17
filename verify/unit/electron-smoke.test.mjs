@@ -159,6 +159,8 @@ test('electron shell boots, captures, routes and diagnoses', {
   assert.match(stdout, /"hasWorkspace":true/);
   assert.match(stdout, /"uiReady":true/);
   assert.match(stdout, /"hiddenAttrWorks":true/);
+  assert.match(stdout, /"triageUiPresent":true/);
+  assert.match(stdout, /"triageDefaultsUnknown":true/);
   assert.match(stdout, /"tempConfigFlag":true/);
   assert.match(stdout, /"logPathVisible":true/);
   assert.match(stdout, /"logTabPresent":true/);
@@ -219,6 +221,8 @@ test('electron shell boots, captures, routes and diagnoses', {
   assert.equal(smokeResult.elementUi?.composerOpen, true);
   assert.equal(smokeResult.elementUi?.hasInput, true);
   assert.equal(smokeResult.elementUi?.hasButton, true);
+  assert.equal(smokeResult.elementUi?.triageModal, true);
+  assert.equal(smokeResult.elementUi?.triageFields, 3);
   assert.match(smokeResult.elementUi?.runScenario ?? '', /^element-/);
   assert.ok(smokeResult.elementUi?.runId, JSON.stringify(smokeResult.elementUi));
   assert.ok(smokeResult.clearAfterDiagnosis?.before?.elements > 0, JSON.stringify(smokeResult.clearAfterDiagnosis));
@@ -1126,6 +1130,8 @@ test('diagnoses multiple requests concurrently and keeps running ones when clear
 
     const diagnoseButton = document.getElementById('diagnose-request');
     find('/api/one').click();
+    document.getElementById('triage-details').open = true;
+    document.querySelector('#triage-fields select[data-triage-key="environment"]').value = 'deploy-only';
     diagnoseButton.click();
     find('/api/two').click();
     diagnoseButton.click();
@@ -1174,6 +1180,7 @@ test('diagnoses multiple requests concurrently and keeps running ones when clear
       hasResult: document.getElementById('diagnose-result')?.hidden === false,
       runId: runId(),
       progressHidden: document.getElementById('diagnose-progress')?.hidden === true,
+      triageShown: (document.getElementById('diagnose-result')?.textContent ?? '').includes('仅部署环境复现'),
       overviewToggle: { beforeCollapse, collapsed, collapsedChevron, collapsedClass, expanded },
     };
 
@@ -1240,6 +1247,7 @@ test('diagnoses multiple requests concurrently and keeps running ones when clear
     collapsedClass: true,
     expanded: true,
   });
+  assert.equal(result.first.triageShown, true);
   assert.equal(result.second.hasResult, true);
   assert.equal(result.differentRuns, true);
   assert.equal(result.clearedAfterDone, true);

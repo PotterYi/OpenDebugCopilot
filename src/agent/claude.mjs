@@ -7,6 +7,9 @@ import { normalizeFixList } from '../core/fixes.mjs';
 import { summarizeToolCalls } from '../core/tool-calls.mjs';
 import { redactHeaders, redactValue } from '../core/redact.mjs';
 import { isSafeBashCommand } from '../core/bash-policy.mjs';
+import { inside, isSensitivePath } from '../core/path-policy.mjs';
+import { triagePromptLines } from '../core/triage.mjs';
+import { boundaryGuidance, createDenialTracker } from '../tools/guidance.mjs';
 
 // Never use []: SDK isolation mode drops the user's Claude Code settings,
 // including auth env vars such as ANTHROPIC_AUTH_TOKEN/ANTHROPIC_BASE_URL.
@@ -52,8 +55,6 @@ export const READ_ONLY_BUILTIN_TOOLS = Object.freeze(['Read', 'Grep', 'Glob']);
 export const SANDBOX_BUILTIN_TOOLS = Object.freeze(['Read', 'Grep', 'Glob', 'Edit', 'Write']);
 export const FULL_BUILTIN_TOOLS = Object.freeze(['Read', 'Grep', 'Glob', 'Edit', 'Write', 'Bash']);
 
-const SENSITIVE_NAME = /^(?:\.env(?:\..*)?|.*\.(?:pem|key|p12|pfx)|id_(?:rsa|dsa|ecdsa|ed25519).*|\.npmrc|\.pypirc|credentials|secrets?)$/i;
-const SENSITIVE_PATH = /(?:^|[\\/])\.git[\\/]config$|(?:^|[\\/])\.ssh[\\/]|(?:^|[\\/])\.aws[\\/]|(?:^|[\\/])\.kube[\\/]|(?:^|[\\/])\.docker[\\/]config\.json$/i;
 const WRITE_DENY_ANYWHERE = new Set(['.git', 'node_modules']);
 const WRITE_OUTPUT_SEGMENTS = new Set([
   'target', 'dist', 'build', 'out', 'bin', 'obj', 'logs', 'runs',
@@ -61,16 +62,6 @@ const WRITE_OUTPUT_SEGMENTS = new Set([
   '.next', '.nuxt', '.idea', '.vscode', 'vendor',
 ]);
 const execFileAsync = promisify(execFile);
-
-function inside(root, target) {
-  const relative = path.relative(root, target);
-  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
-}
-
-function isSensitive(target) {
-  const normalized = target.replace(/\\/g, '/');
-  return SENSITIVE_NAME.test(path.basename(normalized)) || SENSITIVE_PATH.test(normalized);
-}
 
 /**
  * Permission policy for the built-in tools.
@@ -96,6 +87,24 @@ export function createToolPermission(allowedRoots = [], {
   const writableRoots = [...new Set(((writeRoots ?? allowedRoots).length > 0
     ? (writeRoots ?? allowedRoots)
     : [cwd]).map((root) => path.resolve(root)))];
+  const bashDenials = createDenialTracker();
+
+  function denyBash(message, details) {
+    const guidance = boundaryGuidance({
+      tool: 'Bash',
+      code: 'COMMAND_DENIED',
+      details,
+      mode: allowBash ? 'full' : 'readonly',
+    });
+    const repetition = bashDenials.recordFailure({ tool: 'Bash', code: 'COMMAND_DENIED' });
+    const lines = [message];
+    if (guidance?.hint) lines.push(guidance.hint);
+    if (guidance?.usage?.length) lines.push(`可用形式：${guidance.usage.join(' / ')}`);
+    if (repetition?.repeated >= 2) {
+      lines.push(`你已连续 ${repetition.repeated} 次触发同一 Bash 边界；停止试探，按上面的形式选择。`);
+    }
+    return { behavior: 'deny', message: lines.join('\n') };
+  }
 
   async function resolveTarget(raw) {
     const resolved = path.resolve(cwd, raw || '.');
@@ -180,6 +189,9 @@ export function createToolPermission(allowedRoots = [], {
       ...(allowBash ? ['Bash'] : []),
     ];
     if (!allowedTools.includes(toolName)) {
+      if (toolName === 'Bash') {
+        return denyBash('当前模式不允许 Bash。', { reason: 'bash-disabled' });
+      }
       return {
         behavior: 'deny',
         message: `工具 ${toolName} 未授权；当前模式不允许该工具。`,
@@ -187,7 +199,7 @@ export function createToolPermission(allowedRoots = [], {
     }
     if (toolName === 'Bash') {
       const command = String(input.command ?? '').trim();
-      if (!command) return { behavior: 'deny', message: 'Bash 命令为空。' };
+      if (!command) return denyBash('Bash 命令为空。', { reason: 'empty' });
       const safe = isSafeBashCommand(command);
       if (typeof bashApproval === 'function') {
         let allowed = false;
@@ -197,12 +209,18 @@ export function createToolPermission(allowedRoots = [], {
           allowed = false;
         }
         if (!allowed) {
-          return { behavior: 'deny', message: '危险 Bash 命令未获确认。' };
+          return denyBash('危险 Bash 命令未获确认。', { reason: 'approval' });
         }
       } else if (!safe) {
-        return { behavior: 'deny', message: '危险 Bash 命令未配置确认回调，已拒绝。' };
+        return denyBash('危险 Bash 命令未配置确认回调，已拒绝。', { reason: 'approval' });
       }
-      if (requireApproval) return askApproval('Bash', input);
+      if (requireApproval) {
+        const result = await askApproval('Bash', input);
+        if (result.behavior === 'deny') return denyBash(result.message, { reason: 'approval' });
+        bashDenials.recordSuccess('Bash');
+        return result;
+      }
+      bashDenials.recordSuccess('Bash');
       return { behavior: 'allow', updatedInput: input };
     }
     if (toolName === 'Glob') {
@@ -221,7 +239,7 @@ export function createToolPermission(allowedRoots = [], {
           : `路径不在授权目录内：${target}`,
       };
     }
-    if (isSensitive(target)) {
+    if (isSensitivePath(target)) {
       return { behavior: 'deny', message: `拒绝访问敏感文件：${target}` };
     }
     if (isWrite && await isDeniedWritePath(target)) {
@@ -270,7 +288,18 @@ const SYSTEM_PROMPT = `你是 DebugCopilot 的后端问题定位助手。你的�
 11. 已授权时，读取/搜索其他后端源码使用 root=extra 和 extraRoot=<id>；修改建议同时带 root=extra 与 extraRoot=<id>。
 12. 数据库工具不可用或返回 DB_* 错误时，不要中断诊断：继续使用日志和源码工具分析，并在 conclusion 或 needsMoreInfo 中明确说明「数据库查询不可用，本次结论仅基于源码与日志分析」。
 13. [静态兜底] 新增日志时必须在同一条 replace 中补齐 logger 的 import/声明（Java 常见为 @Slf4j + import lombok.extern.slf4j.Slf4j，或使用文件中已有的 Logger 字段）；不要只添加 log.xxx 而遗漏 logger 定义。若本轮能运行编译/测试，以编译结果为准。
-14. [静态兜底] 修改只能调用项目中已存在的方法，或在同一条修改中同时新增该方法实现；不要凭空调用不存在的 Service、工具类或业务方法。若本轮能运行编译/测试，以编译结果为准。`;
+14. [静态兜底] 修改只能调用项目中已存在的方法，或在同一条修改中同时新增该方法实现；不要凭空调用不存在的 Service、工具类或业务方法。若本轮能运行编译/测试，以编译结果为准。
+15. 遇到 NoClassDefFoundError / ClassNotFoundException / NoSuchMethodError / NoSuchFieldError / LinkageError 时，先用 list_processes（可按 port/name/commandContains 过滤）确认哪个实例在跑；需要 jar 级别差异时再用 runtime_classpath 对比声明侧 classpath（declaredFile 可用 mvn dependency:build-classpath -Dmdep.includeScope=runtime 生成）。拿不到运行侧或声明侧时写入 needsMoreInfo，不要臆测 jar 列表。
+16. 本机可能同时存在 IDE 调试实例、解压部署目录和旧进程。不要默认选第一个 Java 进程；用 pid、监听端口、startedAt、command 与当前源码根/请求时间交叉确认，无法区分时先说明候选，不要对着未运行的对象下结论。使用 commandContains 时只传类名、jar 名、profile 等非敏感标识，不要把密码或 Token 作为过滤词。
+17. 诊断前确认是用户先验，不是已验证事实；先按它调整假设优先级，再核对证据。不要重复询问已经回答的问题；只把未回答且无法从证据推断的信息写入 needsMoreInfo。若用户跳过确认，环境/范围问题应优先在 needsMoreInfo 中提出。
+18. 查看最近代码变更用 git_status / git_log / git_diff；查看目录或文件时间用 list_dir / stat_file。不要用 run_command 执行 git、find 或 Python 脚本；read 只用于 evidence 溢写结果，目录和源码分别用 list_dir、read_source。
+19. 需要 Maven 依赖树或声明 classpath 时优先用 maven_dependencies（includes/excludes 用数组），不要用 run_command 拼 -Dincludes；它返回的 declaredFile 可直接交给 runtime_classpath。run_command 结果标记 cached:true 时，如果期间没有修改文件，不要重复执行同一命令。
+
+# 工具边界（先看这里，不要试探）
+- run_command：只允许项目构建/测试工具链（mvn/gradle/npm/pnpm/yarn/npx/pytest/go/dotnet/cargo/python），一次一条；禁止 ; | && $()、install/publish/run/dev server。不要用 python -V、echo、print 试探能力。
+- read：只读 evidence 溢写结果；源码用 read_source，目录用 list_dir，文件时间用 stat_file。
+- Git 用 git_status / git_log / git_diff；进程用 list_processes；classpath 用 runtime_classpath。
+- 工具拒绝时先阅读 error 的 hint/usage；不要重复同一种被拒绝的写法。`;
 
 const FOLLOWUP_SYSTEM_PROMPT = `你是 DebugCopilot 的诊断助手，正在和用户继续讨论一条已有诊断。
 
@@ -283,7 +312,19 @@ const FOLLOWUP_SYSTEM_PROMPT = `你是 DebugCopilot 的诊断助手，正在和�
 6. 数据库工具不可用或返回 DB_* 错误时，不要中断：继续用日志与源码分析，并明确说明「数据库查询不可用，本次结论仅基于源码与日志分析」。
 7. 新增日志时必须同时补齐 logger 的 import/声明（如 @Slf4j 与 import，或使用文件已有的 Logger 字段），不要只添加 log.xxx。
 8. 只能调用项目中已存在的方法，或在同一条修改中新增该方法实现；不要凭空调用不存在的 Service、工具类或业务方法。
-9. 不要直接修改文件。使用中文回答。`;
+9. 遇到链接/类缺失类错误时，先用 list_processes 确认实际在跑的实例，再用 runtime_classpath 对比运行侧与声明侧 classpath；本机有多个实例时不要默认选第一个，拿不到证据时明确说明，不要臆测 jar 列表。
+10. 上一轮已收集的诊断前提不要重复询问；用户修改前提时以最新回答为准。若回答与证据冲突，明确指出冲突。
+11. 查看最近变更用 git_status / git_log / git_diff，查看目录/文件时间用 list_dir / stat_file；不要用 run_command 执行 git/find/Python。工具拒绝时先阅读 hint/usage，不要重复同一种被拒绝的写法。需要 Maven 依赖树时用 maven_dependencies，不要拼 -Dincludes；cached:true 时不要重复执行同一命令。
+12. 不要直接修改文件。使用中文回答。`;
+
+/** Build a system prompt array with a static cacheable prefix. */
+export function buildCachedSystemPrompt(staticPrompt, dynamicSuffix, boundary = '__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__') {
+  return [
+    staticPrompt,
+    boundary,
+    dynamicSuffix,
+  ].filter((part) => typeof part === 'string' && part.length > 0);
+}
 
 function turnLimitNote(turnLimit) {
   return Number.isFinite(turnLimit) && turnLimit > 0
@@ -338,6 +379,7 @@ const RESULT_SCHEMA = {
 function sanitizeEvidence(evidence) {
   return {
     symptom: evidence.symptom,
+    triage: evidence.triage,
     request: {
       method: evidence.request?.method,
       url: evidence.request?.url,
@@ -371,11 +413,21 @@ function sanitizeEvidence(evidence) {
   };
 }
 
-function buildPrompt(question, evidence) {
+export function buildPrompt(question, evidence) {
   const pack = JSON.stringify(redactValue(sanitizeEvidence(evidence)), null, 2);
   return [
     '# 用户描述的症状',
     question?.trim() || '(用户未提供描述，请从证据中推断现象)',
+    '',
+    '# 诊断前确认（用户回答）',
+    ...triagePromptLines(evidence.triage),
+    '',
+    '# 诊断前提使用规则',
+    '- 这些是用户先验，不是已验证事实；与日志/源码/请求证据冲突时，明确指出冲突并请求确认。',
+    '- 不要重复询问已经回答的问题；needsMoreInfo 只写未回答且无法从证据推断的信息。',
+    '- 仅部署复现或仅本机复现时，优先比较配置、profile、classpath、依赖、数据和权限，不要直接改业务代码。',
+    '- 仅当前接口/页面：优先路由、Controller、Service、页面组件；整个服务/多个模块：优先共享配置、数据库、网络和公共依赖。',
+    '- 最近改依赖：优先使用 runtime_classpath 检查版本差异；改配置：检查 profile/env/端口/CORS/日志路径；改代码：结合近期 diff。',
     '',
     '# 已采集的证据包',
     '```json',
@@ -435,6 +487,7 @@ export function buildFollowUpPrompt(question, previous = {}) {
   ));
   const snapshot = {
     originalQuestion: previous.meta?.question ?? '',
+    triage: previous.meta?.triage ?? null,
     conclusion: agent.conclusion ?? '',
     fixes,
     fixesWithheld: compactWithheldFixes(agent.fixesWithheld ?? []),
@@ -622,6 +675,52 @@ export function buildToolShapes(z) {
       startLine: z.number().int().min(1).optional(),
       endLine: z.number().int().min(1).optional(),
     },
+    list_java_processes: {
+      port: z.number().int().min(1).max(65535).optional(),
+    },
+    list_processes: {
+      pid: z.number().int().min(1).optional(),
+      port: z.number().int().min(1).max(65535).optional(),
+      name: z.string().optional(),
+      commandContains: z.string().optional(),
+      javaOnly: z.boolean().optional(),
+      limit: z.number().int().min(1).max(200).optional(),
+    },
+    list_dir: {
+      root: z.enum(['backend', 'frontend', 'extra']).optional(),
+      extraRoot: z.string().optional(),
+      path: z.string().optional(),
+      depth: z.number().int().min(1).max(2).optional(),
+      limit: z.number().int().min(1).max(500).optional(),
+    },
+    stat_file: {
+      root: z.enum(['backend', 'frontend', 'extra']).optional(),
+      extraRoot: z.string().optional(),
+      path: z.string(),
+    },
+    git_status: {
+      root: z.enum(['backend', 'frontend', 'extra']).optional(),
+      extraRoot: z.string().optional(),
+    },
+    git_log: {
+      root: z.enum(['backend', 'frontend', 'extra']).optional(),
+      extraRoot: z.string().optional(),
+      limit: z.number().int().min(1).max(50).optional(),
+      since: z.string().optional(),
+      path: z.string().optional(),
+    },
+    git_diff: {
+      root: z.enum(['backend', 'frontend', 'extra']).optional(),
+      extraRoot: z.string().optional(),
+      path: z.string().optional(),
+      staged: z.boolean().optional(),
+      statOnly: z.boolean().optional(),
+    },
+    runtime_classpath: {
+      pid: z.number().int().min(1).optional(),
+      port: z.number().int().min(1).max(65535).optional(),
+      declaredFile: z.string(),
+    },
     query_db: {
       connection: z.string().optional(),
       sql: z.string(),
@@ -634,6 +733,14 @@ export function buildToolShapes(z) {
     run_command: {
       command: z.string(),
       cwd: z.string().optional(),
+    },
+    maven_dependencies: {
+      root: z.literal('backend').optional(),
+      scope: z.enum(['runtime', 'compile', 'test', 'provided', 'all']).optional(),
+      includes: z.array(z.string()).optional(),
+      excludes: z.array(z.string()).optional(),
+      includeClasspath: z.boolean().optional(),
+      verbose: z.boolean().optional(),
     },
   };
 }
@@ -665,37 +772,104 @@ function buildSdkTools(toolFn, specs, shapes, tools) {
  * Normalize SDK token accounting. `modelUsage` is the billing-grade source;
  * `usage` is the fallback for older SDK results.
  */
-export function usageFromResult(resultMessage) {
-  const models = Object.values(resultMessage?.modelUsage ?? {});
-  let inputTokens = 0;
-  let outputTokens = 0;
-  let cacheReadInputTokens = 0;
-  let cacheCreationInputTokens = 0;
-  if (models.length > 0) {
-    for (const model of models) {
-      inputTokens += Number(model?.inputTokens) || 0;
-      outputTokens += Number(model?.outputTokens) || 0;
-      cacheReadInputTokens += Number(model?.cacheReadInputTokens) || 0;
-      cacheCreationInputTokens += Number(model?.cacheCreationInputTokens) || 0;
-    }
-  } else {
+export function usageFromResult(resultMessage, extra = {}) {
+  const modelEntries = Object.entries(resultMessage?.modelUsage ?? {}).map(([model, usage]) => ({
+    model,
+    provider: usage?.provider ?? null,
+    canonicalModel: usage?.canonicalModel ?? null,
+    costBasis: usage?.costBasis ?? null,
+    inputTokens: Number(usage?.inputTokens) || 0,
+    outputTokens: Number(usage?.outputTokens) || 0,
+    thinkingTokens: Number(usage?.thinkingTokens) || 0,
+    cacheReadInputTokens: Number(usage?.cacheReadInputTokens) || 0,
+    cacheCreationInputTokens: Number(usage?.cacheCreationInputTokens) || 0,
+    cacheCreationEphemeral5mInputTokens: Number(usage?.cacheCreationEphemeral5mInputTokens) || 0,
+    cacheCreationEphemeral1hInputTokens: Number(usage?.cacheCreationEphemeral1hInputTokens) || 0,
+    webSearchRequests: Number(usage?.webSearchRequests) || 0,
+    costUSD: Number(usage?.costUSD) || 0,
+    contextWindow: Number(usage?.contextWindow) || null,
+    maxOutputTokens: Number(usage?.maxOutputTokens) || null,
+  }));
+  if (modelEntries.length === 0) {
     const usage = resultMessage?.usage ?? {};
-    inputTokens = Number(usage.input_tokens ?? usage.inputTokens) || 0;
-    outputTokens = Number(usage.output_tokens ?? usage.outputTokens) || 0;
-    cacheReadInputTokens = Number(usage.cache_read_input_tokens ?? usage.cacheReadInputTokens) || 0;
-    cacheCreationInputTokens = Number(usage.cache_creation_input_tokens ?? usage.cacheCreationInputTokens) || 0;
+    modelEntries.push({
+      model: null,
+      provider: null,
+      canonicalModel: null,
+      costBasis: null,
+      inputTokens: Number(usage.input_tokens ?? usage.inputTokens) || 0,
+      outputTokens: Number(usage.output_tokens ?? usage.outputTokens) || 0,
+      thinkingTokens: Number(usage.thinking_tokens ?? usage.thinkingTokens) || 0,
+      cacheReadInputTokens: Number(usage.cache_read_input_tokens ?? usage.cacheReadInputTokens) || 0,
+      cacheCreationInputTokens: Number(usage.cache_creation_input_tokens ?? usage.cacheCreationInputTokens) || 0,
+      cacheCreationEphemeral5mInputTokens: Number(usage.cache_creation_ephemeral_5m_input_tokens ?? usage.cacheCreationEphemeral5mInputTokens) || 0,
+      cacheCreationEphemeral1hInputTokens: Number(usage.cache_creation_ephemeral_1h_input_tokens ?? usage.cacheCreationEphemeral1hInputTokens) || 0,
+      webSearchRequests: Number(usage.web_search_requests ?? usage.webSearchRequests) || 0,
+      costUSD: Number(usage.cost_usd ?? usage.costUSD) || 0,
+      contextWindow: Number(usage.context_window ?? usage.contextWindow) || null,
+      maxOutputTokens: Number(usage.max_output_tokens ?? usage.maxOutputTokens) || null,
+    });
   }
+  const sum = (key) => modelEntries.reduce((total, entry) => total + (Number(entry[key]) || 0), 0);
+  const inputTokens = sum('inputTokens');
+  const outputTokens = sum('outputTokens');
+  const cacheReadInputTokens = sum('cacheReadInputTokens');
+  const cacheCreationInputTokens = sum('cacheCreationInputTokens');
   const totalInputTokens = inputTokens + cacheReadInputTokens + cacheCreationInputTokens;
+  const primary = modelEntries[0];
+  const costBasis = modelEntries.every((entry) => entry.costBasis === primary.costBasis)
+    ? primary.costBasis
+    : null;
+  const costEstimated = modelEntries.length > 0 && modelEntries.some((entry) => (
+    (entry.costBasis && entry.costBasis !== 'list')
+    || (entry.provider && entry.provider !== 'firstParty')
+  ));
+  const perTurn = Array.isArray(extra.turns) ? extra.turns.slice(0, 100) : null;
   return {
     numTurns: resultMessage?.num_turns ?? null,
     costUsd: resultMessage?.total_cost_usd ?? null,
     durationMs: resultMessage?.duration_ms ?? null,
     inputTokens,
     outputTokens,
+    thinkingTokens: sum('thinkingTokens'),
     cacheReadInputTokens,
     cacheCreationInputTokens,
+    cacheCreationEphemeral5mInputTokens: sum('cacheCreationEphemeral5mInputTokens'),
+    cacheCreationEphemeral1hInputTokens: sum('cacheCreationEphemeral1hInputTokens'),
     totalInputTokens,
     totalTokens: totalInputTokens + outputTokens,
+    provider: primary.provider,
+    canonicalModel: primary.canonicalModel,
+    costBasis,
+    costEstimated,
+    models: modelEntries,
+    ...(perTurn ? { perTurn } : {}),
+  };
+}
+
+/** Extract one assistant turn's usage for cache diagnostics. */
+export function turnUsageFromMessage(message) {
+  const usage = message?.message?.usage ?? message?.usage;
+  if (!usage) return null;
+  const number = (...values) => Number(values.find((value) => value !== undefined && value !== null)) || 0;
+  const creation = usage.cache_creation ?? {};
+  return {
+    id: message?.message?.id ?? message?.uuid ?? null,
+    model: message?.message?.model ?? message?.model ?? null,
+    inputTokens: number(usage.input_tokens, usage.inputTokens),
+    outputTokens: number(usage.output_tokens, usage.outputTokens),
+    cacheReadInputTokens: number(usage.cache_read_input_tokens, usage.cacheReadInputTokens),
+    cacheCreationInputTokens: number(usage.cache_creation_input_tokens, usage.cacheCreationInputTokens),
+    cacheCreationEphemeral5mInputTokens: number(
+      usage.cache_creation_ephemeral_5m_input_tokens,
+      usage.cacheCreationEphemeral5mInputTokens,
+      creation.ephemeral_5m_input_tokens,
+    ),
+    cacheCreationEphemeral1hInputTokens: number(
+      usage.cache_creation_ephemeral_1h_input_tokens,
+      usage.cacheCreationEphemeral1hInputTokens,
+      creation.ephemeral_1h_input_tokens,
+    ),
   };
 }
 
@@ -770,7 +944,12 @@ export function createClaudeAgent({
     id: 'claude',
     configureScope,
     async diagnose({ question, evidence, tools, budget, onToolUse = null }) {
-      const { query, tool, createSdkMcpServer } = await import('@anthropic-ai/claude-agent-sdk');
+      const {
+        query,
+        tool,
+        createSdkMcpServer,
+        SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
+      } = await import('@anthropic-ai/claude-agent-sdk');
       const { z } = await import('zod');
       const permission = createToolPermission(scope.allowedRoots, {
         cwd: scope.cwd,
@@ -803,6 +982,12 @@ export function createClaudeAgent({
       });
 
       const turnLimit = budget?.maxRounds ?? maxTurns;
+      const dynamicSystemSuffix = `${turnLimitNote(turnLimit)}${scope.systemPromptSuffix}${modeSuffix}${validationStrategyPrompt(scope.toolMode)}`;
+      const systemPrompt = buildCachedSystemPrompt(
+        SYSTEM_PROMPT,
+        dynamicSystemSuffix,
+        SYSTEM_PROMPT_DYNAMIC_BOUNDARY ?? '__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__',
+      );
       const session = query({
         prompt: buildPrompt(question, evidence),
         options: {
@@ -819,7 +1004,7 @@ export function createClaudeAgent({
           ...(additionalDirectories.length > 0 ? { additionalDirectories } : {}),
           ...(Number.isFinite(turnLimit) && turnLimit > 0 ? { maxTurns: Math.floor(turnLimit) } : {}),
           ...(maxBudgetUsd ? { maxBudgetUsd } : {}),
-          systemPrompt: `${SYSTEM_PROMPT}${turnLimitNote(turnLimit)}${scope.systemPromptSuffix}${modeSuffix}${validationStrategyPrompt(scope.toolMode)}`,
+          systemPrompt,
           outputFormat: { type: 'json_schema', schema: RESULT_SCHEMA },
           ...(model ? { model } : {}),
           cwd: scope.cwd,
@@ -829,6 +1014,7 @@ export function createClaudeAgent({
       let resultMessage = null;
       let partialText = '';
       const toolUses = new Map();
+      const turnUsage = new Map();
       const timer = setTimeout(() => {
         try {
           session.close();
@@ -840,6 +1026,8 @@ export function createClaudeAgent({
       try {
         for await (const message of session) {
           if (message.type === 'assistant') {
+            const snapshot = turnUsageFromMessage(message);
+            if (snapshot) turnUsage.set(snapshot.id ?? `turn-${turnUsage.size + 1}`, snapshot);
             for (const block of message.message?.content ?? []) {
               if (block?.type === 'text' && block.text) partialText += block.text;
               if (block?.type === 'tool_use') {
@@ -906,7 +1094,7 @@ export function createClaudeAgent({
           needsMoreInfo: [...(parsed.needsMoreInfo ?? []), `诊断未完成：${reason}`],
           fixes: normalizeFixList(parsed.fixes),
           toolCalls: tools.calls ?? [],
-          usage: usageFromResult(resultMessage),
+          usage: usageFromResult(resultMessage, { turns: [...turnUsage.values()] }),
           incomplete: true,
           incompleteReason: resultMessage.subtype ?? 'error',
           errors: Array.isArray(resultMessage.errors) ? resultMessage.errors : [],
@@ -917,12 +1105,12 @@ export function createClaudeAgent({
       return {
         ...parsed,
         toolCalls: tools.calls ?? [],
-        usage: usageFromResult(resultMessage),
+        usage: usageFromResult(resultMessage, { turns: [...turnUsage.values()] }),
       };
     },
 
     async followUp({ question, previous, tools, budget, onToolUse = null }) {
-      const { query } = await import('@anthropic-ai/claude-agent-sdk');
+      const { query, SYSTEM_PROMPT_DYNAMIC_BOUNDARY } = await import('@anthropic-ai/claude-agent-sdk');
       const permission = createToolPermission(scope.allowedRoots, {
         cwd: scope.cwd,
         allowWrite: scope.toolMode !== 'readonly',
@@ -958,6 +1146,12 @@ export function createClaudeAgent({
         });
       }
       const followUpTurnLimit = budget?.maxRounds ?? maxTurns;
+      const dynamicSystemSuffix = `${turnLimitNote(followUpTurnLimit)}${scope.systemPromptSuffix}${modeSuffix}${validationStrategyPrompt(scope.toolMode)}`;
+      const systemPrompt = buildCachedSystemPrompt(
+        FOLLOWUP_SYSTEM_PROMPT,
+        dynamicSystemSuffix,
+        SYSTEM_PROMPT_DYNAMIC_BOUNDARY ?? '__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__',
+      );
       const session = query({
         prompt: buildFollowUpPrompt(question, previous),
         options: {
@@ -975,7 +1169,7 @@ export function createClaudeAgent({
             ? { maxTurns: Math.floor(followUpTurnLimit) }
             : {}),
           ...(maxBudgetUsd ? { maxBudgetUsd } : {}),
-          systemPrompt: `${FOLLOWUP_SYSTEM_PROMPT}${turnLimitNote(followUpTurnLimit)}${scope.systemPromptSuffix}${modeSuffix}${validationStrategyPrompt(scope.toolMode)}`,
+          systemPrompt,
           outputFormat: { type: 'json_schema', schema: RESULT_SCHEMA },
           ...(model ? { model } : {}),
           cwd: scope.cwd,
@@ -985,6 +1179,7 @@ export function createClaudeAgent({
       let resultMessage = null;
       let partialText = '';
       const toolUses = new Map();
+      const turnUsage = new Map();
       const timer = setTimeout(() => {
         try {
           session.close();
@@ -996,6 +1191,8 @@ export function createClaudeAgent({
       try {
         for await (const message of session) {
           if (message.type === 'assistant') {
+            const snapshot = turnUsageFromMessage(message);
+            if (snapshot) turnUsage.set(snapshot.id ?? `turn-${turnUsage.size + 1}`, snapshot);
             for (const block of message.message?.content ?? []) {
               if (block?.type === 'text' && block.text) partialText += block.text;
               if (block?.type === 'tool_use') {
@@ -1059,7 +1256,7 @@ export function createClaudeAgent({
           needsMoreInfo: [...(parsed.needsMoreInfo ?? []), `继续诊断未完成：${reason}`],
           fixes: normalizeFixList(parsed.fixes),
           toolCalls: tools?.calls ?? [],
-          usage: usageFromResult(resultMessage),
+          usage: usageFromResult(resultMessage, { turns: [...turnUsage.values()] }),
           incomplete: true,
           incompleteReason: resultMessage.subtype ?? 'error',
           errors: Array.isArray(resultMessage.errors) ? resultMessage.errors : [],
@@ -1070,7 +1267,7 @@ export function createClaudeAgent({
       return {
         ...parsed,
         toolCalls: tools?.calls ?? [],
-        usage: usageFromResult(resultMessage),
+        usage: usageFromResult(resultMessage, { turns: [...turnUsage.values()] }),
       };
     },
   };

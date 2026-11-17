@@ -7,6 +7,18 @@ const result = {
     runId: '20261102-120000-abcdef',
     scenario: 'order-create',
     question: '下单失败',
+    triage: {
+      asked: true,
+      skipped: false,
+      answers: { environment: 'deploy-only', scope: 'endpoint', change: 'dependency' },
+      labels: {
+        environment: '仅部署环境复现',
+        scope: '仅当前接口/页面',
+        change: '依赖或版本升级',
+      },
+      note: '升级 Spring Boot 后出现',
+      askedAt: '2026-11-14T10:00:00.000Z',
+    },
     agent: 'claude',
     mode: 'live',
     durationMs: 1234,
@@ -43,6 +55,51 @@ test('report projection keeps whitelisted fields only', () => {
   assert.equal(report.summary.toolCalls, 1);
   assert.equal(report.request.headers, undefined);
   assert.equal(report.response, undefined);
+});
+
+test('renders cache, provider and estimated cost details', () => {
+  const withUsage = {
+    ...result,
+    agent: {
+      ...result.agent,
+      usage: {
+        numTurns: 7,
+        totalTokens: 1234,
+        cacheReadInputTokens: 1000,
+        cacheCreationInputTokens: 0,
+        provider: 'gateway',
+        canonicalModel: 'deepseek-flash',
+        costBasis: 'unknown',
+        costEstimated: true,
+        costUsd: 0.1234,
+      },
+    },
+  };
+  const markdown = renderMarkdown(buildReport(withUsage));
+  assert.match(markdown, /缓存读\/写：1000 \/ 0/);
+  assert.match(markdown, /模型\/供应商：deepseek-flash \/ gateway/);
+  assert.match(markdown, /\$0\.1234（估算）/);
+});
+
+test('renders the triage answers before the conclusion', () => {
+  const markdown = renderMarkdown(buildReport(result));
+  const triageAt = markdown.indexOf('## 诊断前提');
+  const conclusionAt = markdown.indexOf('## 结论');
+  assert.ok(triageAt >= 0, 'triage section should exist');
+  assert.ok(conclusionAt > triageAt, 'triage should precede conclusion');
+  assert.match(markdown, /仅部署环境复现/);
+  assert.match(markdown, /仅当前接口\/页面/);
+  assert.match(markdown, /依赖或版本升级/);
+  assert.match(markdown, /升级 Spring Boot 后出现/);
+
+  const skipped = {
+    ...result,
+    meta: {
+      ...result.meta,
+      triage: { asked: true, skipped: true, answers: {}, labels: {}, note: null, askedAt: '2026-11-14T10:00:00.000Z' },
+    },
+  };
+  assert.match(renderMarkdown(buildReport(skipped)), /未提供（诊断前已跳过）/);
 });
 
 test('markdown report excludes absolute paths, headers and raw evidence', () => {

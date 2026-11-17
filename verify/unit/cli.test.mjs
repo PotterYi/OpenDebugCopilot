@@ -96,17 +96,28 @@ test('mock run executes the full loop through the CLI', async (t) => {
       window: { beforeMs: 5000, afterMs: 5000 },
     }), 'utf8');
 
-    const result = await runCliAsync(['run', scenarioPath, '--mock', '--json', '-q', '下单失败', '--runs-dir', path.join(TMP, 'runs')]);
+    const result = await runCliAsync([
+      'run', scenarioPath, '--mock', '--json', '-q', '下单失败',
+      '--triage', 'environment=deploy-only,scope=endpoint',
+      '--triage-note', '升级后出现',
+      '--runs-dir', path.join(TMP, 'runs'),
+    ]);
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stdout.trim().startsWith('{'), true, 'stdout must contain only the JSON result');
     const parsed = JSON.parse(result.stdout);
     assert.equal(parsed.meta.mode, 'mock');
+    assert.equal(parsed.meta.triage.answers.environment, 'deploy-only');
+    assert.equal(parsed.meta.triage.labels.scope, '仅当前接口/页面');
     assert.equal(parsed.marker.injected, true);
     assert.equal(parsed.gates.ok, true);
     assert.ok(parsed.logs.count >= 1);
     const reportPath = path.join(TMP, 'runs', parsed.meta.runId, 'report.md');
     const report = await readFile(reportPath, 'utf8');
     assert.match(report, /# DebugCopilot 诊断报告/);
+    assert.match(report, /## 诊断前提/);
+    assert.match(report, /仅部署环境复现/);
+    assert.match(report, /升级后出现/);
+    assert.ok(report.indexOf('## 诊断前提') < report.indexOf('## 结论'));
     assert.match(report, /## 结论/);
   } finally {
     server.close();
@@ -150,6 +161,30 @@ test('version command prints package version', () => {
   const result = runCli(['--version']);
   assert.equal(result.status, 0);
   assert.match(result.stdout.trim(), /^\d+\.\d+\.\d+/);
+});
+
+test('parses triage flags and rejects invalid keys or values', () => {
+  const opts = parseArgv([
+    'run', 's.json',
+    '--triage', 'environment=deploy-only,scope=endpoint',
+    '--triage-note', '升级依赖后出现',
+  ]);
+  assert.equal(opts.triage.environment, 'deploy-only');
+  assert.equal(opts.triage.scope, 'endpoint');
+  assert.equal(opts.triageNote, '升级依赖后出现');
+  assert.equal(parseArgv(['run', 's.json', '--triage-file', 'triage.json']).triageFile, 'triage.json');
+  assert.throws(
+    () => parseArgv(['run', 's.json', '--triage', 'env=deploy-only']),
+    /unknown triage key/,
+  );
+  assert.throws(
+    () => parseArgv(['run', 's.json', '--triage', 'environment=prod']),
+    /invalid triage value/,
+  );
+  assert.throws(
+    () => parseArgv(['run', 's.json', '--triage', 'environment']),
+    /key=value/,
+  );
 });
 
 test('parses explicit workspace keep/discard flags', () => {

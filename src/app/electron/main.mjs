@@ -993,6 +993,7 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
         root: ROOT,
         runsDir: service.runsRoot,
         question: payload.question ?? '',
+        triage: payload.triage ?? null,
         recheck: payload.recheck ?? 1,
         agent,
         allowExtraSources: payload.allowExtraSources === true,
@@ -1152,6 +1153,15 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
           read_source: '读取源码',
           search_source: '搜索源码',
           read: '读取工具结果',
+          list_java_processes: '查找 Java 进程',
+          list_processes: '查看运行进程',
+          list_dir: '查看目录',
+          stat_file: '查看文件时间',
+          git_status: '查看 Git 状态',
+          git_log: '查看最近提交',
+          git_diff: '查看代码变更',
+          maven_dependencies: '分析 Maven 依赖',
+          runtime_classpath: '对比运行 classpath',
           query_db: '查询数据库',
           write_db: '写入数据库',
           run_command: '运行编译/测试',
@@ -1192,6 +1202,7 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
           activeDatabaseId: logContext.activeDatabaseId ?? databaseConfig.activeId,
           approveWrite: createWriteApprover(event),
           runCommand: followRunCommand,
+          toolMode: toolMode === 'full' ? 'full' : (followRunCommand ? 'sandbox' : 'readonly'),
           window: followWindow,
           onCall: (call) => sendProgress({
             id: `tool-${call.id}`,
@@ -1228,6 +1239,9 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
           if (tool.stage === 'start' && toolMode === 'full'
             && ['Edit', 'Write', 'Bash'].includes(tool.name)) {
             followWroteWorkspace = true;
+          }
+          if (tool.stage === 'done' && !tool.error && ['Edit', 'Write', 'Bash'].includes(tool.name)) {
+            followTools.resetCommandCache();
           }
           const toolLabel = tool.name
             ? (builtinToolLabels[tool.name] ?? tool.name)
@@ -1349,6 +1363,9 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
         if (commands.length > 0) staticChecks = 'warn';
       }
       sendProgress({ id: 'preview', label: '生成修复预览', status: 'start' });
+      if (process.env.DC_DEBUG_USAGE === '1' && follow.usage) {
+        log.info('[usage] follow-up', runId, JSON.stringify(follow.usage));
+      }
       const followAgent = {
         ...follow,
         fixes: await buildFixPreviews(followFixes, {
@@ -1658,6 +1675,11 @@ async function runSmoke(window, host, service) {
             && Boolean(document.getElementById('devserver-stop')),
           singleDiagnoseButton: Boolean(document.getElementById('diagnose-request')) && !document.getElementById('diagnose-mock'),
           questionIsTextarea: document.getElementById('diagnose-question')?.tagName === 'TEXTAREA',
+          triageUiPresent: document.querySelectorAll('#triage-fields select[data-triage-key]').length === 3
+            && document.querySelectorAll('#element-triage-fields select[data-triage-key]').length === 3
+            && Boolean(document.getElementById('element-triage-modal')),
+          triageDefaultsUnknown: [...document.querySelectorAll('#triage-fields select[data-triage-key]')]
+            .every((select) => select.value === 'unknown'),
           targetSelect: document.querySelector('[data-field="baseUrl"]')?.tagName === 'SELECT',
           routingWarningShown: document.getElementById('routing-warnings')?.hidden === false,
           sitPassthrough: (() => {
@@ -1798,11 +1820,17 @@ async function runSmoke(window, host, service) {
         elementUi.screenshotError = host.elementLastScreenshotError;
         if (!elementUi.composerOpen && host.elementLastError) elementUi.error = host.elementLastError;
         if (elementUi.composerOpen) {
-          await window.webContents.executeJavaScript(`(() => {
+          const triageUi = await window.webContents.executeJavaScript(`(() => {
             document.getElementById('element-composer-input').value = '元素显示异常';
             document.getElementById('element-composer-submit').click();
-            return true;
+            const modal = document.getElementById('element-triage-modal');
+            const fields = document.querySelectorAll('#element-triage-fields select[data-triage-key]').length;
+            const opened = Boolean(modal && modal.hidden === false);
+            document.getElementById('element-triage-skip')?.click();
+            return { opened, fields };
           })()`);
+          elementUi.triageModal = triageUi.opened;
+          elementUi.triageFields = triageUi.fields;
           await new Promise((resolve) => setTimeout(resolve, 900));
           const runs = await window.webContents.executeJavaScript(
             `window.dc.invoke('dc:runs', { action: 'list' })`,

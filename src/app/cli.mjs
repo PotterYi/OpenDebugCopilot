@@ -9,6 +9,7 @@ import { createStore } from '../core/store.mjs';
 import { loadScenario, resolveScenarioPaths } from '../core/scenario.mjs';
 import { selectDriver } from '../driver/index.mjs';
 import { UsageError, toErrorPayload } from '../core/errors.mjs';
+import { TRIAGE_OPTIONS, normalizeTriage, triageSummary } from '../core/triage.mjs';
 import { runDiagnosis } from '../diagnose/run.mjs';
 import { createMockAgent } from '../agent/mock.mjs';
 import { createClaudeAgent } from '../agent/claude.mjs';
@@ -63,6 +64,9 @@ Options:
   --budget-usd <n>  Cost cap for one live diagnosis (SDK maxBudgetUsd)
   --recheck <n>     Run consistency recheck n times (default: 1)
   -q, --question    Symptom description used by the diagnoser
+  --triage <kv>     Pre-diagnosis answers: environment=deploy-only,scope=endpoint,change=dependency
+  --triage-note <text>  Optional note attached to --triage
+  --triage-file <path>  JSON file with triage answers (alternative to --triage)
   --workspace <mode>  Workspace decision: keep | discard (required without a TTY)
   --keep-workspace  Shorthand for --workspace=keep
   --discard-workspace  Shorthand for --workspace=discard
@@ -135,6 +139,9 @@ export function parseArgv(argv) {
     recheck: 1,
     json: false,
     question: '',
+    triage: undefined,
+    triageNote: '',
+    triageFile: undefined,
     runsDir: undefined,
     model: undefined,
     maxTurns: undefined,
@@ -157,6 +164,27 @@ export function parseArgv(argv) {
       opts.question = value;
     } else if (arg.startsWith('--question=')) {
       opts.question = arg.slice('--question='.length);
+    } else if (arg === '--triage') {
+      const value = argv[i + 1];
+      if (value === undefined) throw new UsageError('--triage requires key=value pairs');
+      i += 1;
+      opts.triage = parseTriageSpec(value);
+    } else if (arg.startsWith('--triage=')) {
+      opts.triage = parseTriageSpec(arg.slice('--triage='.length));
+    } else if (arg === '--triage-note') {
+      const value = argv[i + 1];
+      if (value === undefined) throw new UsageError('--triage-note requires a value');
+      i += 1;
+      opts.triageNote = value;
+    } else if (arg.startsWith('--triage-note=')) {
+      opts.triageNote = arg.slice('--triage-note='.length);
+    } else if (arg === '--triage-file') {
+      const value = argv[i + 1];
+      if (value === undefined) throw new UsageError('--triage-file requires a path');
+      i += 1;
+      opts.triageFile = value;
+    } else if (arg.startsWith('--triage-file=')) {
+      opts.triageFile = arg.slice('--triage-file='.length);
     } else if (arg === '--model') {
       const value = argv[i + 1];
       if (value === undefined) throw new UsageError('--model requires a value');
@@ -239,6 +267,28 @@ function parseRecheck(value) {
   return n;
 }
 
+function parseTriageSpec(value) {
+  const answers = {};
+  for (const pair of String(value ?? '').split(',')) {
+    const text = pair.trim();
+    if (!text) continue;
+    const index = text.indexOf('=');
+    if (index <= 0) throw new UsageError('--triage expects key=value pairs');
+    const key = text.slice(0, index).trim();
+    const answer = text.slice(index + 1).trim();
+    const options = TRIAGE_OPTIONS[key];
+    if (!options) throw new UsageError(`unknown triage key: ${key}`);
+    if (!options.some((option) => option.value === answer)) {
+      throw new UsageError(`invalid triage value for ${key}: ${answer}`);
+    }
+    answers[key] = answer;
+  }
+  if (Object.keys(answers).length === 0) {
+    throw new UsageError('--triage requires at least one answer');
+  }
+  return answers;
+}
+
 function parseWorkspaceDecision(value) {
   const text = String(value ?? '').trim().toLowerCase();
   if (!['keep', 'discard'].includes(text)) {
@@ -281,6 +331,7 @@ function printDiagnosis(result, runDir, root, { workspaceUndecided = false } = {
     `  Scenario   : ${result.meta.scenario} (${result.target.driver})`,
     `  Agent      : ${result.meta.agent} (${result.meta.mode})`,
     `  Question   : ${result.meta.question || '(none)'}`,
+    `  Triage     : ${triageSummary(result.meta.triage)}`,
     `  Status     : ${result.gates.ok ? 'gates ok' : 'gates failed'}`,
     `  Conclusion : ${result.agent.conclusion}`,
     `  Logs       : ${logs.count} record(s), marker ${logs.markerMatched ? 'matched' : `not matched (${logs.waitedMs}ms)`}`,
@@ -415,9 +466,31 @@ export async function main(argv = process.argv.slice(2), { root = ROOT } = {}) {
       configDir: path.join(root, 'configs'),
     }).getRuntimeConfig();
 
+    if (parsed.triage && parsed.triageFile) {
+      throw new UsageError('use either --triage or --triage-file, not both');
+    }
+    let triage = null;
+    if (parsed.triageFile) {
+      let content;
+      try {
+        content = JSON.parse(await readFile(path.resolve(process.cwd(), parsed.triageFile), 'utf8'));
+      } catch (error) {
+        throw new UsageError(`cannot read --triage-file: ${error?.message ?? error}`);
+      }
+      triage = normalizeTriage(content);
+      if (!triage) throw new UsageError('--triage-file did not contain valid triage answers');
+    } else if (parsed.triage || parsed.triageNote) {
+      triage = normalizeTriage({
+        ...(parsed.triage ? { answers: parsed.triage } : { skipped: true }),
+        note: parsed.triageNote,
+      });
+      if (!triage) throw new UsageError('invalid --triage answers');
+    }
+
     const outcome = await runDiagnosis(scenario, {
       runsDir: parsed.runsDir ? path.resolve(parsed.runsDir) : path.resolve(root, config.runsDir ?? 'runs'),
       question: parsed.question,
+      triage,
       recheck: parsed.recheck,
       agent,
       // Non-interactive CLI: expose read-only queries only. Writes need the

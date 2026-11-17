@@ -428,6 +428,13 @@ export function createSandboxCommandRunner({
     }
     return commandsPromise;
   };
+  const rootLabels = (sandbox.roots ?? [])
+    .map((entry) => (entry.key === 'extra' ? `extra/${entry.extraRoot}` : entry.key))
+    .filter(Boolean);
+  const exampleCommands = async () => (await allowedCommands())
+    .map((entry) => entry.command)
+    .filter(Boolean)
+    .slice(0, 6);
 
   function assertInside(target) {
     const isInside = (root) => {
@@ -436,24 +443,36 @@ export function createSandboxCommandRunner({
     };
     if (isInside(sandbox.dir)) return;
     if ((sandbox.roots ?? []).some((entry) => isInside(entry.sandboxRoot))) return;
-    throw new AppError('COMMAND_CWD_DENIED', `命令目录不在工作区内：${target}`, { exitCode: 2 });
+    throw new AppError('COMMAND_CWD_DENIED', `命令目录不在工作区内：${target}`, {
+      exitCode: 2,
+      details: { reason: 'cwd', roots: rootLabels },
+    });
   }
 
   return async function runCommand({ command, cwd } = {}) {
     const text = String(command ?? '').trim();
     if (!text) throw new AppError('COMMAND_REQUIRED', 'command 不能为空', { exitCode: 2 });
     if (text.length > 500 || SHELL_META.test(text)) {
-      throw new AppError('COMMAND_DENIED', '命令包含不允许的 shell 语法', { exitCode: 2 });
+      throw new AppError('COMMAND_DENIED', '命令包含不允许的 shell 语法；目录/文件元数据请用 list_dir/stat_file，Git 请用 git_status/git_log/git_diff', {
+        exitCode: 2,
+        details: { reason: 'shell-syntax', examples: await exampleCommands() },
+      });
     }
     if (/\b(?:install|deploy|publish|push|release|login|logout)\b/i.test(text)
       || /^(?:npm|pnpm|yarn)\s+(?:run\s+)?(?:dev|serve|watch|start)\b/i.test(text)) {
-      throw new AppError('COMMAND_DENIED', '该命令可能修改环境或长时间运行，已禁止', { exitCode: 2 });
+      throw new AppError('COMMAND_DENIED', '该命令可能修改环境或长时间运行，已禁止', {
+        exitCode: 2,
+        details: { reason: 'risky', examples: await exampleCommands() },
+      });
     }
 
     const resolved = await allowedCommands();
     const exact = resolved.find((entry) => entry.command === text);
     if (!exact && !SAFE_COMMAND.test(text)) {
-      throw new AppError('COMMAND_DENIED', '命令不在允许的编译/测试工具链内', { exitCode: 2 });
+      throw new AppError('COMMAND_DENIED', '命令不在允许的编译/测试工具链内；查看 Git 用 git_status/git_log/git_diff，查看目录/文件时间用 list_dir/stat_file', {
+        exitCode: 2,
+        details: { reason: 'toolchain', examples: resolved.map((entry) => entry.command).filter(Boolean).slice(0, 6) },
+      });
     }
 
     let workdir;
@@ -461,7 +480,10 @@ export function createSandboxCommandRunner({
       workdir = path.resolve(sandbox.dir, String(cwd));
       assertInside(workdir);
       if (await pathKind(workdir) !== 'dir') {
-        throw new AppError('COMMAND_CWD_INVALID', `命令目录不存在：${workdir}`, { exitCode: 3 });
+        throw new AppError('COMMAND_CWD_INVALID', `命令目录不存在：${workdir}`, {
+          exitCode: 3,
+          details: { reason: 'cwd-missing' },
+        });
       }
     } else {
       const lower = text.toLowerCase();

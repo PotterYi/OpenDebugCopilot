@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { parseScenario } from '../../src/core/scenario.mjs';
 import { createTools } from '../../src/tools/index.mjs';
 import { parseTimestamp } from '../../src/evidence/parsers.mjs';
+import { AppError } from '../../src/core/errors.mjs';
 import { tempDir } from './tmp.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -142,4 +143,48 @@ test('redacts secrets from tool results, spilled records and call summaries', as
   const callText = JSON.stringify(calls);
   assert.doesNotMatch(callText, /abcdefghijklmnopqrstuvwxyz|hunter2secret/);
   assert.match(callText, /ANTHROPIC_AUTH_TOKEN=<redacted>/);
+});
+
+test('returns usage on boundary errors and escalates repeated failures', async (t) => {
+  t.after(async () => { await rm(RUN_DIR, { recursive: true, force: true }); });
+  let attempts = 0;
+  const { tools, calls } = createTools({
+    scenario,
+    anchor,
+    runDir: RUN_DIR,
+    window,
+    runCommand: async ({ command }) => {
+      attempts += 1;
+      if (attempts <= 2 || attempts >= 4) {
+        throw new AppError('COMMAND_DENIED', '命令不在允许的编译/测试工具链内', {
+          exitCode: 2,
+          details: { reason: 'toolchain', examples: ['mvn -q -DskipTests compile'] },
+        });
+      }
+      return { ok: true, command, output: 'ok' };
+    },
+  });
+
+  const first = await tools.run_command({ command: 'print password=hunter2secret' });
+  assert.equal(first.error, true);
+  assert.ok(first.usage.includes('mvn -q -DskipTests compile'));
+  assert.match(first.hint, /构建\/测试/);
+  assert.equal(first.guardrail, undefined);
+
+  const second = await tools.run_command({ command: 'echo again' });
+  assert.equal(second.guardrail.repeated, 2);
+  assert.ok(second.guardrail.usage.includes('mvn -q -DskipTests compile'));
+
+  const ok = await tools.run_command({ command: 'mvn test' });
+  assert.equal(ok.ok, true);
+
+  const afterSuccess = await tools.run_command({ command: 'print once more' });
+  assert.equal(afterSuccess.guardrail, undefined);
+  assert.doesNotMatch(JSON.stringify(calls), /hunter2secret/);
+
+  const readFirst = await tools.read({ file: '../outside.txt' });
+  assert.ok(readFirst.usage.some((item) => item.includes('list_dir')));
+  const readSecond = await tools.read({ file: '../outside-2.txt' });
+  assert.equal(readSecond.guardrail.repeated, 2);
+  assert.ok(readSecond.guardrail.usage.some((item) => item.includes('read_source')));
 });
