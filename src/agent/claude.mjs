@@ -806,6 +806,8 @@ function parseStructured(text) {
     evidenceRefs: [],
     confidence: 0,
     needsMoreInfo: ['模型未返回结构化结果'],
+    rejectedHypotheses: [],
+    noRejectedHypothesesReason: '模型未返回结构化结果',
     fixes: [],
   };
 }
@@ -1290,6 +1292,8 @@ export function createClaudeAgent({
           conclusion: parsed.conclusion?.trim() ? parsed.conclusion : `诊断未完成：${reason}`,
           evidenceRefs: parsed.evidenceRefs ?? [],
           needsMoreInfo: [...(parsed.needsMoreInfo ?? []), `诊断未完成：${reason}`],
+          rejectedHypotheses: parsed.rejectedHypotheses ?? [],
+          noRejectedHypothesesReason: parsed.noRejectedHypothesesReason || `诊断未完成：${reason}`,
           fixes: normalizeFixList(parsed.fixes),
           toolCalls: tools.calls ?? [],
           usage: usageFromResult(resultMessage, { turns: [...turnUsage.values()] }),
@@ -1458,6 +1462,8 @@ export function createClaudeAgent({
           ...parsed,
           conclusion: parsed.conclusion?.trim() ? parsed.conclusion : `继续诊断未完成：${reason}`,
           needsMoreInfo: [...(parsed.needsMoreInfo ?? []), `继续诊断未完成：${reason}`],
+          rejectedHypotheses: parsed.rejectedHypotheses ?? [],
+          noRejectedHypothesesReason: parsed.noRejectedHypothesesReason || `继续诊断未完成：${reason}`,
           fixes: normalizeFixList(parsed.fixes),
           toolCalls: tools?.calls ?? [],
           usage: usageFromResult(resultMessage, { turns: [...turnUsage.values()] }),
