@@ -100,6 +100,8 @@ test('mock run executes the full loop through the CLI', async (t) => {
       'run', scenarioPath, '--mock', '--json', '-q', '下单失败',
       '--triage', 'environment=deploy-only,scope=endpoint',
       '--triage-note', '升级后出现',
+      '--symptom', 'passed',
+      '--symptom-note', '已手动复查',
       '--runs-dir', path.join(TMP, 'runs'),
     ]);
     assert.equal(result.status, 0, result.stderr);
@@ -108,13 +110,19 @@ test('mock run executes the full loop through the CLI', async (t) => {
     assert.equal(parsed.meta.mode, 'mock');
     assert.equal(parsed.meta.triage.answers.environment, 'deploy-only');
     assert.equal(parsed.meta.triage.labels.scope, '仅当前接口/页面');
+    assert.equal(parsed.meta.symptomStatus, 'passed');
+    assert.equal(parsed.meta.verificationLevel, 'symptom-verified');
+    assert.equal(parsed.symptomCheck.status, 'passed');
     assert.equal(parsed.marker.injected, true);
     assert.equal(parsed.gates.ok, true);
+    assert.equal(parsed.agent.rejectedHypotheses.length, 1);
+    assert.ok(parsed.gates.checks.some((check) => check.name === 'hypothesis-disclosure' && check.ok));
     assert.ok(parsed.logs.count >= 1);
     const reportPath = path.join(TMP, 'runs', parsed.meta.runId, 'report.md');
     const report = await readFile(reportPath, 'utf8');
     assert.match(report, /# DebugCopilot 诊断报告/);
     assert.match(report, /## 诊断前提/);
+    assert.match(report, /## 排除的假设/);
     assert.match(report, /仅部署环境复现/);
     assert.match(report, /升级后出现/);
     assert.ok(report.indexOf('## 诊断前提') < report.indexOf('## 结论'));
@@ -185,6 +193,13 @@ test('parses triage flags and rejects invalid keys or values', () => {
     () => parseArgv(['run', 's.json', '--triage', 'environment']),
     /key=value/,
   );
+});
+
+test('parses symptom verification flags', () => {
+  assert.equal(parseArgv(['run', 's.json', '--symptom', 'verified']).symptomStatus, 'passed');
+  assert.equal(parseArgv(['run', 's.json', '--symptom=failed']).symptomStatus, 'failed');
+  assert.equal(parseArgv(['run', 's.json', '--symptom', 'pending', '--symptom-note', '待复查']).symptomNote, '待复查');
+  assert.throws(() => parseArgv(['run', 's.json', '--symptom', 'maybe']), /--symptom must be/);
 });
 
 test('parses explicit workspace keep/discard flags', () => {

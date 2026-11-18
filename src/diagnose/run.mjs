@@ -2,9 +2,26 @@ import { mkdir, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { AppError } from '../core/errors.mjs';
 import { redactHeaders } from '../core/redact.mjs';
+import { buildEvidenceRefIndex, validateEvidenceRefs } from '../core/evidence-refs.mjs';
 import { newRunId } from '../core/ids.mjs';
 import { resolveScenarioPaths } from '../core/scenario.mjs';
 import { normalizeTriage } from '../core/triage.mjs';
+import {
+  applySymptomToGates,
+  buildSymptomCheck,
+} from '../core/symptom.mjs';
+import {
+  buildReplayFixture,
+  compareSymptom,
+  replayFixture,
+  responseSignature,
+} from '../core/replay.mjs';
+import {
+  buildRepairFailure,
+  mergeUsage,
+  planRepairBudget,
+  shouldAutoRepair,
+} from '../core/auto-repair.mjs';
 import { resolveFrontendSources } from '../evidence/frontend.mjs';
 import { collectElementEvidence } from '../evidence/element.mjs';
 import { buildFixPreviews, extraRootFixes, mergeExtractedFixes } from '../core/fixes.mjs';
@@ -27,6 +44,7 @@ import { fireScenario } from '../driver/index.mjs';
 import { readLogs, listThreads } from '../evidence/logs.mjs';
 import { correlateLogs, extractBusinessIds, extractTraceId } from '../evidence/correlate.mjs';
 import { readSource } from '../evidence/source.mjs';
+import { resolveBuildProbeRoot } from '../evidence/build-model.mjs';
 import { createTools } from '../tools/index.mjs';
 import { runCapturePreflight, runPreflight } from '../doctor/preflight.mjs';
 import { createMockAgent } from '../agent/mock.mjs';
@@ -172,8 +190,19 @@ async function waitForMarker({ logfiles, parser, encoding, anchor, window, marke
   }
 }
 
-function evaluateGates(fired, agentResult, element = null) {
+function describeInvalidRefs(invalid) {
+  return invalid
+    .slice(0, 3)
+    .map(({ ref, reason }) => `${ref?.type ?? '?'}:${ref?.ref ?? '?'}(${reason})`)
+    .join(', ');
+}
+
+export function evaluateGates(fired, agentResult, element = null, evidence = null) {
   const refs = Array.isArray(agentResult?.evidenceRefs) ? agentResult.evidenceRefs : [];
+  const refIndex = evidence ? buildEvidenceRefIndex(evidence) : null;
+  const refShapesOk = refs.length > 0
+    && refs.every((ref) => ref && typeof ref.type === 'string' && typeof ref.ref === 'string' && ref.type && ref.ref);
+  const refValidation = validateEvidenceRefs(refIndex, refs);
   const conclusionCheck = {
     name: 'conclusion-present',
     ok: typeof agentResult?.conclusion === 'string' && agentResult.conclusion.trim() !== '',
@@ -181,10 +210,32 @@ function evaluateGates(fired, agentResult, element = null) {
   };
   const evidenceCheck = {
     name: 'evidence-refs',
-    ok:
-      refs.length > 0 &&
-      refs.every((ref) => ref && typeof ref.type === 'string' && typeof ref.ref === 'string' && ref.type && ref.ref),
-    detail: `${refs.length} ref(s)`,
+    ok: refShapesOk && refValidation.ok,
+    detail: `${refs.length} ref(s)${refValidation.invalid.length ? `; invalid: ${describeInvalidRefs(refValidation.invalid)}` : ''}`,
+  };
+  const rejected = Array.isArray(agentResult?.rejectedHypotheses) ? agentResult.rejectedHypotheses : [];
+  const noRejectedReason = String(agentResult?.noRejectedHypothesesReason ?? '').trim();
+  const hypothesisProblems = [];
+  for (const [index, item] of rejected.entries()) {
+    const label = `#${index + 1}`;
+    if (!String(item?.hypothesis ?? '').trim()) hypothesisProblems.push(`${label} missing hypothesis`);
+    if (!String(item?.reason ?? '').trim()) hypothesisProblems.push(`${label} missing reason`);
+    const refutedBy = Array.isArray(item?.refutedBy) ? item.refutedBy : [];
+    if (refutedBy.length === 0) {
+      hypothesisProblems.push(`${label} missing refutedBy`);
+    } else {
+      const validation = validateEvidenceRefs(refIndex, refutedBy);
+      if (!validation.ok) hypothesisProblems.push(`${label} invalid ref ${describeInvalidRefs(validation.invalid)}`);
+    }
+  }
+  const hypothesisCheck = {
+    name: 'hypothesis-disclosure',
+    ok: rejected.length > 0 ? hypothesisProblems.length === 0 : Boolean(noRejectedReason),
+    detail: rejected.length > 0
+      ? `${rejected.length} hypothesis(es)${hypothesisProblems.length ? `; ${hypothesisProblems.slice(0, 3).join('; ')}` : ''}`
+      : (noRejectedReason
+          ? `none: ${truncate(noRejectedReason, 120)}`
+          : 'missing rejectedHypotheses or noRejectedHypothesesReason'),
   };
   if (element) {
     const checks = [
@@ -203,6 +254,7 @@ function evaluateGates(fired, agentResult, element = null) {
       },
       conclusionCheck,
       evidenceCheck,
+      hypothesisCheck,
     ];
     return {
       ok: checks.every((check) => check.ok || check.severity === 'warn'),
@@ -218,6 +270,7 @@ function evaluateGates(fired, agentResult, element = null) {
     },
     conclusionCheck,
     evidenceCheck,
+    hypothesisCheck,
   ];
   return { ok: checks.every((check) => check.ok), checks };
 }
@@ -242,6 +295,9 @@ async function diagnoseWithFired({
   runDir,
   question,
   triage = null,
+  symptomStatus = 'pending',
+  symptomNote = null,
+  replayFetch = null,
   agent,
   recheck,
   markerTimeoutMs,
@@ -274,6 +330,9 @@ async function diagnoseWithFired({
     read_source: '读取源码',
     search_source: '搜索源码',
     read: '读取工具结果',
+    query_result: '查询工具结果',
+    inspect_build_model: '检查工程模型',
+    runtime_facts: '查看运行时事实',
     list_java_processes: '查找 Java 进程',
     list_processes: '查看运行进程',
     list_dir: '查看目录',
@@ -495,6 +554,11 @@ async function diagnoseWithFired({
     databaseConnect,
     runCommand: sandboxRunCommand,
     toolMode: toolMode === 'full' ? 'full' : (sandboxRunCommand ? 'sandbox' : 'readonly'),
+    buildProbeRoot: resolveBuildProbeRoot({
+      sourceRoot: paths.sourceRoot,
+      configured: workspace.buildProbeRoot,
+      root: scenario.dir ?? process.cwd(),
+    }),
     window: timeWindow,
     onCall: (call) => {
       const label = TOOL_LABELS[call.name] ?? call.name;
@@ -582,33 +646,34 @@ async function diagnoseWithFired({
     Edit: '修改沙箱文件',
     Write: '写入沙箱文件',
   };
+  const onAgentToolUse = (tool) => {
+    if (!tool?.id) return;
+    if (tool.stage === 'start' && toolMode === 'full'
+      && ['Edit', 'Write', 'Bash'].includes(tool.name)) {
+      wroteWorkspace = true;
+    }
+    if (tool.stage === 'done' && !tool.error && ['Edit', 'Write', 'Bash'].includes(tool.name)) {
+      toolsBundle.resetCommandCache();
+    }
+    const toolLabel = tool.name
+      ? (BUILTIN_TOOL_LABELS[tool.name] ?? tool.name)
+      : null;
+    progress(
+      `builtin-${tool.id}`,
+      tool.stage === 'start'
+        ? (toolLabel ? `${toolLabel}…` : '调用工具…')
+        : (toolLabel ?? '工具调用完成'),
+      tool.stage === 'start' ? 'start' : tool.isError ? 'error' : 'done',
+      tool.name,
+    );
+  };
   const callAgent = async () => {
     try {
       return await agent.diagnose({
         question,
         evidence,
         tools: toolsBundle,
-        onToolUse: (tool) => {
-          if (!tool?.id) return;
-          if (tool.stage === 'start' && toolMode === 'full'
-            && ['Edit', 'Write', 'Bash'].includes(tool.name)) {
-            wroteWorkspace = true;
-          }
-          if (tool.stage === 'done' && !tool.error && ['Edit', 'Write', 'Bash'].includes(tool.name)) {
-            toolsBundle.resetCommandCache();
-          }
-          const toolLabel = tool.name
-            ? (BUILTIN_TOOL_LABELS[tool.name] ?? tool.name)
-            : null;
-          progress(
-            `builtin-${tool.id}`,
-            tool.stage === 'start'
-              ? (toolLabel ? `${toolLabel}…` : '调用工具…')
-              : (toolLabel ?? '工具调用完成'),
-            tool.stage === 'start' ? 'start' : tool.isError ? 'error' : 'done',
-            tool.name,
-          );
-        },
+        onToolUse: onAgentToolUse,
       });
     } catch (error) {
       await runLog.error(`agent failed: ${error?.message ?? error}`);
@@ -653,11 +718,92 @@ async function diagnoseWithFired({
     }
   }
 
+  async function attemptRepair({
+    verification,
+    phase,
+    changedFiles = [],
+    previousFixes = [],
+    allowUnknownFiles = false,
+  }) {
+    if (agent.id === 'mock' || typeof agent.followUp !== 'function') {
+      return { attempted: false, skippedReason: 'agent-no-repair' };
+    }
+    const decision = shouldAutoRepair({
+      verification,
+      changedFiles,
+      recheck,
+      enabled: workspace.agent?.repairRetry?.enabled !== false,
+      allowUnknownFiles,
+    });
+    if (!decision.ok) return { attempted: false, skippedReason: decision.reason };
+    const plan = planRepairBudget({ workspace, usage: agentResult.usage });
+    if (!plan.ok) return { attempted: false, skippedReason: plan.reason };
+    const failure = buildRepairFailure({
+      verification,
+      phase,
+      changedFiles,
+      previousFixes,
+      attempt: 1,
+    });
+    progress('repair', '编译/测试失败，自动重试修复', 'start', failure.error);
+    await runLog.info(`auto-repair start phase=${phase} command=${failure.commands[0]?.command ?? '-'}`);
+    try {
+      const repair = await agent.followUp({
+        question: '',
+        previous: {
+          meta: { question },
+          agent: agentResult,
+          request: evidence.request,
+          response: evidence.response,
+          logs: evidence.logs,
+        },
+        tools: toolsBundle,
+        budget: plan.budget,
+        onToolUse: onAgentToolUse,
+        purpose: 'repair',
+        failure,
+      });
+      agentResult.usage = mergeUsage(agentResult.usage, repair.usage);
+      const info = {
+        attempted: true,
+        attempts: 1,
+        failure,
+        budget: plan.budget,
+        usage: repair.usage ?? null,
+        status: 'completed',
+      };
+      agentResult.repair = info;
+      if (repair.needsMoreInfo?.length) {
+        agentResult.needsMoreInfo = [...(agentResult.needsMoreInfo ?? []), ...repair.needsMoreInfo];
+      }
+      progress('repair', '自动重试修复完成', 'done');
+      await runLog.info(`auto-repair done turns=${repair.usage?.numTurns ?? '?'} cost=${repair.usage?.costUsd ?? '?'}`);
+      return { attempted: true, repair, info };
+    } catch (error) {
+      const info = {
+        attempted: true,
+        attempts: 1,
+        failure,
+        budget: plan.budget,
+        status: 'error',
+        error: error?.message ?? String(error),
+      };
+      agentResult.repair = info;
+      agentResult.needsMoreInfo = [
+        ...(agentResult.needsMoreInfo ?? []),
+        `自动重试修复失败：${error?.message ?? error}`,
+      ];
+      progress('repair', '自动重试修复失败', 'error', error?.message ?? String(error));
+      await runLog.error(`auto-repair failed: ${error?.message ?? error}`);
+      return { attempted: true, error, info };
+    }
+  }
+
   if (sandboxContext) {
     if (sandboxContext.mode === 'in-place') {
       try {
-        const extracted = await sandboxContext.extract();
-        const extractedFixes = (extracted.fixes ?? []).map((fix) => ({
+        let extracted = await sandboxContext.extract();
+        let extractedFixes = (extracted.fixes ?? []).map((fix) => ({
           ...fix,
           workspaceApplied: true,
           pendingDecision: true,
@@ -686,7 +832,7 @@ async function diagnoseWithFired({
         // Edit/Write snapshot map; use the tool-level write flag as fallback.
         const hasWorkspaceChanges = (extracted.changedFiles?.length ?? 0) > 0
           || (toolMode === 'full' && wroteWorkspace);
-        const selfCheck = hasWorkspaceChanges
+        let selfCheck = hasWorkspaceChanges
           ? await sandboxContext.runSelfCheck()
           : {
               status: 'skipped',
@@ -709,6 +855,64 @@ async function diagnoseWithFired({
           selfCheck,
         };
         agentResult.verification = { scope: 'workspace', mode: 'in-place', ...selfCheck };
+        if (selfCheck.status === 'failed') {
+          const repair = await attemptRepair({
+            verification: selfCheck,
+            phase: 'in-place-self-check',
+            changedFiles: extracted.changedFiles,
+            previousFixes: agentResult.fixes,
+          });
+          if (repair.attempted) {
+            extracted = await sandboxContext.extract();
+            extractedFixes = (extracted.fixes ?? []).map((fix) => ({
+              ...fix,
+              workspaceApplied: true,
+              pendingDecision: true,
+            }));
+            agentResult.fixes = [...previewedExtras, ...extractedFixes];
+            const hasChangesAfter = (extracted.changedFiles?.length ?? 0) > 0
+              || (toolMode === 'full' && wroteWorkspace);
+            selfCheck = hasChangesAfter
+              ? await sandboxContext.runSelfCheck()
+              : {
+                  status: 'failed',
+                  ok: false,
+                  error: '自动修复回合没有产生新的文件修改',
+                  commands: [],
+                  durationMs: 0,
+                  output: '',
+                };
+            agentResult.workspaceSession = {
+              ...agentResult.workspaceSession,
+              changedFiles: extracted.changedFiles,
+              touchedFiles: extracted.touchedFiles ?? [],
+              skipped: extracted.skipped,
+              conflicts: extracted.conflicts,
+              selfCheck,
+            };
+            selfCheck.repair = { ...repair.info, finalStatus: selfCheck.status };
+            agentResult.verification = {
+              scope: 'workspace',
+              mode: 'in-place',
+              ...selfCheck,
+            };
+            progress(
+              'selfcheck',
+              selfCheck.status === 'passed'
+                ? '自动重试后编译自测通过，等待保留/丢弃'
+                : '自动重试后编译自测仍失败',
+              selfCheck.status === 'passed' ? 'done' : 'error',
+              selfCheck.error ?? selfCheck.reason,
+            );
+            await runLog.info(`in-place auto-repair selfCheck=${selfCheck.status}`);
+          } else {
+            selfCheck.repair = {
+              attempted: false,
+              skippedReason: repair.skippedReason ?? 'not-eligible',
+            };
+            agentResult.verification.repair = selfCheck.repair;
+          }
+        }
         if (extracted.skipped.length > 0 || extracted.conflicts.length > 0) {
           agentResult.needsMoreInfo = [
             ...(agentResult.needsMoreInfo ?? []),
@@ -745,7 +949,7 @@ async function diagnoseWithFired({
       }
     } else {
       try {
-        const extracted = await extractSandboxFixes(sandboxContext);
+        let extracted = await extractSandboxFixes(sandboxContext);
         agentResult.sandbox = {
           changedFiles: extracted.changedFiles,
           skipped: extracted.skipped,
@@ -757,13 +961,20 @@ async function diagnoseWithFired({
           ];
         }
 
-        // Verify inside the disposable sandbox before extracting fixes. The
-        // real source tree is never written for validation.
-        let verification = null;
-        if (extracted.changedFiles.length > 0) {
+        const runSandboxCheck = async (changedFiles) => {
+          if (!changedFiles.length) {
+            return {
+              status: 'skipped',
+              ok: true,
+              reason: '本轮没有修改沙箱文件',
+              commands: [],
+              durationMs: 0,
+              output: '',
+            };
+          }
           progress('selfcheck', '沙箱内编译/测试验证', 'start');
           try {
-            verification = await runWorkspaceCheck({
+            return await runWorkspaceCheck({
               roots: sandboxRootsForCheck(sandboxContext),
               verifyCommand,
               // Do not let an absolute real-project config leak the command cwd
@@ -774,7 +985,7 @@ async function diagnoseWithFired({
               restrictToProjectRoot: true,
             });
           } catch (error) {
-            verification = {
+            return {
               status: 'failed',
               ok: false,
               error: `沙箱验证执行失败：${error?.message ?? error}`,
@@ -783,16 +994,11 @@ async function diagnoseWithFired({
               output: '',
             };
           }
-        } else {
-          verification = {
-            status: 'skipped',
-            ok: true,
-            reason: '本轮没有修改沙箱文件',
-            commands: [],
-            durationMs: 0,
-            output: '',
-          };
-        }
+        };
+
+        // Verify inside the disposable sandbox before extracting fixes. The
+        // real source tree is never written for validation.
+        let verification = await runSandboxCheck(extracted.changedFiles);
         agentResult.verification = { scope: 'sandbox', mode: 'copy', ...verification };
         progress(
           'selfcheck',
@@ -806,7 +1012,46 @@ async function diagnoseWithFired({
         );
         await runLog.info(`sandbox self-check ${verification.status} commands=${(verification.commands ?? []).length}`);
 
-        const mergedFixes = mergeExtractedFixes(extracted.fixes, agentResult.fixes);
+        if (verification.status === 'failed') {
+          const repair = await attemptRepair({
+            verification,
+            phase: 'sandbox-self-check',
+            changedFiles: extracted.changedFiles,
+            previousFixes: extracted.fixes,
+          });
+          if (repair.attempted) {
+            extracted = await extractSandboxFixes(sandboxContext);
+            agentResult.sandbox = {
+              changedFiles: extracted.changedFiles,
+              skipped: extracted.skipped,
+            };
+            verification = await runSandboxCheck(extracted.changedFiles);
+            agentResult.verification = {
+              scope: 'sandbox',
+              mode: 'copy',
+              ...verification,
+              repair: { ...repair.info, finalStatus: verification.status },
+            };
+            progress(
+              'selfcheck',
+              verification.status === 'passed'
+                ? '自动重试后沙箱验证通过'
+                : verification.status === 'failed'
+                  ? '自动重试后沙箱验证仍失败'
+                  : '自动重试后未执行验证',
+              verification.status === 'failed' ? 'error' : 'done',
+              verification.error ?? verification.reason,
+            );
+            await runLog.info(`sandbox auto-repair selfCheck=${verification.status}`);
+          } else {
+            agentResult.verification.repair = {
+              attempted: false,
+              skippedReason: repair.skippedReason ?? 'not-eligible',
+            };
+          }
+        }
+
+        let mergedFixes = mergeExtractedFixes(extracted.fixes, agentResult.fixes);
         if (verification.status === 'failed') {
           agentResult.fixesWithheld = mergedFixes;
           agentResult.fixes = [];
@@ -851,8 +1096,7 @@ async function diagnoseWithFired({
         output: '',
       };
     } else {
-      progress('selfcheck', '编译/测试验证工作区修改', 'start');
-      const verification = await runWorkspaceCheck({
+      const runFullCheck = () => runWorkspaceCheck({
         roots: {
           sourceRoot: paths.sourceRoot,
           frontendSourceRoot: frontendFixRoot,
@@ -863,21 +1107,51 @@ async function diagnoseWithFired({
         projectRoot: scenario.dir ?? process.cwd(),
         runDir,
       });
+      progress('selfcheck', '编译/测试验证工作区修改', 'start');
+      let verification = await runFullCheck();
       agentResult.verification = { scope: 'workspace', mode: 'full', ...verification };
-      const level = verification.status === 'failed'
-        ? 'error'
-        : (verification.status === 'skipped' && verification.detectionError ? 'error' : 'done');
-      progress(
-        'selfcheck',
-        verification.status === 'passed'
-          ? '编译/测试验证通过'
-          : verification.status === 'failed'
-            ? '编译/测试验证失败，工作区修改可能未修复问题'
-            : '未执行编译/测试验证',
-        level,
-        verification.error ?? verification.reason,
-      );
+      const reportVerification = (value) => {
+        const level = value.status === 'failed'
+          ? 'error'
+          : (value.status === 'skipped' && value.detectionError ? 'error' : 'done');
+        progress(
+          'selfcheck',
+          value.status === 'passed'
+            ? '编译/测试验证通过'
+            : value.status === 'failed'
+              ? '编译/测试验证失败，工作区修改可能未修复问题'
+              : '未执行编译/测试验证',
+          level,
+          value.error ?? value.reason,
+        );
+      };
+      reportVerification(verification);
       await runLog.info(`workspace self-check ${verification.status} commands=${(verification.commands ?? []).length}`);
+      if (verification.status === 'failed') {
+        const repair = await attemptRepair({
+          verification,
+          phase: 'workspace-self-check',
+          changedFiles: [],
+          previousFixes: agentResult.fixes,
+          allowUnknownFiles: true,
+        });
+        if (repair.attempted) {
+          verification = await runFullCheck();
+          agentResult.verification = {
+            scope: 'workspace',
+            mode: 'full',
+            ...verification,
+            repair: { ...repair.info, finalStatus: verification.status },
+          };
+          reportVerification(verification);
+          await runLog.info(`workspace auto-repair selfCheck=${verification.status}`);
+        } else {
+          agentResult.verification.repair = {
+            attempted: false,
+            skippedReason: repair.skippedReason ?? 'not-eligible',
+          };
+        }
+      }
       if (verification.status === 'failed') {
         agentResult.needsMoreInfo = [
           ...(agentResult.needsMoreInfo ?? []),
@@ -924,7 +1198,78 @@ async function diagnoseWithFired({
 
   }
 
-  const gates = applyVerificationGate(evaluateGates(fired, agentResult, elementContext), agentResult.verification);
+  let effectiveSymptomStatus = symptomStatus;
+  let symptomMethod = 'manual';
+  let symptomObserved = null;
+  let symptomReason = null;
+  let symptomSignature = null;
+  let replayInfo = null;
+  let replayFixtureData = null;
+  const filesChanged = (agentResult.fixes?.length ?? 0) > 0
+    || (agentResult.workspaceSession?.changedFiles?.length ?? 0) > 0
+    || (agentResult.sandbox?.changedFiles?.length ?? 0) > 0
+    || (toolMode === 'full' && wroteWorkspace);
+  const canReplayAfterFix = (inPlaceUsed || sandboxUsed || toolMode === 'full') && filesChanged;
+  if (symptomStatus === 'pending' && !element && canReplayAfterFix && agentResult.verification?.status !== 'failed') {
+    const fixtureResult = buildReplayFixture({ fired, workspace, scenario });
+    if (!fixtureResult.ok) {
+      symptomReason = fixtureResult.reason;
+      replayInfo = { attempted: false, reason: fixtureResult.reason };
+    } else {
+      replayFixtureData = fixtureResult.fixture;
+      symptomMethod = 'replay';
+      progress('replay', '重放原始请求，验证症状是否消失', 'start');
+      const before = responseSignature(fired.response ?? {});
+      const replay = await replayFixture(fixtureResult.fixture, {
+        fetchImpl: replayFetch ?? globalThis.fetch,
+        timeoutMs: workspace.replay?.timeoutMs ?? 5000,
+      });
+      if (!replay.ok) {
+        symptomReason = replay.reason;
+        replayInfo = { attempted: true, reason: replay.reason, error: replay.error ?? null };
+        progress('replay', '自动重放未能完成', 'error', replay.reason);
+      } else {
+        const after = responseSignature(replay.response);
+        const comparison = compareSymptom(before, after);
+        effectiveSymptomStatus = comparison.status;
+        symptomReason = comparison.reason;
+        symptomObserved = `HTTP ${after.httpStatus}${after.businessCode != null ? ` / code ${after.businessCode}` : ''}`;
+        symptomSignature = { before, after };
+        replayInfo = { attempted: true, comparison, before, after };
+        progress(
+          'replay',
+          comparison.status === 'passed'
+            ? '重放后症状已消失'
+            : comparison.status === 'failed'
+              ? '重放后症状仍存在'
+              : '重放完成，但症状无法判定',
+          comparison.status === 'passed' ? 'done' : comparison.status === 'failed' ? 'error' : 'done',
+          comparison.reason,
+        );
+      }
+      await runLog.info(`symptom replay status=${effectiveSymptomStatus} reason=${symptomReason ?? '-'}`);
+    }
+  }
+  const symptomCheck = buildSymptomCheck({
+    fired,
+    element,
+    scenario,
+    status: effectiveSymptomStatus,
+    method: symptomMethod,
+    note: symptomNote,
+    observed: symptomObserved,
+    signature: symptomSignature,
+    reason: symptomReason,
+  });
+  const gates = applySymptomToGates(
+    applyVerificationGate(evaluateGates(fired, agentResult, elementContext, evidence), agentResult.verification),
+    symptomCheck,
+    agentResult.verification,
+  );
+  gates.remediation = {
+    fixes: Array.isArray(agentResult.fixes) ? agentResult.fixes.length : 0,
+    actions: Array.isArray(agentResult.actions) ? agentResult.actions.length : 0,
+  };
   const recheckInfo = recheck > 1
     ? (() => {
         const evaluation = evaluateRecheck(agentRuns, { responseStatus: fired.response?.status ?? null });
@@ -1009,6 +1354,9 @@ async function diagnoseWithFired({
       durationMs: endedAt - startedAt,
       question,
       triage: normalizedTriage,
+      symptomStatus: symptomCheck.status,
+      verificationLevel: gates.level,
+      actionsCount: Array.isArray(agentResult.actions) ? agentResult.actions.length : 0,
       runLog: 'run.log',
       incomplete: Boolean(agentResult.incomplete),
       incompleteReason: agentResult.incompleteReason ?? null,
@@ -1062,6 +1410,9 @@ async function diagnoseWithFired({
     databaseQueries: toolsBundle.dbQueries,
     agent: agentResult,
     gates,
+    symptomCheck,
+    ...(replayFixtureData ? { replayFixture: replayFixtureData } : {}),
+    ...(replayInfo ? { replay: replayInfo } : {}),
     recheck: recheckInfo,
   };
 
@@ -1096,6 +1447,9 @@ export async function runDiagnosis(scenario, options = {}) {
     runsDir = path.resolve('runs'),
     question = '',
     triage = null,
+    symptomStatus = 'pending',
+    symptomNote = null,
+    replayFetch = null,
     agent = createMockAgent(),
     recheck = 1,
     markerTimeoutMs = DEFAULT_MARKER_TIMEOUT_MS,
@@ -1144,6 +1498,9 @@ export async function runDiagnosis(scenario, options = {}) {
     runDir,
     question,
     triage,
+    symptomStatus,
+    symptomNote,
+    replayFetch,
     agent,
     recheck,
     markerTimeoutMs,
@@ -1186,6 +1543,9 @@ export async function runCaptureDiagnosis(observation, options = {}) {
     runsDir = path.resolve('runs'),
     question = '',
     triage = null,
+    symptomStatus = 'pending',
+    symptomNote = null,
+    replayFetch = null,
     agent = createMockAgent(),
     recheck = 1,
     markerTimeoutMs = DEFAULT_MARKER_TIMEOUT_MS,
@@ -1288,6 +1648,9 @@ export async function runCaptureDiagnosis(observation, options = {}) {
     runDir,
     question,
     triage,
+    symptomStatus,
+    symptomNote,
+    replayFetch,
     agent,
     recheck,
     markerTimeoutMs,
@@ -1321,6 +1684,9 @@ export async function runElementDiagnosis(element, options = {}) {
     runsDir = path.resolve('runs'),
     question = '',
     triage = null,
+    symptomStatus = 'pending',
+    symptomNote = null,
+    replayFetch = null,
     agent = createMockAgent(),
     recheck = 1,
     markerTimeoutMs = DEFAULT_MARKER_TIMEOUT_MS,
@@ -1446,6 +1812,9 @@ export async function runElementDiagnosis(element, options = {}) {
     runDir,
     question,
     triage,
+    symptomStatus,
+    symptomNote,
+    replayFetch,
     agent,
     recheck,
     markerTimeoutMs,

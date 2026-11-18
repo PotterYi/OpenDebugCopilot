@@ -61,6 +61,13 @@ export const api = {
     if (dc?.invoke) return dc.invoke('dc:runs', { action: 'get', runId });
     return http(`/api/runs/${encodeURIComponent(runId)}`);
   },
+  async setSymptom(runId, status, note = null) {
+    if (dc?.invoke) return dc.invoke('dc:runs', { action: 'symptom', runId, status, note });
+    return http(`/api/runs/${encodeURIComponent(runId)}/symptom`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status, note }),
+    });
+  },
   async deleteRun(runId, options = {}) {
     const keepPending = options.keepPending === true;
     if (dc?.invoke) {

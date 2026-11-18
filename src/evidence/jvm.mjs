@@ -55,7 +55,7 @@ async function resolveJavaTool(name) {
   return [...new Set(candidates)];
 }
 
-async function runJvmTool(name, args = []) {
+export async function runJvmTool(name, args = []) {
   const candidates = await resolveJavaTool(name);
   for (const candidate of candidates) {
     try {
@@ -927,7 +927,7 @@ export async function runtimeClasspath({
   if (runtimeEntries.length === 0) {
     limitations.push('没有从目标 JVM 读取到 java.class.path / loader.path，运行侧为空');
   }
-  const diff = diffClasspaths(declaredEntries, runtimeEntries);
+  const diff = diffClasspaths(declaredEntries, runtimeEntries, { limit: Infinity });
   if (classDirs.length > 0) limitations.push(`${classDirs.length} 个 class 目录未参与 jar 差集`);
   limitations.push(
     '运行侧来自目标 JVM 的 java.class.path、loader.path、executable jar manifest 与 BOOT-INF/lib / WEB-INF/lib；自定义 ClassLoader 和动态加载的 jar 不可见',

@@ -33,6 +33,13 @@ export function createMockAgent() {
       return {
         conclusion,
         evidenceRefs,
+        rejectedHypotheses: [
+          {
+            hypothesis: '请求未到达后端，问题完全发生在前端',
+            refutedBy: [{ type: 'response', ref: 'response', note: '已捕获后端响应' }],
+            reason: `已捕获后端响应（status=${status ?? 'unknown'}），排除请求未到达后端的可能`,
+          },
+        ],
         toolCalls: [],
         confidence: 0.5,
         needsMoreInfo: question && question.trim() ? [] : ['请描述你观察到的现象（如“下单报错”）'],
@@ -51,9 +58,14 @@ export function createMockAgent() {
       const refs = Array.isArray(agent.evidenceRefs) && agent.evidenceRefs.length
         ? agent.evidenceRefs
         : [{ type: 'request', ref: 'request' }];
+      const rejectedHypotheses = Array.isArray(agent.rejectedHypotheses) ? agent.rejectedHypotheses : [];
       return {
         conclusion: `继续诊断：${text || '(空)'}\n上一轮结论：${agent.conclusion ?? '(无)'}`,
         evidenceRefs: refs,
+        rejectedHypotheses,
+        ...(rejectedHypotheses.length
+          ? {}
+          : { noRejectedHypothesesReason: '本轮为追问解释，未重新定位根因' }),
         confidence: agent.confidence ?? 0.5,
         needsMoreInfo: [],
         fixes: Array.isArray(agent.fixes) ? agent.fixes : [],

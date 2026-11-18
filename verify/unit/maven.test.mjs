@@ -72,7 +72,8 @@ test('maven_dependencies runs one full tree and reuses the cache', async (t) => 
     includeClasspath: true,
   });
   assert.equal(first.count, 2);
-  assert.equal(first.totalCount, 3);
+  assert.equal(first.totalCount, 2);
+  assert.equal(first.allCount, 3);
   assert.equal(first.declaredFile, 'target/dc-classpath.txt');
   assert.equal(first.cached, false);
   assert.equal(first.classpathCached, false);
@@ -102,4 +103,49 @@ test('maven_dependencies runs one full tree and reuses the cache', async (t) => 
   await tools.run_command({ command: 'mvn test' });
   await tools.run_command({ command: 'mvn test' });
   assert.equal(commands.length, 6);
+});
+
+test('spills the full maven dependency list and pages it via query_result', async (t) => {
+  const root = tempDir('maven-pagination-test');
+  const runDir = path.join(root, 'run');
+  await rm(root, { recursive: true, force: true });
+  await mkdir(path.join(root, 'target'), { recursive: true });
+  await mkdir(runDir, { recursive: true });
+  await writeFile(path.join(root, 'pom.xml'), '<project/>\n');
+  t.after(async () => { await rm(root, { recursive: true, force: true }); });
+
+  const tree = ['com.example:demo:jar:1.0'];
+  for (let index = 0; index < 60; index += 1) {
+    tree.push(`+- org.foo:dep${index}:jar:1.0:compile`);
+  }
+  const runCommand = async ({ command }) => {
+    if (command.includes('dependency:tree')) {
+      await writeFile(path.join(root, 'target/dc-dependency-tree.txt'), tree.join('\n'));
+    }
+    return { ok: true, exitCode: 0, command, cwd: root, output: '' };
+  };
+  const scenario = parseScenario({
+    name: 'maven-pagination',
+    baseUrl: 'http://127.0.0.1:1',
+    method: 'GET',
+    path: '/',
+    source: { root },
+  });
+  const { tools } = createTools({ scenario, anchor: Date.now(), runDir, runCommand, toolMode: 'sandbox' });
+
+  const first = await tools.maven_dependencies({ limit: 10 });
+  assert.equal(first.totalCount, 60);
+  assert.equal(first.dependencies.length, 10);
+  assert.equal(first.nextOffset, 10);
+  assert.ok(first.file);
+
+  const second = await tools.query_result({
+    file: first.file,
+    field: 'dependencies',
+    offset: 50,
+    limit: 20,
+  });
+  assert.equal(second.total, 60);
+  assert.equal(second.items.length, 10);
+  assert.equal(second.items[0].artifact, 'dep50');
 });

@@ -170,8 +170,8 @@ node (ESM)                           Electron main
 | `get_logs` | 按条件检索日志；支持按 marker 子串匹配 | 时间窗 / 线程 / marker / 标记 / 级别 |
 | `list_threads` | 窗口内线程直方图，判断请求落在哪个线程 | 时间窗 |
 | `search_log` | **全库**关键词检索，不限时间窗 | 关键词（用于找“只打一次”的降级日志） |
-| `read_source` | 按类名或路径读取源码 | 类名 / 路径 / 行区间；**同名返回候选，不猜** |
-| `search_source` | 源码内关键词搜索 | 关键词 |
+| `read_source` | 按类名或路径读取源码或配置 | 类名 / 源码或配置路径 / 行区间；**同名返回候选，不猜**；越界与敏感路径拒绝 |
+| `search_source` | 源码与配置内关键词/正则搜索，稳定分页 | 关键词 / regex / caseSensitive / includeConfig / offset / limit；正则 worker + 5s 超时 |
 
 另有一个**内置 `read`** 工具：当工具结果溢出落盘时，用于把溢出的内容取回。
 

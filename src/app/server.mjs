@@ -172,6 +172,15 @@ export async function startServer({ service, uiDir, host = '127.0.0.1', port = 7
         sendJson(res, 200, await service.getRun(decodeURIComponent(runMatch[1])));
         return;
       }
+      const symptomMatch = pathname.match(/^\/api\/runs\/([^/]+)\/symptom$/);
+      if (symptomMatch && req.method === 'PATCH') {
+        const body = await readJsonBody(req);
+        sendJson(res, 200, await service.updateRunSymptom(decodeURIComponent(symptomMatch[1]), {
+          status: body?.status,
+          note: body?.note ?? null,
+        }));
+        return;
+      }
       if (runMatch && req.method === 'DELETE') {
         const runId = decodeURIComponent(runMatch[1]);
         const pending = await service.getRunWorkspacePending(runId);

@@ -30,6 +30,7 @@ import { runVerifyCommand } from './verify-command.mjs';
 import { createTools } from '../../tools/index.mjs';
 import { readLogs } from '../../evidence/logs.mjs';
 import { runCaptureDiagnosis, runElementDiagnosis } from '../../diagnose/run.mjs';
+import { resolveBuildProbeRoot } from '../../evidence/build-model.mjs';
 import {
   finalizeWorkspaceJournal,
   listPendingWorkspaceJournals,
@@ -464,6 +465,12 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
   handle('dc:runs', async (_event, payload = {}) => {
     if (payload.action === 'list') return { runs: await service.listRuns() };
     if (payload.action === 'get') return service.getRun(payload.runId);
+    if (payload.action === 'symptom') {
+      return service.updateRunSymptom(payload.runId, {
+        status: payload.status,
+        note: payload.note ?? null,
+      });
+    }
     if (payload.action === 'delete') {
       return deleteRunWithWorkspacePolicy({
         service,
@@ -1153,6 +1160,9 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
           read_source: '读取源码',
           search_source: '搜索源码',
           read: '读取工具结果',
+          query_result: '查询工具结果',
+          inspect_build_model: '检查工程模型',
+          runtime_facts: '查看运行时事实',
           list_java_processes: '查找 Java 进程',
           list_processes: '查看运行进程',
           list_dir: '查看目录',
@@ -1203,6 +1213,11 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
           approveWrite: createWriteApprover(event),
           runCommand: followRunCommand,
           toolMode: toolMode === 'full' ? 'full' : (followRunCommand ? 'sandbox' : 'readonly'),
+          buildProbeRoot: resolveBuildProbeRoot({
+            sourceRoot: logContext.sourceRoot,
+            configured: workspace.buildProbeRoot,
+            root: ROOT,
+          }),
           window: followWindow,
           onCall: (call) => sendProgress({
             id: `tool-${call.id}`,

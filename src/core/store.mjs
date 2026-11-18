@@ -13,6 +13,7 @@ export const DEFAULT_WORKSPACE = Object.freeze({
   frontendProjectRoot: '',
   frontendStartCommand: '',
   verifyCommand: '',
+  buildProbeRoot: '',
   agent: {
     model: '',
     maxTurns: 60,
@@ -21,6 +22,12 @@ export const DEFAULT_WORKSPACE = Object.freeze({
     toolMode: 'sandbox',
   },
   window: { beforeMs: 3000, afterMs: 2000 },
+  replay: {
+    enabled: false,
+    allowOrigins: [],
+    allowMethods: ['GET', 'HEAD', 'OPTIONS'],
+    timeoutMs: 5000,
+  },
 });
 
 export const DEFAULT_ROUTING = Object.freeze({ rules: [] });
@@ -63,6 +70,23 @@ export function validateWorkspace(value) {
     frontendProjectRoot: String(value.frontendProjectRoot ?? ''),
     frontendStartCommand: String(value.frontendStartCommand ?? ''),
     verifyCommand: String(value.verifyCommand ?? ''),
+    buildProbeRoot: String(value.buildProbeRoot ?? '').trim(),
+    replay: (() => {
+      const raw = isObject(value.replay) ? value.replay : {};
+      const timeout = Number(raw.timeoutMs ?? DEFAULT_WORKSPACE.replay.timeoutMs);
+      return {
+        enabled: raw.enabled === true,
+        allowOrigins: Array.isArray(raw.allowOrigins)
+          ? raw.allowOrigins.map(String).map((item) => item.trim()).filter(Boolean)
+          : [],
+        allowMethods: Array.isArray(raw.allowMethods) && raw.allowMethods.length > 0
+          ? raw.allowMethods.map(String).map((item) => item.trim().toUpperCase()).filter(Boolean)
+          : [...DEFAULT_WORKSPACE.replay.allowMethods],
+        timeoutMs: Number.isFinite(timeout) && timeout > 0
+          ? Math.floor(timeout)
+          : DEFAULT_WORKSPACE.replay.timeoutMs,
+      };
+    })(),
     window: {
       beforeMs: Number(value.window?.beforeMs ?? DEFAULT_WORKSPACE.window.beforeMs),
       afterMs: Number(value.window?.afterMs ?? DEFAULT_WORKSPACE.window.afterMs),

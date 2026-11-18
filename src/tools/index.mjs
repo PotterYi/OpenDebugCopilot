@@ -10,9 +10,12 @@ import { queryDatabase, writeDatabase } from '../evidence/db.mjs';
 import { listJavaProcesses, runtimeClasspath } from '../evidence/jvm.mjs';
 import { listProcesses } from '../evidence/processes.mjs';
 import { listDirectory, statFile } from '../evidence/fs.mjs';
+import { inspectBuildModel } from '../evidence/build-model.mjs';
+import { runtimeFacts } from '../evidence/runtime-facts.mjs';
 import { gitDiff, gitLog, gitStatus } from '../evidence/git.mjs';
 import { parseMavenTree, filterMavenDependencies } from '../evidence/maven.mjs';
 import { inside } from '../core/path-policy.mjs';
+import { listEnvelope, pageArgs, pageItems } from '../core/list-result.mjs';
 import { boundaryGuidance, createDenialTracker } from './guidance.mjs';
 import { redactSecrets, redactValue } from '../core/redact.mjs';
 
@@ -58,7 +61,7 @@ export function toolSpecs({ databases = [], runCommand = null } = {}) {
     },
     {
       name: 'read_source',
-      description: 'Read source by file path or fully-qualified class name. Use root=frontend for frontend source, or root=extra with extraRoot=<id> for an authorized additional backend root. Ambiguous names return candidates instead of guessing.',
+      description: 'Read source by file path or fully-qualified class name, or read a config file directly by path (pom.xml, application-*.yml, .properties, .json, .gradle, Dockerfile, etc.). Use root=frontend for frontend source, or root=extra with extraRoot=<id> for an authorized additional backend root. Ambiguous class names return candidates instead of guessing; paths outside the root and sensitive files are rejected.',
       input_schema: {
         type: 'object',
         properties: {
@@ -74,13 +77,17 @@ export function toolSpecs({ databases = [], runCommand = null } = {}) {
     },
     {
       name: 'search_source',
-      description: 'Search source files by keyword (case-insensitive). Use root=frontend for frontend source, or root=extra with extraRoot=<id> for an authorized additional backend root.',
+      description: 'Search source code and config files (POM/YAML/properties/JSON/etc., included by default) by keyword. Literal search is case-insensitive unless caseSensitive=true; regex=true runs a guarded regex in a worker with a 5s timeout. Paginated by offset/limit; when the result is spilled, use query_result with field=matches to page it. Use root=frontend for frontend source, or root=extra with extraRoot=<id> for an authorized additional backend root.',
       input_schema: {
         type: 'object',
         properties: {
           keyword: { type: 'string' },
+          regex: { type: 'boolean' },
+          caseSensitive: { type: 'boolean' },
+          includeConfig: { type: 'boolean' },
           root: { enum: ['backend', 'frontend', 'extra'] },
           extraRoot: { type: 'string' },
+          offset: { type: 'integer', minimum: 0, maximum: 10000 },
           limit: { type: 'integer', minimum: 1, maximum: 200 },
         },
         required: ['keyword'],
@@ -102,12 +109,39 @@ export function toolSpecs({ databases = [], runCommand = null } = {}) {
       },
     },
     {
+      name: 'query_result',
+      description: 'Page or filter a spilled JSON tool result under the run evidence directory. Use field=missing/versionMismatch/runtimeOnly/dependencies/processes/etc., offset and limit to retrieve items that were truncated from the first response. filter is a case-insensitive substring over each item.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          file: { type: 'string' },
+          field: { type: 'string' },
+          offset: { type: 'integer', minimum: 0, maximum: 10000 },
+          limit: { type: 'integer', minimum: 1, maximum: 200 },
+          filter: { type: 'string' },
+        },
+        required: ['file'],
+        additionalProperties: false,
+      },
+    },
+    {
       name: 'list_java_processes',
       description: 'Lightweight Java-only process view via jps (pid + main class). Use port to narrow the result to the Java process listening on a local TCP port. Use list_processes when you need ppid, start time, command line or non-Java processes.',
       input_schema: {
         type: 'object',
         properties: {
           port: { type: 'integer', minimum: 1, maximum: 65535 },
+        },
+        additionalProperties: false,
+      },
+    },
+    {
+      name: 'inspect_build_model',
+      description: 'Read-only build/IDE model probe: parses Maven POM modules, parent coordinates, IntelliJ .idea/modules.xml and .iml source folders, plus timestamps and stale-model hints. Uses the configured build probe root (default: the parent of the source root) and never reads sibling source files or .idea/workspace.xml.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          root: { enum: ['backend'] },
         },
         additionalProperties: false,
       },
@@ -200,14 +234,35 @@ export function toolSpecs({ databases = [], runCommand = null } = {}) {
       },
     },
     {
+      name: 'runtime_facts',
+      description: 'Read parameterized runtime facts from a local JVM: system_properties, classloader (VM.classloader_stats), flags or command_line. Use selectors (exact, prefix or simple glob) to choose property/classloader keys; with comparePid or declaredFile only differences are returned. Sensitive values are always redacted, wildcard selectors return key names only, and results are paged/spilled.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          pid: { type: 'integer', minimum: 1 },
+          port: { type: 'integer', minimum: 1, maximum: 65535 },
+          view: { enum: ['system_properties', 'classloader', 'flags', 'command_line'] },
+          selectors: { type: 'array', items: { type: 'string' } },
+          comparePid: { type: 'integer', minimum: 1 },
+          declaredFile: { type: 'string' },
+          offset: { type: 'integer', minimum: 0, maximum: 10000 },
+          limit: { type: 'integer', minimum: 1, maximum: 200 },
+        },
+        additionalProperties: false,
+      },
+    },
+    {
       name: 'runtime_classpath',
-      description: 'Compare a local JVM runtime classpath against a declared classpath file, and return only missing jars, version mismatches and runtime-only jars. declaredFile accepts Maven dependency:build-classpath output (prefer -Dmdep.includeScope=runtime), a dependency:tree log, a JSON string array, or a directory of jars; it must live under the source root, run directory or current workspace. Use pid, or port when the pid is unknown.',
+      description: 'Compare a local JVM runtime classpath against a declared classpath file. Returns the first page of missing/version-mismatch/runtime-only items, full counts and a file pointer; use mode/offset/limit or query_result with field=missing/versionMismatch/runtimeOnly to retrieve the rest. declaredFile accepts Maven dependency:build-classpath output (prefer -Dmdep.includeScope=runtime), a dependency:tree log, a JSON string array, or a directory of jars; it must live under the source root, run directory or current workspace. Use pid, or port when the pid is unknown.',
       input_schema: {
         type: 'object',
         properties: {
           pid: { type: 'integer', minimum: 1 },
           port: { type: 'integer', minimum: 1, maximum: 65535 },
           declaredFile: { type: 'string' },
+          mode: { enum: ['all', 'missing', 'versionMismatch', 'runtimeOnly'] },
+          offset: { type: 'integer', minimum: 0, maximum: 10000 },
+          limit: { type: 'integer', minimum: 1, maximum: 200 },
         },
         required: ['declaredFile'],
         additionalProperties: false,
@@ -228,7 +283,7 @@ export function toolSpecs({ databases = [], runCommand = null } = {}) {
           },
         }, {
           name: 'maven_dependencies',
-          description: 'Run one full Maven dependency:tree for the backend root, then filter in-process. Use includes/excludes arrays instead of composing -Dincludes. Optionally returns declaredFile for runtime_classpath. Only available when build/test commands are enabled (sandbox/full).',
+          description: 'Run one full Maven dependency:tree for the backend root, then filter in-process. Returns a page of dependencies plus total counts and a file pointer; use offset/limit or query_result with field=dependencies to retrieve the rest. Use includes/excludes arrays instead of composing -Dincludes. Optionally returns declaredFile for runtime_classpath. Only available when build/test commands are enabled (sandbox/full).',
           input_schema: {
             type: 'object',
             properties: {
@@ -238,6 +293,8 @@ export function toolSpecs({ databases = [], runCommand = null } = {}) {
               excludes: { type: 'array', items: { type: 'string' } },
               includeClasspath: { type: 'boolean' },
               verbose: { type: 'boolean' },
+              offset: { type: 'integer', minimum: 0, maximum: 10000 },
+              limit: { type: 'integer', minimum: 1, maximum: 200 },
             },
             additionalProperties: false,
           },
@@ -294,6 +351,7 @@ export function toolSpecs({ databases = [], runCommand = null } = {}) {
  *   databaseConnect?: Function,
  *   runCommand?: ((input: { command: string, cwd?: string }) => Promise<any>) | null,
  *   toolMode?: 'readonly' | 'sandbox' | 'full',
+ *   buildProbeRoot?: string | null,
  *   window?: { beforeMs: number, afterMs: number },
  *   limitBytes?: number,
  *   onCall?: (event: { id: number, stage: 'start'|'done', name: string, error?: boolean, durationMs?: number }) => void
@@ -313,6 +371,7 @@ export function createTools({
   databaseConnect = undefined,
   runCommand = null,
   toolMode = null,
+  buildProbeRoot = null,
   window,
   limitBytes = DEFAULT_MAX_RESULT_BYTES,
   onCall = null,
@@ -321,6 +380,7 @@ export function createTools({
   const files = logfiles ?? paths.logfiles;
   const root = sourceRoot ?? paths.sourceRoot;
   const frontendRoot = frontendSourceRoot ?? scenario.frontendSourceRoot ?? null;
+  const probeRoot = buildProbeRoot ?? (root ? path.dirname(root) : null);
   const extraRoots = Array.isArray(extraSourceRoots) ? extraSourceRoots : [];
   // Declared classpath files are user/build artifacts. Only read them from
   // places the diagnosis already has access to; never from model-chosen paths.
@@ -474,11 +534,11 @@ export function createTools({
   let seq = 0;
   let dbSeq = 0;
 
-  async function spill(name, rawValue) {
+  async function spill(name, rawValue, { force = false } = {}) {
     const value = redactValue(rawValue);
     const text = JSON.stringify(value, null, 2);
     const bytes = Buffer.byteLength(text);
-    if (bytes <= limitBytes) return value;
+    if (!force && bytes <= limitBytes) return value;
     await mkdir(spillDir, { recursive: true });
     seq += 1;
     const file = path.join(spillDir, `tool-${String(seq).padStart(3, '0')}-${name}.json`);
@@ -489,6 +549,18 @@ export function createTools({
       bytes,
       preview: text.slice(0, 1000),
     };
+  }
+
+  function evidencePath(file) {
+    if (!file || typeof file !== 'string') {
+      throw new AppError('READ_FILE_REQUIRED', 'file is required', { exitCode: 2 });
+    }
+    const absolute = path.resolve(runDir, file);
+    const base = path.resolve(spillDir) + path.sep;
+    if (!absolute.startsWith(base)) {
+      throw new AppError('READ_OUT_OF_SCOPE', 'only files under the run evidence directory are accessible', { exitCode: 2 });
+    }
+    return absolute;
   }
 
   /**
@@ -638,12 +710,35 @@ export function createTools({
     }, args),
 
     search_source: (args = {}) => safe('search_source', async () => {
+      const page = pageArgs({ offset: args.offset, limit: args.limit ?? 50 });
+      if (page.error) throw new AppError('INVALID_PAGE', page.error, { exitCode: 2 });
       const result = await searchSource({
         sourceRoot: pickRoot(args.root, args.extraRoot),
         keyword: args.keyword,
-        limit: args.limit ?? 50,
+        regex: Boolean(args.regex),
+        caseSensitive: Boolean(args.caseSensitive),
+        includeConfig: args.includeConfig !== false,
       });
-      return spill('search_source', result);
+      const { matches, scannedFiles, scannedBytes, capped, timedOut, error } = result;
+      const stored = await spill('search_source', result, { force: matches.length > page.limit });
+      const envelope = listEnvelope({
+        field: 'matches',
+        items: matches,
+        offset: page.offset,
+        limit: page.limit,
+        meta: {
+          keyword: args.keyword,
+          regex: Boolean(args.regex),
+          caseSensitive: Boolean(args.caseSensitive),
+          includeConfig: args.includeConfig !== false,
+          scannedFiles,
+          scannedBytes,
+          capped: Boolean(capped),
+          ...(timedOut ? { timedOut: true, error } : {}),
+        },
+        file: stored?.spilled ? stored.file : null,
+      });
+      return { ...envelope, hasMore: envelope.nextOffset !== null };
     }, args),
 
     read: (args = {}) => safe('read', async () => {
@@ -667,6 +762,79 @@ export function createTools({
         totalLines: lines.length,
         content: lines.slice(from - 1, to).join('\n'),
         truncated: to < lines.length,
+      };
+    }, args),
+
+    inspect_build_model: (args = {}) => safe('inspect_build_model', async () => {
+      if (!root) {
+        throw new AppError('SOURCE_ROOT_REQUIRED', 'inspect_build_model requires a configured source root', { exitCode: 3 });
+      }
+      if (args.root && args.root !== 'backend') {
+        throw new AppError('BUILD_PROBE_ROOT_UNSUPPORTED', 'inspect_build_model currently supports root=backend only', { exitCode: 2 });
+      }
+      const result = await inspectBuildModel({
+        sourceRoot: root,
+        probeRoot: probeRoot ?? path.dirname(root),
+        rootLabel: 'backend',
+      });
+      return spill('inspect_build_model', result);
+    }, args),
+
+    query_result: (args = {}) => safe('query_result', async () => {
+      const absolute = evidencePath(args.file);
+      let root;
+      try {
+        root = JSON.parse(await readFile(absolute, 'utf8'));
+      } catch (error) {
+        throw new AppError('QUERY_RESULT_NOT_JSON', 'query_result only accepts JSON tool results', {
+          exitCode: 2,
+          cause: error,
+        });
+      }
+      const page = pageArgs({ offset: args.offset, limit: args.limit });
+      if (page.error) throw new AppError('INVALID_PAGE', page.error, { exitCode: 2 });
+      let value = root;
+      if (args.field) {
+        const parts = String(args.field).split('.').filter(Boolean);
+        if (parts.some((part) => ['__proto__', 'prototype', 'constructor'].includes(part))) {
+          throw new AppError('QUERY_FIELD_INVALID', 'field path is not allowed', { exitCode: 2 });
+        }
+        for (const part of parts) {
+          if (!value || typeof value !== 'object' || !Object.prototype.hasOwnProperty.call(value, part)) {
+            return {
+              error: true,
+              code: 'FIELD_NOT_FOUND',
+              file: args.file,
+              field: args.field,
+              fields: value && typeof value === 'object' ? Object.keys(value) : [],
+            };
+          }
+          value = value[part];
+        }
+      } else if (!Array.isArray(root)) {
+        return {
+          file: args.file,
+          fields: root && typeof root === 'object' ? Object.keys(root) : [],
+          items: [],
+          total: 0,
+          offset: 0,
+          limit: page.limit,
+          nextOffset: null,
+          truncated: false,
+        };
+      }
+      const items = Array.isArray(value) ? value : [value];
+      const filter = args.filter ? String(args.filter).toLowerCase() : null;
+      const filtered = filter
+        ? items.filter((item) => JSON.stringify(item).toLowerCase().includes(filter))
+        : items;
+      const result = pageItems(filtered, page);
+      return {
+        file: args.file,
+        field: args.field ?? null,
+        ...(filter ? { filter: args.filter } : {}),
+        ...result,
+        items: redactValue(result.items),
       };
     }, args),
 
@@ -724,14 +892,98 @@ export function createTools({
       return spill('git_diff', result);
     }, args),
 
+    runtime_facts: (args = {}) => safe('runtime_facts', async () => {
+      const result = await runtimeFacts({
+        pid: args.pid,
+        port: args.port,
+        view: args.view ?? 'system_properties',
+        selectors: args.selectors,
+        comparePid: args.comparePid,
+        declaredFile: args.declaredFile,
+        allowRoots: declaredRoots,
+      });
+      if (result.candidates) return result;
+      const page = pageArgs({ offset: args.offset, limit: args.limit ?? 50 });
+      if (page.error) throw new AppError('INVALID_PAGE', page.error, { exitCode: 2 });
+      const items = Array.isArray(result.items) ? result.items : [];
+      const { items: _items, ...meta } = result;
+      const stored = await spill('runtime_facts', result, { force: items.length > page.limit });
+      return listEnvelope({
+        field: 'items',
+        items,
+        offset: page.offset,
+        limit: page.limit,
+        meta,
+        file: stored?.spilled ? stored.file : null,
+      });
+    }, args),
+
     runtime_classpath: (args = {}) => safe('runtime_classpath', async () => {
+      const mode = args.mode ?? 'all';
+      const allowedModes = new Set(['all', 'missing', 'versionMismatch', 'runtimeOnly']);
+      if (!allowedModes.has(mode)) {
+        throw new AppError('INVALID_MODE', 'mode must be all, missing, versionMismatch or runtimeOnly', { exitCode: 2 });
+      }
+      const page = pageArgs({ offset: args.offset, limit: args.limit ?? 50 });
+      if (page.error) throw new AppError('INVALID_PAGE', page.error, { exitCode: 2 });
       const result = await runtimeClasspath({
         pid: args.pid,
         port: args.port,
         declaredFile: args.declaredFile,
         allowRoots: declaredRoots,
       });
-      return spill('runtime_classpath', result);
+      const pages = {
+        missing: pageItems(result.missing, page),
+        versionMismatch: pageItems(result.versionMismatch, page),
+        runtimeOnly: pageItems(result.runtimeOnly, page),
+      };
+      const stored = await spill('runtime_classpath', result, {
+        force: Object.values(pages).some((entry) => entry.truncated),
+      });
+      const counts = {
+        missing: result.missing.length,
+        versionMismatch: result.versionMismatch.length,
+        runtimeOnly: result.runtimeOnly.length,
+      };
+      const common = {
+        pid: result.pid,
+        mainClass: result.mainClass,
+        runtimeSource: result.runtimeSource,
+        runtimeSources: result.runtimeSources,
+        declaredFile: result.declaredFile,
+        declaredCount: result.declaredCount,
+        runtimeCount: result.runtimeCount,
+        classDirCount: result.classDirCount,
+        counts,
+        mode,
+        offset: page.offset,
+        limit: page.limit,
+        fields: ['missing', 'versionMismatch', 'runtimeOnly'],
+        file: stored?.spilled ? stored.file : null,
+        limitations: result.limitations,
+      };
+      if (mode === 'all') {
+        return {
+          ...common,
+          missing: pages.missing.items,
+          versionMismatch: pages.versionMismatch.items,
+          runtimeOnly: pages.runtimeOnly.items,
+          nextOffset: {
+            missing: pages.missing.nextOffset,
+            versionMismatch: pages.versionMismatch.nextOffset,
+            runtimeOnly: pages.runtimeOnly.nextOffset,
+          },
+          truncated: Object.values(pages).some((entry) => entry.truncated),
+        };
+      }
+      const selected = pages[mode];
+      return {
+        ...common,
+        [mode]: selected.items,
+        totalCount: selected.total,
+        nextOffset: selected.nextOffset,
+        truncated: selected.truncated,
+      };
     }, args),
 
     query_db: (args = {}) => safe('query_db', async () => {
@@ -857,19 +1109,39 @@ export function createTools({
                 });
               }
             }
-            const limited = filtered.slice(0, 200);
-            return {
+            const page = pageArgs({ offset: args.offset, limit: args.limit ?? 50 });
+            if (page.error) throw new AppError('INVALID_PAGE', page.error, { exitCode: 2 });
+            const full = {
               root: 'backend',
               scope,
               count: filtered.length,
               totalCount: all.length,
-              omittedCount: limited.filter((entry) => entry.omitted).length,
-              dependencies: limited,
-              truncated: filtered.length > 200 || all.length > 5000,
+              omittedCount: filtered.filter((entry) => entry.omitted).length,
+              dependencies: filtered,
               declaredFile,
               cached: Boolean(treeRun.cached),
               classpathCached,
             };
+            const stored = await spill('maven_dependencies', full, {
+              force: filtered.length > page.limit,
+            });
+            return listEnvelope({
+              field: 'dependencies',
+              items: filtered,
+              offset: page.offset,
+              limit: page.limit,
+              meta: {
+                root: 'backend',
+                scope,
+                count: filtered.length,
+                allCount: all.length,
+                omittedCount: full.omittedCount,
+                declaredFile,
+                cached: full.cached,
+                classpathCached,
+              },
+              file: stored?.spilled ? stored.file : null,
+            });
           }, args),
         }
       : {}),

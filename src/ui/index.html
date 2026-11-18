@@ -41,6 +41,9 @@
         <label>后端源码目录
           <input name="sourceRoot" placeholder="../backend-project" />
         </label>
+        <label>构建模型探针根（可选，只读）
+          <input name="buildProbeRoot" placeholder="留空默认使用源码根上一级；仅读取 POM/IDE 模块，不搜索源码" />
+        </label>
         <label>前端项目目录（含 package.json）
           <input name="frontendProjectRoot" placeholder="如 ../frontend-project；留空则从前端源码目录向上推断" />
         </label>
@@ -69,6 +72,15 @@
           </label>
           <label>验证命令（可选）
             <input name="verifyCommand" placeholder="如 npm run build 或 npm test" />
+          </label>
+          <label class="inline" title="仅对本地/允许 origin 的捕获请求生效；默认只允许 GET/HEAD，带认证头的请求回退为人工确认">
+            <input name="replayEnabled" type="checkbox" /> 自动重放捕获请求以验证症状（仅安全方法和允许的 origin）
+          </label>
+          <label>重放允许的 origin（每行一个，可选）
+            <textarea name="replayAllowOrigins" rows="2" placeholder="默认包含后端地址；例如 http://127.0.0.1:8080"></textarea>
+          </label>
+          <label>重放允许的方法（逗号分隔）
+            <input name="replayAllowMethods" placeholder="GET,HEAD,OPTIONS" />
           </label>
           <div class="row">
             <label>时间窗前 (ms)

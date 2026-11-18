@@ -138,6 +138,13 @@ test('reports multiple runtime versions of the same artifact', () => {
   assert.deepEqual(diff.versionMismatch, [{ artifact: 'com.foo:bar', declared: '2.0', runtime: '1.0, 2.0' }]);
 });
 
+test('can keep the full classpath diff for paging', () => {
+  const declared = Array.from({ length: 60 }, (_, index) => normalizeArtifact(`com.example:missing-${index}:1.0`));
+  const diff = diffClasspaths(declared, [], { limit: Infinity });
+  assert.equal(diff.missing.length, 60);
+  assert.equal(diff.truncated.missing, false);
+});
+
 test('truncates each diff category independently', () => {
   const declared = [];
   const runtime = [];

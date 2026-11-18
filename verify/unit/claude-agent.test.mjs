@@ -6,6 +6,7 @@ import {
   buildCachedSystemPrompt,
   buildFollowUpPrompt,
   buildPrompt,
+  buildRepairPrompt,
   buildToolShapes,
   turnUsageFromMessage,
   createClaudeAgent,
@@ -115,6 +116,26 @@ test('usageFromResult sums modelUsage tokens (including cache) and falls back to
     },
   });
   assert.equal(fallback.totalTokens, 18);
+});
+
+test('builds a structured repair prompt with redaction', () => {
+  const prompt = buildRepairPrompt({
+    phase: 'sandbox-self-check',
+    status: 'failed',
+    error: 'mvn compile failed',
+    errorLines: ['OrderService.java:12: error: cannot find symbol'],
+    outputTail: 'password=hunter2secret',
+    commands: [{ command: 'mvn compile', exitCode: 1 }],
+    changedFiles: ['backend/src/OrderService.java'],
+  }, {
+    meta: { question: '下单失败' },
+    agent: { conclusion: '旧结论', fixes: [{ summary: '旧修复' }] },
+  });
+  assert.match(prompt, /# 自动修复回合/);
+  assert.match(prompt, /OrderService\.java:12/);
+  assert.match(prompt, /password=<redacted>/);
+  assert.match(prompt, /不要重复尝试/);
+  assert.doesNotMatch(prompt, /hunter2secret/);
 });
 
 test('extracts per-turn usage and builds a cacheable system prompt', () => {

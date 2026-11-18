@@ -38,3 +38,29 @@ test('divergent conclusions are inconsistent', () => {
   assert.equal(result.verdict, 'inconsistent');
   assert.equal(result.checks.find((c) => c.name === 'conclusion-similarity').ok, false);
 });
+
+test('rejected hypotheses are compared across runs', () => {
+  const withHypothesis = {
+    ...base,
+    rejectedHypotheses: [{
+      hypothesis: '库存不足导致下单失败',
+      refutedBy: [{ type: 'log', ref: 'logs.records[0]' }],
+      reason: '日志显示库存充足',
+    }],
+  };
+  const consistent = evaluateRecheck([withHypothesis, { ...withHypothesis }], { responseStatus: 500 });
+  assert.equal(consistent.verdict, 'consistent');
+  assert.equal(consistent.checks.find((c) => c.name === 'rejected-hypotheses').ok, true);
+
+  const divergent = {
+    ...base,
+    rejectedHypotheses: [{
+      hypothesis: '前端参数校验失败',
+      refutedBy: [{ type: 'thread', ref: 'threads' }],
+      reason: '请求已到达后端',
+    }],
+  };
+  const result = evaluateRecheck([withHypothesis, divergent], { responseStatus: 500 });
+  assert.equal(result.verdict, 'inconsistent');
+  assert.equal(result.checks.find((c) => c.name === 'rejected-hypotheses').ok, false);
+});

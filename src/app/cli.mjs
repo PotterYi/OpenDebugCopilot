@@ -67,6 +67,8 @@ Options:
   --triage <kv>     Pre-diagnosis answers: environment=deploy-only,scope=endpoint,change=dependency
   --triage-note <text>  Optional note attached to --triage
   --triage-file <path>  JSON file with triage answers (alternative to --triage)
+  --symptom <status>    Symptom verification: pending | passed | failed | skipped
+  --symptom-note <text> Optional note attached to --symptom
   --workspace <mode>  Workspace decision: keep | discard (required without a TTY)
   --keep-workspace  Shorthand for --workspace=keep
   --discard-workspace  Shorthand for --workspace=discard
@@ -142,6 +144,8 @@ export function parseArgv(argv) {
     triage: undefined,
     triageNote: '',
     triageFile: undefined,
+    symptomStatus: 'pending',
+    symptomNote: null,
     runsDir: undefined,
     model: undefined,
     maxTurns: undefined,
@@ -185,6 +189,20 @@ export function parseArgv(argv) {
       opts.triageFile = value;
     } else if (arg.startsWith('--triage-file=')) {
       opts.triageFile = arg.slice('--triage-file='.length);
+    } else if (arg === '--symptom') {
+      const value = argv[i + 1];
+      if (value === undefined) throw new UsageError('--symptom requires a status');
+      i += 1;
+      opts.symptomStatus = parseSymptomStatus(value);
+    } else if (arg.startsWith('--symptom=')) {
+      opts.symptomStatus = parseSymptomStatus(arg.slice('--symptom='.length));
+    } else if (arg === '--symptom-note') {
+      const value = argv[i + 1];
+      if (value === undefined) throw new UsageError('--symptom-note requires a value');
+      i += 1;
+      opts.symptomNote = value;
+    } else if (arg.startsWith('--symptom-note=')) {
+      opts.symptomNote = arg.slice('--symptom-note='.length);
     } else if (arg === '--model') {
       const value = argv[i + 1];
       if (value === undefined) throw new UsageError('--model requires a value');
@@ -267,6 +285,15 @@ function parseRecheck(value) {
   return n;
 }
 
+function parseSymptomStatus(value) {
+  const aliases = { verified: 'passed', unverified: 'pending', passed: 'passed', failed: 'failed', skipped: 'skipped', pending: 'pending' };
+  const status = aliases[String(value ?? '').trim().toLowerCase()];
+  if (!status) {
+    throw new UsageError('--symptom must be pending, passed/verified, failed or skipped');
+  }
+  return status;
+}
+
 function parseTriageSpec(value) {
   const answers = {};
   for (const pair of String(value ?? '').split(',')) {
@@ -332,8 +359,23 @@ function printDiagnosis(result, runDir, root, { workspaceUndecided = false } = {
     `  Agent      : ${result.meta.agent} (${result.meta.mode})`,
     `  Question   : ${result.meta.question || '(none)'}`,
     `  Triage     : ${triageSummary(result.meta.triage)}`,
+    `  Symptom    : ${result.meta.symptomStatus ?? 'pending'}`,
+    `  VerifyLevel: ${result.meta.verificationLevel ?? 'unverified'}`,
     `  Status     : ${result.gates.ok ? 'gates ok' : 'gates failed'}`,
     `  Conclusion : ${result.agent.conclusion}`,
+    ...(Array.isArray(result.agent.rejectedHypotheses) && result.agent.rejectedHypotheses.length
+      ? result.agent.rejectedHypotheses.map(
+          (item) => `  Rejected   : ${item.hypothesis} <- ${(item.refutedBy ?? []).map((ref) => `${ref.type}:${ref.ref}`).join(',')}`,
+        )
+      : [
+          `  Rejected   : ${result.agent.noRejectedHypothesesReason
+            ? `none (${result.agent.noRejectedHypothesesReason})`
+            : '未披露（自检会标记 hypothesis-disclosure）'}`,
+        ]),
+    `  Actions    : ${result.agent.actions?.length ?? 0}`,
+    ...(Array.isArray(result.agent.actions) && result.agent.actions.length
+      ? result.agent.actions.map((action) => `  Action     : [${action.type}] ${action.summary}`)
+      : []),
     `  Logs       : ${logs.count} record(s), marker ${logs.markerMatched ? 'matched' : `not matched (${logs.waitedMs}ms)`}`,
     `  Recheck    : ${result.recheck ? `${result.recheck.verdict} (${result.recheck.runs} runs, 一致不等于正确)` : 'off'}`,
     ...(result.agent?.verification
@@ -491,6 +533,8 @@ export async function main(argv = process.argv.slice(2), { root = ROOT } = {}) {
       runsDir: parsed.runsDir ? path.resolve(parsed.runsDir) : path.resolve(root, config.runsDir ?? 'runs'),
       question: parsed.question,
       triage,
+      symptomStatus: parsed.symptomStatus,
+      symptomNote: parsed.symptomNote,
       recheck: parsed.recheck,
       agent,
       // Non-interactive CLI: expose read-only queries only. Writes need the

@@ -57,6 +57,58 @@ test('report projection keeps whitelisted fields only', () => {
   assert.equal(report.response, undefined);
 });
 
+test('renders symptom verification status and steps', () => {
+  const withSymptom = {
+    ...result,
+    gates: { ...result.gates, level: 'verified' },
+    symptomCheck: {
+      status: 'passed',
+      method: 'replay',
+      steps: ['重新触发请求：GET /api/order'],
+      expected: '原始症状不再出现',
+      observed: 'HTTP 200 / code 200',
+      reason: 'error-signature-cleared',
+    },
+  };
+  const markdown = renderMarkdown(buildReport(withSymptom));
+  assert.match(markdown, /## 症状验证/);
+  assert.match(markdown, /已确认症状消失/);
+  assert.match(markdown, /自动重放/);
+  assert.match(markdown, /HTTP 200 \/ code 200/);
+  assert.match(markdown, /已验证（编译\/测试通过 \+ 症状确认）/);
+});
+
+test('renders the automatic repair retry section', () => {
+  const withRepair = {
+    ...result,
+    agent: {
+      ...result.agent,
+      verification: {
+        status: 'passed',
+        mode: 'copy',
+        scope: 'sandbox',
+        commands: [{ command: 'mvn -q -DskipTests compile' }],
+        repair: {
+          attempted: true,
+          finalStatus: 'passed',
+          failure: {
+            error: '编译/测试验证失败',
+            errorLines: ['OrderService.java:12: error: cannot find symbol'],
+            commands: ['mvn -q -DskipTests compile'],
+          },
+          budget: { maxRounds: 6, maxBudgetUsd: 1, timeoutMs: 120000 },
+          usage: { numTurns: 1, costUsd: 0.01 },
+        },
+      },
+    },
+  };
+  const markdown = renderMarkdown(buildReport(withRepair));
+  assert.match(markdown, /## 修复重试/);
+  assert.match(markdown, /重试后通过/);
+  assert.match(markdown, /OrderService\.java:12/);
+  assert.match(markdown, /\$0\.0100/);
+});
+
 test('renders cache, provider and estimated cost details', () => {
   const withUsage = {
     ...result,
@@ -243,4 +295,36 @@ test('report shows compile/test verification and a failed gate', () => {
   assert.match(markdown, /状态：失败（full）/);
   assert.match(markdown, /mvn -q -DskipTests compile/);
   assert.match(markdown, /compile-self-check：失败/);
+});
+
+test('renders rejected hypotheses before the conclusion', () => {
+  const withHypotheses = {
+    ...result,
+    agent: {
+      ...result.agent,
+      rejectedHypotheses: [{
+        hypothesis: 'Redis 缓存未命中导致重复扣款',
+        reason: '同一 key 在请求窗口内命中',
+        refutedBy: [{ type: 'log', ref: 'logs.records[0]', note: 'cache hit' }],
+      }],
+      noRejectedHypothesesReason: null,
+    },
+  };
+  const report = buildReport(withHypotheses);
+  assert.equal(report.rejectedHypotheses.length, 1);
+  assert.equal(report.rejectedHypotheses[0].hypothesis, 'Redis 缓存未命中导致重复扣款');
+  const markdown = renderMarkdown(report);
+  const sectionAt = markdown.indexOf('## 排除的假设');
+  const conclusionAt = markdown.indexOf('## 结论');
+  assert.ok(sectionAt >= 0 && conclusionAt > sectionAt);
+  assert.match(markdown, /Redis 缓存未命中导致重复扣款/);
+  assert.match(markdown, /\[log\] logs\.records\[0\] — cache hit/);
+  assert.match(markdown, /同一 key 在请求窗口内命中/);
+
+  const empty = {
+    ...result,
+    agent: { ...result.agent, rejectedHypotheses: [], noRejectedHypothesesReason: '未形成可排除假设' },
+  };
+  const emptyMarkdown = renderMarkdown(buildReport(empty));
+  assert.match(emptyMarkdown, /未形成可排除假设/);
 });

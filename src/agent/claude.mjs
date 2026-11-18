@@ -4,6 +4,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { AppError } from '../core/errors.mjs';
 import { normalizeFixList } from '../core/fixes.mjs';
+import { normalizeActionList } from '../core/actions.mjs';
 import { summarizeToolCalls } from '../core/tool-calls.mjs';
 import { redactHeaders, redactValue } from '../core/redact.mjs';
 import { isSafeBashCommand } from '../core/bash-policy.mjs';
@@ -276,7 +277,7 @@ const SYSTEM_PROMPT = `你是 DebugCopilot 的后端问题定位助手。你的�
 
 规则：
 1. 可以在授权源码目录内使用内置 Read/Grep/Glob 查看完整文件、搜索方法/字段/引用；日志、数据库和证据切片使用 debugcopilot 工具。不要假设未读取的内容，不要访问源码目录之外的文件。
-2. 每条结论都必须有证据支撑；evidenceRefs 的 ref 必须指向证据包中的条目（request / response / logs.records[i] / source.files[i] / threads / element）。
+2. 每条结论都必须有证据支撑；evidenceRefs 的 ref 必须真实存在于证据包中（request / response / logs.records[i] / source.files[i] / threads / element），不要臆造索引或路径。系统会校验引用是否存在。
 3. 证据不足时写入 needsMoreInfo，不要编造日志、堆栈或源码。
 4. 工具调用应有节制；没有新增证据就停止并给出阶段性结论。
 5. 使用中文回答，结论要具体（涉及类名、日志关键行、HTTP 状态码）。
@@ -294,10 +295,17 @@ const SYSTEM_PROMPT = `你是 DebugCopilot 的后端问题定位助手。你的�
 17. 诊断前确认是用户先验，不是已验证事实；先按它调整假设优先级，再核对证据。不要重复询问已经回答的问题；只把未回答且无法从证据推断的信息写入 needsMoreInfo。若用户跳过确认，环境/范围问题应优先在 needsMoreInfo 中提出。
 18. 查看最近代码变更用 git_status / git_log / git_diff；查看目录或文件时间用 list_dir / stat_file。不要用 run_command 执行 git、find 或 Python 脚本；read 只用于 evidence 溢写结果，目录和源码分别用 list_dir、read_source。
 19. 需要 Maven 依赖树或声明 classpath 时优先用 maven_dependencies（includes/excludes 用数组），不要用 run_command 拼 -Dincludes；它返回的 declaredFile 可直接交给 runtime_classpath。run_command 结果标记 cached:true 时，如果期间没有修改文件，不要重复执行同一命令。
+20. 编译/测试通过不等于症状消失。系统会生成「症状验证」待办；不要要求用户“手动确认症状”并把它写进 needsMoreInfo，needsMoreInfo 只写其他缺失信息。若判断需要人工复现，可简述复现步骤，但最终状态由症状验证待办记录。
+21. 如果正确修法不是改代码（配置、构建刷新、补打包依赖、重启/换运行实例、数据修复、部署环境），用 actions 输出结构化动作，写明 type、summary、requires、steps、commands、verification、risk；不要塞进 conclusion 或 needsMoreInfo。能在仓库内用源码/配置补丁修复的仍用 fixes。
+22. 列表工具返回 spilled/nextOffset/file 时，用 query_result 按 field/offset/limit/filter 取后续数据；不要反复调用同一个大列表工具，也不要要求用户提供完整 classpath/依赖树。
+23. 判断 IDE/工程模型是否过期时用 inspect_build_model（POM 模块、modules.xml/iml、时间戳、staleHints）。构建探针根只读，只允许构建模型文件，不要读取同级其他源码或 .idea/workspace.xml。
+24. 运行时事实用 runtime_facts；selectors 只传需要看的键/前缀/简单通配，comparePid 可比较两个实例。敏感值会被脱敏，通配只返回键名；不要要求输出全部系统属性或环境变量。
+25. 源码与配置检索用 search_source：默认包含 POM/YAML/properties/JSON 等配置文件，可用 includeConfig=false 只看代码。需要正则时传 regex=true（≤200 字符，禁用反向引用/后顾/嵌套量词；在 worker 中执行，5 秒超时）。结果按 path+line 稳定排序，用 offset/nextOffset 翻页；标记 spilled/file 时用 query_result field=matches 取后续页，不要重复同一关键词。pom.xml、application-*.yml 等配置可直接用 read_source 按路径读取。
+26. 结论必须可证伪：在 rejectedHypotheses 中列出本轮认真考虑后排除的备选假设（建议 1-3 条，最多 5 条），每条写清 hypothesis、refutedBy（至少 1 条真实存在的证据引用）和 reason（为什么该证据否定它）。只把“被正面证据否定”的假设列入；仅有证据缺失时不要声称已排除。若确实没有可排除的备选假设，rejectedHypotheses 留空，并在 noRejectedHypothesesReason 中说明原因；不要为了填字段编造假设或引用。
 
 # 工具边界（先看这里，不要试探）
 - run_command：只允许项目构建/测试工具链（mvn/gradle/npm/pnpm/yarn/npx/pytest/go/dotnet/cargo/python），一次一条；禁止 ; | && $()、install/publish/run/dev server。不要用 python -V、echo、print 试探能力。
-- read：只读 evidence 溢写结果；源码用 read_source，目录用 list_dir，文件时间用 stat_file。
+- read：只读 evidence 溢写结果；源码和配置用 read_source，目录用 list_dir，文件时间用 stat_file。搜索代码与配置用 search_source；需要正则时显式 regex=true。
 - Git 用 git_status / git_log / git_diff；进程用 list_processes；classpath 用 runtime_classpath。
 - 工具拒绝时先阅读 error 的 hint/usage；不要重复同一种被拒绝的写法。`;
 
@@ -315,7 +323,11 @@ const FOLLOWUP_SYSTEM_PROMPT = `你是 DebugCopilot 的诊断助手，正在和�
 9. 遇到链接/类缺失类错误时，先用 list_processes 确认实际在跑的实例，再用 runtime_classpath 对比运行侧与声明侧 classpath；本机有多个实例时不要默认选第一个，拿不到证据时明确说明，不要臆测 jar 列表。
 10. 上一轮已收集的诊断前提不要重复询问；用户修改前提时以最新回答为准。若回答与证据冲突，明确指出冲突。
 11. 查看最近变更用 git_status / git_log / git_diff，查看目录/文件时间用 list_dir / stat_file；不要用 run_command 执行 git/find/Python。工具拒绝时先阅读 hint/usage，不要重复同一种被拒绝的写法。需要 Maven 依赖树时用 maven_dependencies，不要拼 -Dincludes；cached:true 时不要重复执行同一命令。
-12. 不要直接修改文件。使用中文回答。`;
+12. 编译/测试通过不等于症状消失；系统有独立的「症状验证」待办。不要把症状确认写入 needsMoreInfo。
+13. 正确修法不是改代码时（配置/构建/依赖/运行实例/部署/数据），用 actions 输出结构化动作，不要塞进 needsMoreInfo；能在仓库内修改的仍用 fixes。
+14. 列表结果标记 spilled/nextOffset/file 时用 query_result 分页/过滤，不要重复调用大列表工具。工程模型过期用 inspect_build_model，探针根只读，不读同级源码或 workspace.xml。运行时事实用 runtime_facts，按 selector 精确查询。源码/配置检索用 search_source（默认含配置，regex=true 走受控 worker），可按 offset/nextOffset 或 query_result field=matches 翻页。
+15. 不要直接修改文件。使用中文回答。
+16. 追问若重新定位了根因，必须同步更新 rejectedHypotheses（排除的备选假设 + 真实存在的否定证据 + 理由）；若只是解释、评估或修改建议，且没有重新定位根因，rejectedHypotheses 留空并在 noRejectedHypothesesReason 中说明“本轮为追问解释，未重新定位根因”。不要输出不存在的证据引用。`;
 
 /** Build a system prompt array with a static cacheable prefix. */
 export function buildCachedSystemPrompt(staticPrompt, dynamicSuffix, boundary = '__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__') {
@@ -335,7 +347,7 @@ function turnLimitNote(turnLimit) {
 const RESULT_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['conclusion', 'evidenceRefs', 'confidence', 'needsMoreInfo'],
+  required: ['conclusion', 'evidenceRefs', 'confidence', 'needsMoreInfo', 'rejectedHypotheses'],
   properties: {
     conclusion: { type: 'string' },
     evidenceRefs: {
@@ -354,6 +366,35 @@ const RESULT_SCHEMA = {
     },
     confidence: { type: 'number', minimum: 0, maximum: 1 },
     needsMoreInfo: { type: 'array', items: { type: 'string' } },
+    rejectedHypotheses: {
+      type: 'array',
+      maxItems: 5,
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['hypothesis', 'refutedBy', 'reason'],
+        properties: {
+          hypothesis: { type: 'string' },
+          refutedBy: {
+            type: 'array',
+            minItems: 1,
+            maxItems: 3,
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              required: ['type', 'ref'],
+              properties: {
+                type: { enum: ['request', 'response', 'log', 'source', 'thread', 'element'] },
+                ref: { type: 'string' },
+                note: { type: 'string' },
+              },
+            },
+          },
+          reason: { type: 'string' },
+        },
+      },
+    },
+    noRejectedHypothesesReason: { type: 'string' },
     fixes: {
       type: 'array',
       items: {
@@ -370,6 +411,54 @@ const RESULT_SCHEMA = {
           risk: { enum: ['low', 'medium', 'high'] },
           verification: { type: 'string' },
           note: { type: 'string' },
+        },
+      },
+    },
+    actions: {
+      type: 'array',
+      maxItems: 5,
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['type', 'summary', 'steps', 'verification', 'risk'],
+        properties: {
+          type: { enum: ['config', 'build', 'dependency', 'runtime', 'data', 'deployment', 'environment'] },
+          summary: { type: 'string' },
+          reason: { type: 'string' },
+          requires: { type: 'array', items: { type: 'string' } },
+          steps: { type: 'array', minItems: 1, items: { type: 'string' } },
+          commands: {
+            type: 'array',
+            items: {
+              oneOf: [
+                { type: 'string' },
+                {
+                  type: 'object',
+                  additionalProperties: false,
+                  required: ['command'],
+                  properties: {
+                    label: { type: 'string' },
+                    command: { type: 'string' },
+                    risk: { enum: ['low', 'medium', 'high'] },
+                  },
+                },
+              ],
+            },
+          },
+          verification: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['kind'],
+            properties: {
+              kind: { enum: ['symptom', 'command', 'inspection', 'log', 'runtime'] },
+              description: { type: 'string' },
+              command: { type: 'string' },
+              expected: { type: 'string' },
+            },
+          },
+          risk: { enum: ['low', 'medium', 'high'] },
+          reversible: { type: 'boolean' },
+          confirmationRequired: { type: 'boolean' },
         },
       },
     },
@@ -489,6 +578,14 @@ export function buildFollowUpPrompt(question, previous = {}) {
     originalQuestion: previous.meta?.question ?? '',
     triage: previous.meta?.triage ?? null,
     conclusion: agent.conclusion ?? '',
+    rejectedHypotheses: (Array.isArray(agent.rejectedHypotheses) ? agent.rejectedHypotheses : [])
+      .slice(0, 5)
+      .map((item) => ({
+        hypothesis: item.hypothesis,
+        refutedBy: (item.refutedBy ?? []).slice(0, 3),
+        reason: item.reason,
+      })),
+    noRejectedHypothesesReason: agent.noRejectedHypothesesReason ?? '',
     fixes,
     fixesWithheld: compactWithheldFixes(agent.fixesWithheld ?? []),
     fixesValidation: agent.fixesValidation
@@ -596,10 +693,84 @@ export function buildFollowUpPrompt(question, previous = {}) {
   ].join('\n');
 }
 
+export const REPAIR_SYSTEM_PROMPT = `你是 DebugCopilot 的自动修复助手，正在处理上一轮修改导致的编译/测试失败。
+
+规则：
+1. 可以在当前工作区继续修改并运行编译/测试；只修复失败输出中明确的问题。
+2. 不要重复上一轮已经失败的同一种修改；不要删除、跳过或弱化测试来掩盖失败。
+3. 如果判断是依赖、网络、权限或环境问题，不要继续尝试，在 needsMoreInfo 中说明需要什么。
+4. 不要访问工作区之外的路径；输出仍使用 JSON Schema。
+5. 修复完成后不要重复把同样的修改写进 fixes；只有未直接修改的方案才放进 fixes。`;
+
+export function buildRepairPrompt(failure, previous = {}) {
+  const agent = previous.agent ?? {};
+  const changedFiles = agent.workspaceSession?.changedFiles
+    ?? agent.sandbox?.changedFiles
+    ?? [];
+  const fixes = (agent.fixes ?? []).slice(0, 10).map((fix) => (
+    typeof fix === 'string'
+      ? { summary: fix }
+      : {
+          summary: fix.summary,
+          root: fix.root,
+          file: fix.file,
+          risk: fix.risk,
+        }
+  ));
+  const snapshot = {
+    originalQuestion: previous.meta?.question ?? '',
+    conclusion: agent.conclusion ?? '',
+    changedFiles,
+    fixes,
+    request: previous.request
+      ? { method: previous.request.method, url: previous.request.url }
+      : null,
+    response: previous.response
+      ? { status: previous.response.status, durationMs: previous.response.durationMs }
+      : null,
+  };
+  const failureText = JSON.stringify(redactValue(failure ?? {}), null, 2);
+  const snapshotText = JSON.stringify(redactValue(snapshot), null, 2);
+  return [
+    '# 自动修复回合',
+    '上一轮修改后编译/测试未通过。请基于下面的结构化失败输出继续修复。',
+    '',
+    '# 结构化失败',
+    '```json',
+    failureText.length > 12_000 ? `${failureText.slice(0, 12_000)}\n… (truncated)` : failureText,
+    '```',
+    '',
+    '# 上一轮上下文',
+    '```json',
+    snapshotText.length > 20_000 ? `${snapshotText.slice(0, 20_000)}\n… (truncated)` : snapshotText,
+    '```',
+    '',
+    '# 任务',
+    '只修复失败输出中的问题，修改后重新运行编译/测试。若失败来自环境、依赖、网络或权限，停止并在 needsMoreInfo 中说明，不要重复尝试。',
+  ].join('\n');
+}
+
 function toolResultText(value) {
   const text = JSON.stringify(redactValue(value), null, 2);
   if (text.length <= MAX_TOOL_TEXT) return text;
   return `${text.slice(0, MAX_TOOL_TEXT)}\n… (tool result truncated)`;
+}
+
+function normalizeRejectedHypotheses(value) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 5)
+    .filter((item) => item && typeof item === 'object')
+    .map((item) => ({
+      hypothesis: String(item.hypothesis ?? '').trim(),
+      refutedBy: (Array.isArray(item.refutedBy) ? item.refutedBy : []).slice(0, 3)
+        .filter((ref) => ref && typeof ref === 'object')
+        .map((ref) => ({
+          type: String(ref.type ?? '').trim(),
+          ref: String(ref.ref ?? '').trim(),
+          ...(ref.note ? { note: String(ref.note).trim() } : {}),
+        })),
+      reason: String(item.reason ?? '').trim(),
+    }));
 }
 
 function normalizeAgentResult(parsed) {
@@ -608,7 +779,10 @@ function normalizeAgentResult(parsed) {
     evidenceRefs: Array.isArray(parsed.evidenceRefs) ? parsed.evidenceRefs : [],
     confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 0,
     needsMoreInfo: Array.isArray(parsed.needsMoreInfo) ? parsed.needsMoreInfo : [],
+    rejectedHypotheses: normalizeRejectedHypotheses(parsed.rejectedHypotheses),
+    noRejectedHypothesesReason: String(parsed.noRejectedHypothesesReason ?? '').trim(),
     fixes: normalizeFixList(parsed.fixes),
+    actions: normalizeActionList(parsed.actions),
   };
 }
 
@@ -666,14 +840,28 @@ export function buildToolShapes(z) {
     },
     search_source: {
       keyword: z.string(),
+      regex: z.boolean().optional(),
+      caseSensitive: z.boolean().optional(),
+      includeConfig: z.boolean().optional(),
       root: z.enum(['backend', 'frontend', 'extra']).optional(),
       extraRoot: z.string().optional(),
+      offset: z.number().int().min(0).max(10000).optional(),
       limit: z.number().int().min(1).max(200).optional(),
     },
     read: {
       file: z.string(),
       startLine: z.number().int().min(1).optional(),
       endLine: z.number().int().min(1).optional(),
+    },
+    inspect_build_model: {
+      root: z.enum(['backend']).optional(),
+    },
+    query_result: {
+      file: z.string(),
+      field: z.string().optional(),
+      offset: z.number().int().min(0).max(10000).optional(),
+      limit: z.number().int().min(1).max(200).optional(),
+      filter: z.string().optional(),
     },
     list_java_processes: {
       port: z.number().int().min(1).max(65535).optional(),
@@ -715,6 +903,16 @@ export function buildToolShapes(z) {
       path: z.string().optional(),
       staged: z.boolean().optional(),
       statOnly: z.boolean().optional(),
+    },
+    runtime_facts: {
+      pid: z.number().int().min(1).optional(),
+      port: z.number().int().min(1).max(65535).optional(),
+      view: z.enum(['system_properties', 'classloader', 'flags', 'command_line']).optional(),
+      selectors: z.array(z.string()).optional(),
+      comparePid: z.number().int().min(1).optional(),
+      declaredFile: z.string().optional(),
+      offset: z.number().int().min(0).max(10000).optional(),
+      limit: z.number().int().min(1).max(200).optional(),
     },
     runtime_classpath: {
       pid: z.number().int().min(1).optional(),
@@ -1109,7 +1307,7 @@ export function createClaudeAgent({
       };
     },
 
-    async followUp({ question, previous, tools, budget, onToolUse = null }) {
+    async followUp({ question, previous, tools, budget, onToolUse = null, purpose = 'followup', failure = null }) {
       const { query, SYSTEM_PROMPT_DYNAMIC_BOUNDARY } = await import('@anthropic-ai/claude-agent-sdk');
       const permission = createToolPermission(scope.allowedRoots, {
         cwd: scope.cwd,
@@ -1146,14 +1344,20 @@ export function createClaudeAgent({
         });
       }
       const followUpTurnLimit = budget?.maxRounds ?? maxTurns;
+      const followUpBudgetUsd = Number.isFinite(budget?.maxBudgetUsd) ? budget.maxBudgetUsd : maxBudgetUsd;
+      const followUpTimeoutMs = Number.isFinite(budget?.timeoutMs)
+        ? Math.max(1000, budget.timeoutMs)
+        : timeoutMs;
+      const repairMode = purpose === 'repair';
+      const staticSystemPrompt = repairMode ? REPAIR_SYSTEM_PROMPT : FOLLOWUP_SYSTEM_PROMPT;
       const dynamicSystemSuffix = `${turnLimitNote(followUpTurnLimit)}${scope.systemPromptSuffix}${modeSuffix}${validationStrategyPrompt(scope.toolMode)}`;
       const systemPrompt = buildCachedSystemPrompt(
-        FOLLOWUP_SYSTEM_PROMPT,
+        staticSystemPrompt,
         dynamicSystemSuffix,
         SYSTEM_PROMPT_DYNAMIC_BOUNDARY ?? '__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__',
       );
       const session = query({
-        prompt: buildFollowUpPrompt(question, previous),
+        prompt: repairMode ? buildRepairPrompt(failure, previous) : buildFollowUpPrompt(question, previous),
         options: {
           tools: builtinTools,
           ...(server
@@ -1168,7 +1372,7 @@ export function createClaudeAgent({
           ...(Number.isFinite(followUpTurnLimit) && followUpTurnLimit > 0
             ? { maxTurns: Math.floor(followUpTurnLimit) }
             : {}),
-          ...(maxBudgetUsd ? { maxBudgetUsd } : {}),
+          ...(followUpBudgetUsd ? { maxBudgetUsd: followUpBudgetUsd } : {}),
           systemPrompt,
           outputFormat: { type: 'json_schema', schema: RESULT_SCHEMA },
           ...(model ? { model } : {}),
@@ -1186,7 +1390,7 @@ export function createClaudeAgent({
         } catch {
           // ignore close errors on timeout
         }
-      }, timeoutMs);
+      }, followUpTimeoutMs);
 
       try {
         for await (const message of session) {
@@ -1239,7 +1443,7 @@ export function createClaudeAgent({
       }
 
       if (!resultMessage) {
-        throw new AppError('AGENT_NO_RESULT', `Agent produced no result within ${timeoutMs}ms`, {
+        throw new AppError('AGENT_NO_RESULT', `Agent produced no result within ${followUpTimeoutMs}ms`, {
           exitCode: 1,
         });
       }

@@ -12,6 +12,10 @@ export const BOUNDARY_CODES = new Set([
   'SOURCE_ROOT_REQUIRED',
   'FRONTEND_SOURCE_ROOT_REQUIRED',
   'EXTRA_SOURCE_ROOT_REQUIRED',
+  'SOURCE_FILE_TYPE_UNSUPPORTED',
+  'SOURCE_REGEX_UNSAFE',
+  'SOURCE_REGEX_INVALID',
+  'SOURCE_REGEX_TOO_LONG',
   'GIT_UNAVAILABLE',
   'NOT_A_GIT_REPO',
   'MAVEN_ROOT_UNSUPPORTED',
@@ -32,6 +36,8 @@ const FS_USAGE = [
   'list_dir({ root: "backend", path: "." })',
   'stat_file({ root: "backend", path: "pom.xml" })',
   'read_source({ target: "src/main/java/.../OrderService.java" })',
+  'read_source({ target: "pom.xml" })',
+  'search_source({ keyword: "server.port" })',
 ];
 
 function cleanUsage(items) {
@@ -172,6 +178,22 @@ export function boundaryGuidance({ tool, code, details = null } = {}) {
       hint: '后端源码根未配置；请提示用户在工作区配置 sourceRoot，或改用 list_processes/runtime_classpath 继续。',
       usage: ['list_processes({ javaOnly: true })', 'runtime_classpath({ pid: 1234, declaredFile: "target/classpath.txt" })'],
       details: { reason: 'source-root' },
+    };
+  }
+
+  if (code === 'SOURCE_FILE_TYPE_UNSUPPORTED') {
+    return {
+      hint: 'read_source 直接路径只接受源码或配置类型；配置文件可用 pom.xml / application-*.yml / .properties / .json / .gradle 等，其他类型用 list_dir/stat_file 查看元数据。',
+      usage: FS_USAGE,
+      details: { reason: 'file-type' },
+    };
+  }
+
+  if (code === 'SOURCE_REGEX_UNSAFE' || code === 'SOURCE_REGEX_INVALID' || code === 'SOURCE_REGEX_TOO_LONG') {
+    return {
+      hint: '正则被拒绝；改用字面关键词，或简化正则（≤200 字符，禁用反向引用、后顾和嵌套量词）。不要把同一模式反复提交。',
+      usage: ['search_source({ keyword: "server.port" })', 'search_source({ keyword: "Exception", regex: true })'],
+      details: { reason: code === 'SOURCE_REGEX_UNSAFE' ? 'unsafe-regex' : code === 'SOURCE_REGEX_TOO_LONG' ? 'too-long' : 'invalid-regex' },
     };
   }
 

@@ -78,6 +78,11 @@ test('diagnoses a page element with component evidence and element gates', async
       return {
         conclusion: '表格容器宽度不足，导致用户列表显示不完整',
         evidenceRefs: [{ type: 'element', ref: 'element.selector' }],
+        rejectedHypotheses: [{
+          hypothesis: '接口未返回数据导致列表为空',
+          refutedBy: [{ type: 'element', ref: 'element.text', note: '元素已渲染出列表文本' }],
+          reason: '元素文本已渲染，说明不是接口未返回数据',
+        }],
         confidence: 0.8,
         needsMoreInfo: [],
         fixes: [],

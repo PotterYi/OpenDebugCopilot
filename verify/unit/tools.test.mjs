@@ -55,6 +55,53 @@ test('tools query logs, threads, source and search', async (t) => {
   assert.ok(found.matches.length >= 1);
 });
 
+test('source tools read config, paginate and redact secrets', async (t) => {
+  t.after(async () => { await rm(RUN_DIR, { recursive: true, force: true }); });
+  const { tools } = build();
+
+  const pom = await tools.read_source({ target: 'pom.xml' });
+  assert.equal(pom.found, true);
+  assert.match(pom.content, /demo-parent/);
+
+  const yml = await tools.read_source({ target: 'src/main/resources/application-prod.yml' });
+  assert.equal(yml.found, true);
+  assert.doesNotMatch(yml.content, /demo-secret/);
+  assert.match(yml.content, /<redacted>/);
+
+  const first = await tools.search_source({ keyword: 'class', limit: 1 });
+  assert.equal(first.offset, 0);
+  assert.equal(first.limit, 1);
+  assert.equal(first.matches.length, 1);
+  assert.ok(first.totalCount >= 3);
+  assert.equal(first.nextOffset, 1);
+  assert.equal(first.truncated, true);
+  assert.equal(first.hasMore, true);
+  assert.deepEqual(first.fields, ['matches']);
+  assert.ok(first.file);
+
+  const spilled = await tools.query_result({ file: first.file, field: 'matches', offset: 2, limit: 1 });
+  assert.equal(spilled.offset, 2);
+  assert.equal(spilled.items.length, 1);
+  assert.ok(spilled.total >= 3);
+
+  const second = await tools.search_source({ keyword: 'class', limit: 1, offset: 1 });
+  assert.equal(second.offset, 1);
+  assert.notDeepEqual(second.matches, first.matches);
+
+  const regex = await tools.search_source({ keyword: 'Illegal[A-Za-z]+Exception', regex: true });
+  assert.ok(regex.matches.length >= 1);
+
+  const secret = await tools.search_source({ keyword: 'demo-secret' });
+  assert.ok(secret.matches.length >= 1);
+  assert.doesNotMatch(secret.matches[0].text, /demo-secret/);
+  assert.match(secret.matches[0].text, /<redacted>/);
+
+  const unsafe = await tools.search_source({ keyword: '(a+)+$', regex: true });
+  assert.equal(unsafe.error, true);
+  assert.equal(unsafe.code, 'SOURCE_REGEX_UNSAFE');
+  assert.ok(unsafe.hint);
+});
+
 test('oversized tool results spill to disk and can be read back', async (t) => {
   t.after(async () => { await rm(RUN_DIR, { recursive: true, force: true }); });
   const { tools } = build(80);

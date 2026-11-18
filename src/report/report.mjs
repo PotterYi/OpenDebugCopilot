@@ -1,6 +1,7 @@
 import { normalizeFixList } from '../core/fixes.mjs';
 import { redactSecrets } from '../core/redact.mjs';
 import { TRIAGE_FIELDS, triageSummary } from '../core/triage.mjs';
+import { actionTypeLabel, actionVerificationLabel } from '../core/actions.mjs';
 
 /**
  * Whitelist projection + Markdown rendering for the redacted report.
@@ -59,6 +60,19 @@ export function buildReport(result) {
       note: triage?.note ? scrubText(redactSecrets(triage.note)) : null,
       skipped: !triage || Boolean(triage.skipped),
     },
+    symptomCheck: result.symptomCheck
+      ? {
+          status: result.symptomCheck.status ?? 'pending',
+          method: result.symptomCheck.method ?? 'manual',
+          steps: (result.symptomCheck.steps ?? []).map((step) => scrubText(step)),
+          expected: result.symptomCheck.expected ? scrubText(result.symptomCheck.expected) : null,
+          observed: result.symptomCheck.observed ? scrubText(result.symptomCheck.observed) : null,
+          note: result.symptomCheck.note ? scrubText(result.symptomCheck.note) : null,
+          reason: result.symptomCheck.reason ? scrubText(result.symptomCheck.reason) : null,
+          markedAt: result.symptomCheck.markedAt ?? null,
+        }
+      : null,
+    verificationLevel: result.gates?.level ?? null,
     element: result.element
       ? {
           pageUrl: scrubText(result.element.page?.url ?? ''),
@@ -74,6 +88,20 @@ export function buildReport(result) {
       : null,
     durationMs: result.meta?.durationMs ?? 0,
     conclusion: scrubText(agent.conclusion ?? ''),
+    rejectedHypotheses: (Array.isArray(agent.rejectedHypotheses) ? agent.rejectedHypotheses : [])
+      .slice(0, 5)
+      .map((item) => ({
+        hypothesis: scrubText(item.hypothesis ?? ''),
+        reason: scrubText(item.reason ?? ''),
+        refutedBy: (Array.isArray(item.refutedBy) ? item.refutedBy : []).slice(0, 3).map((ref) => ({
+          type: ref.type ?? '',
+          ref: scrubText(ref.ref ?? ''),
+          note: ref.note ? scrubText(ref.note) : null,
+        })),
+      })),
+    noRejectedHypothesesReason: agent.noRejectedHypothesesReason
+      ? scrubText(agent.noRejectedHypothesesReason)
+      : null,
     databaseNotice: result.databases?.notice ? scrubText(result.databases.notice) : null,
     fixValidation: agent.fixesValidation
       ? {
@@ -92,9 +120,57 @@ export function buildReport(result) {
           reason: scrubText(agent.verification.reason ?? ''),
           durationMs: agent.verification.durationMs ?? null,
           commands: (agent.verification.commands ?? []).map((entry) => entry.command).filter(Boolean),
+          repair: agent.verification.repair
+            ? {
+                attempted: Boolean(agent.verification.repair.attempted),
+                finalStatus: agent.verification.repair.finalStatus ?? null,
+                skippedReason: agent.verification.repair.skippedReason ?? null,
+                error: scrubText(agent.verification.repair.error ?? ''),
+                failure: agent.verification.repair.failure
+                  ? {
+                      error: scrubText(agent.verification.repair.failure.error ?? ''),
+                      errorLines: (agent.verification.repair.failure.errorLines ?? []).map((line) => scrubText(line)),
+                      commands: (agent.verification.repair.failure.commands ?? []).map((entry) => scrubText(entry.command)),
+                    }
+                  : null,
+                budget: agent.verification.repair.budget ?? null,
+                usage: agent.verification.repair.usage
+                  ? {
+                      numTurns: agent.verification.repair.usage.numTurns ?? null,
+                      costUsd: agent.verification.repair.usage.costUsd ?? null,
+                    }
+                  : null,
+              }
+            : null,
         }
       : null,
     fixes: normalizeFixList(agent.fixes).map((fix) => scrubText(formatFix(fix))),
+    actions: (Array.isArray(agent.actions) ? agent.actions : []).map((action) => ({
+      id: action.id ?? null,
+      type: action.type ?? 'environment',
+      typeLabel: actionTypeLabel(action.type),
+      summary: scrubText(action.summary ?? ''),
+      reason: action.reason ? scrubText(action.reason) : null,
+      requires: (action.requires ?? []).map((item) => scrubText(item)),
+      steps: (action.steps ?? []).map((item) => scrubText(item)),
+      commands: (action.commands ?? []).map((command) => ({
+        label: scrubText(command.label ?? '执行'),
+        command: scrubText(command.command ?? ''),
+        risk: command.risk ?? null,
+      })),
+      verification: action.verification
+        ? {
+            kind: action.verification.kind ?? 'symptom',
+            kindLabel: actionVerificationLabel(action.verification.kind),
+            description: scrubText(action.verification.description ?? ''),
+            command: action.verification.command ? scrubText(action.verification.command) : null,
+            expected: action.verification.expected ? scrubText(action.verification.expected) : null,
+          }
+        : null,
+      risk: action.risk ?? null,
+      reversible: action.reversible ?? null,
+      confirmationRequired: Boolean(action.confirmationRequired),
+    })),
     needsMoreInfo: (agent.needsMoreInfo ?? []).map((item) => scrubText(item)),
     request: {
       method: result.request?.method ?? null,
@@ -108,6 +184,7 @@ export function buildReport(result) {
       markerInjected: Boolean(result.marker?.injected),
       threads: result.threads?.total ?? 0,
       sourceFiles: result.source?.files?.length ?? 0,
+      rejectedHypotheses: Array.isArray(agent.rejectedHypotheses) ? agent.rejectedHypotheses.length : 0,
       toolCalls: agent.toolCalls?.length ?? 0,
       turns: agent.usage?.numTurns ?? null,
       tokens: agent.usage?.totalTokens ?? null,
@@ -168,12 +245,33 @@ function correlationText(report) {
  * @param {ReturnType<typeof buildReport>} report
  * @returns {string}
  */
+function symptomStatusLabel(check) {
+  if (!check) return '未生成';
+  const labels = {
+    pending: '待人工确认',
+    passed: '已确认症状消失',
+    failed: '仍存在',
+    skipped: '无法验证',
+  };
+  return labels[check.status] ?? check.status;
+}
+
+function verificationLevelLabel(level) {
+  return {
+    verified: '已验证（编译/测试通过 + 症状确认）',
+    'symptom-verified': '症状已确认（编译/测试未执行）',
+    unverified: '待确认（编译/测试通过，症状未确认）',
+    failed: '验证失败',
+  }[level] ?? '未提供';
+}
+
 export function renderMarkdown(report) {
   const lines = [
     '# DebugCopilot 诊断报告',
     '',
     `- 场景：${report.target.scenario}（${report.target.driver}）`,
     `- 症状：${report.symptom}`,
+    `- 验证：${verificationLevelLabel(report.verificationLevel)}`,
     `- 耗时：${report.durationMs} ms`,
     `- Run ID：${report.meta.runId ?? '(unknown)'}`,
     ...(report.element
@@ -194,12 +292,64 @@ export function renderMarkdown(report) {
       : ['- 前提信息：未提供（诊断前已跳过）']),
     ...(report.triage.note ? [`- 备注：${report.triage.note}`] : []),
     '',
+    '## 症状验证',
+    '',
+    `- 状态：${symptomStatusLabel(report.symptomCheck)}`,
+    ...(report.symptomCheck?.method ? [`- 方式：${report.symptomCheck.method === 'replay' ? '自动重放' : '人工确认'}`] : []),
+    ...(report.symptomCheck?.steps?.length
+      ? ['- 复现步骤：', ...report.symptomCheck.steps.map((step) => `  - ${step}`)]
+      : []),
+    ...(report.symptomCheck?.expected ? [`- 预期结果：${report.symptomCheck.expected}`] : []),
+    ...(report.symptomCheck?.observed ? [`- 实际观察：${report.symptomCheck.observed}`] : []),
+    ...(report.symptomCheck?.reason ? [`- 说明：${report.symptomCheck.reason}`] : []),
+    ...(report.symptomCheck?.note ? [`- 备注：${report.symptomCheck.note}`] : []),
+    ...(report.rejectedHypotheses?.length
+      ? [
+          '',
+          '## 排除的假设',
+          '',
+          ...report.rejectedHypotheses.flatMap((item, index) => [
+            `### ${index + 1}. ${item.hypothesis || '(未命名假设)'}`,
+            '',
+            `- 理由：${item.reason || '（未提供）'}`,
+            ...item.refutedBy.map(
+              (ref) => `- 否定证据：[${ref.type}] ${ref.ref}${ref.note ? ` — ${ref.note}` : ''}`,
+            ),
+            '',
+          ]),
+        ]
+      : (report.noRejectedHypothesesReason
+          ? ['', '## 排除的假设', '', `- 未形成可排除假设：${report.noRejectedHypothesesReason}`, '']
+          : [])),
+    '',
     '## 结论',
     '',
     report.conclusion || '(无结论)',
     ...(report.databaseNotice ? ['', `> ⚠ ${report.databaseNotice}`] : []),
   ];
 
+  if (report.actions.length > 0) {
+    lines.push('', '## 非代码修复动作', '');
+    if (report.fixes.length === 0) {
+      lines.push('本次结论不需要修改代码，请按以下动作处理。', '');
+    }
+    report.actions.forEach((action, index) => {
+      lines.push(`### ${index + 1}. [${action.typeLabel}] ${action.summary}`);
+      if (action.reason) lines.push('', `- 原因：${action.reason}`);
+      if (action.requires.length > 0) lines.push('', '- 前置条件：', ...action.requires.map((item) => `  - ${item}`));
+      lines.push('', '- 执行步骤：', ...action.steps.map((item) => `  - ${item}`));
+      if (action.commands.length > 0) {
+        lines.push('', '- 命令：', ...action.commands.map((command) => `  - ${command.label}：\`${command.command}\`${command.risk ? `（风险：${command.risk}）` : ''}`));
+      }
+      if (action.verification) {
+        lines.push('', `- 验证（${action.verification.kindLabel}）：${action.verification.description}`);
+        if (action.verification.expected) lines.push(`  - 预期：${action.verification.expected}`);
+        if (action.verification.command) lines.push(`  - 验证命令：\`${action.verification.command}\``);
+      }
+      if (action.risk) lines.push(`- 风险：${action.risk}${action.reversible === true ? '；可逆' : action.reversible === false ? '；不可逆' : ''}`);
+      lines.push('');
+    });
+  }
   if (report.fixes.length > 0) {
     lines.push('', '## 修复建议', '', ...report.fixes.map((fix) => `- ${fix}`));
   }
@@ -279,6 +429,28 @@ export function renderMarkdown(report) {
       ...(verification.error ? [`- 错误：${verification.error}`] : []),
       ...(verification.reason ? [`- 说明：${verification.reason}`] : []),
     );
+    if (verification.repair) {
+      const repair = verification.repair;
+      const repairStatus = repair.attempted
+        ? (repair.finalStatus === 'passed' ? '重试后通过' : '重试后仍失败')
+        : `未执行（${repair.skippedReason ?? '不满足条件'}）`;
+      lines.push(
+        '',
+        '## 修复重试',
+        '',
+        `- 状态：${repairStatus}`,
+        ...(repair.failure?.commands?.length ? [`- 失败命令：${repair.failure.commands.join('；')}`] : []),
+        ...(repair.failure?.errorLines?.length
+          ? ['- 错误摘要：', ...repair.failure.errorLines.map((line) => `  - ${line}`)]
+          : []),
+        ...(repair.budget
+          ? [`- 预算：${repair.budget.maxRounds ?? '?'} 轮 / $${repair.budget.maxBudgetUsd ?? '?'} / ${repair.budget.timeoutMs ?? '?'}ms`]
+          : []),
+        ...(repair.usage?.costUsd != null
+          ? [`- 用量：${repair.usage.numTurns ?? '?'} 轮 / $${Number(repair.usage.costUsd).toFixed(4)}`]
+          : []),
+      );
+    }
   }
 
   if (report.recheck) {

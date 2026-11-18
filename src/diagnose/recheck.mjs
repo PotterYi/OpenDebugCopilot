@@ -23,7 +23,19 @@ function extractStatuses(text) {
 }
 
 function extractRefs(run) {
-  return new Set((run?.evidenceRefs ?? []).map((ref) => `${ref.type}:${ref.ref}`));
+  const refs = [...(run?.evidenceRefs ?? [])];
+  for (const item of run?.rejectedHypotheses ?? []) {
+    refs.push(...(item?.refutedBy ?? []));
+  }
+  return new Set(refs.map((ref) => `${ref.type}:${ref.ref}`));
+}
+
+function extractHypotheses(run) {
+  const tokens = new Set();
+  for (const item of run?.rejectedHypotheses ?? []) {
+    for (const token of tokenize(item?.hypothesis ?? '')) tokens.add(token);
+  }
+  return tokens;
 }
 
 function jaccard(a, b) {
@@ -51,6 +63,7 @@ export function evaluateRecheck(runs, { responseStatus = null } = {}) {
     tokens: tokenize(run.conclusion),
     statuses: extractStatuses(run.conclusion),
     refs: extractRefs(run),
+    hypotheses: extractHypotheses(run),
   }));
 
   const statusOk = fingerprints.every(
@@ -67,17 +80,22 @@ export function evaluateRecheck(runs, { responseStatus = null } = {}) {
   const refSimilarities = fingerprints.slice(1).map((f) => jaccard(fingerprints[0].refs, f.refs));
   const refsOk = refSimilarities.every((value) => value >= SIMILARITY_THRESHOLD);
 
+  const hypothesisSimilarities = fingerprints.slice(1)
+    .map((f) => jaccard(fingerprints[0].hypotheses, f.hypotheses));
+  const hypothesesOk = hypothesisSimilarities.every((value) => value >= SIMILARITY_THRESHOLD);
+
   const checks = [
     { name: 'status-code', ok: statusOk, detail: statusDetail },
     { name: 'conclusion-similarity', ok: similarityOk, detail: similarities.map((v) => v.toFixed(2)).join(', ') || '-' },
     { name: 'evidence-refs', ok: refsOk, detail: refSimilarities.map((v) => v.toFixed(2)).join(', ') || '-' },
+    { name: 'rejected-hypotheses', ok: hypothesesOk, detail: hypothesisSimilarities.map((v) => v.toFixed(2)).join(', ') || '-' },
   ];
   const verdict = checks.every((check) => check.ok) ? 'consistent' : 'inconsistent';
   return {
     verdict,
     checks,
     detail: verdict === 'consistent'
-      ? '三份结论在状态码/结论/证据引用上一致'
+      ? '三份结论在状态码/结论/证据引用/排除假设上一致'
       : '存在不一致项，请人工复核',
   };
 }

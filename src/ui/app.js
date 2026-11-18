@@ -170,6 +170,7 @@ function fillForm(config) {
   form.elements.backendUrl.value = workspace.backendUrl ?? '';
   form.elements.logfiles.value = (workspace.logfiles ?? []).join('\n');
   form.elements.sourceRoot.value = workspace.sourceRoot ?? '';
+  form.elements.buildProbeRoot.value = workspace.buildProbeRoot ?? '';
   form.elements.extraSourceRoots.value = (workspace.extraSourceRoots ?? []).join('\n');
   form.elements.logParser.value = workspace.logParser ?? 'auto';
   if (logParser) logParser.value = workspace.logParser ?? 'auto';
@@ -177,6 +178,9 @@ function fillForm(config) {
   form.elements.frontendProjectRoot.value = workspace.frontendProjectRoot ?? '';
   form.elements.frontendStartCommand.value = workspace.frontendStartCommand ?? '';
   form.elements.verifyCommand.value = workspace.verifyCommand ?? '';
+  form.elements.replayEnabled.checked = workspace.replay?.enabled === true;
+  form.elements.replayAllowOrigins.value = (workspace.replay?.allowOrigins ?? []).join('\n');
+  form.elements.replayAllowMethods.value = (workspace.replay?.allowMethods ?? ['GET', 'HEAD', 'OPTIONS']).join(',');
   form.elements.beforeMs.value = workspace.window?.beforeMs ?? 3000;
   form.elements.afterMs.value = workspace.window?.afterMs ?? 2000;
   if (!browserUrlInput.value && workspace.frontendUrl) browserUrlInput.value = workspace.frontendUrl;
@@ -189,12 +193,19 @@ function readForm() {
       backendUrl: form.elements.backendUrl.value.trim(),
       logfiles: form.elements.logfiles.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean),
       sourceRoot: form.elements.sourceRoot.value.trim(),
+      buildProbeRoot: form.elements.buildProbeRoot.value.trim(),
       extraSourceRoots: form.elements.extraSourceRoots.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean),
       logParser: form.elements.logParser.value,
       frontendSourceRoot: form.elements.frontendSourceRoot.value.trim(),
       frontendProjectRoot: form.elements.frontendProjectRoot.value.trim(),
       frontendStartCommand: form.elements.frontendStartCommand.value.trim(),
       verifyCommand: form.elements.verifyCommand.value.trim(),
+      replay: {
+        enabled: form.elements.replayEnabled.checked,
+        allowOrigins: form.elements.replayAllowOrigins.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean),
+        allowMethods: form.elements.replayAllowMethods.value.split(',').map((item) => item.trim().toUpperCase()).filter(Boolean),
+        timeoutMs: configCache?.workspace?.replay?.timeoutMs ?? 5000,
+      },
       agent: configCache?.workspace?.agent ?? {},
       window: {
         beforeMs: Number(form.elements.beforeMs.value) || 0,
@@ -622,6 +633,14 @@ async function loadRuns() {
       }
       if (run.verificationStatus === 'failed') {
         head.append(el('span', 'badge error', '验证失败'));
+      } else if (run.verificationLevel === 'verified') {
+        head.append(el('span', 'badge ok', '已验证'));
+      } else if (run.verificationLevel === 'symptom-verified') {
+        head.append(el('span', 'badge ok', '症状已确认'));
+      } else if (run.symptomStatus === 'failed') {
+        head.append(el('span', 'badge error', '症状仍存在'));
+      } else if (run.symptomStatus === 'pending') {
+        head.append(el('span', 'badge', '症状待确认'));
       }
       head.append(meta);
       main.append(head);
@@ -1195,6 +1214,82 @@ async function runFixBatch(action, view) {
   }
 }
 
+const ACTION_TYPE_LABELS = {
+  config: '配置',
+  build: '构建',
+  dependency: '依赖',
+  runtime: '运行实例',
+  data: '数据',
+  deployment: '部署',
+  environment: '环境',
+};
+const ACTION_VERIFY_LABELS = {
+  symptom: '重新确认症状',
+  command: '命令/退出码',
+  inspection: '人工检查',
+  log: '日志检查',
+  runtime: '运行态检查',
+};
+
+function renderActions(actions) {
+  if (!Array.isArray(actions) || actions.length === 0) return null;
+  const block = el('section', 'card-section');
+  block.append(el('div', 'card-title', `非代码修复动作 (${actions.length})`));
+  const list = el('ul', 'fix-list');
+  for (const action of actions) {
+    const card = el('li', 'fix-card action-card');
+    const head = el('div', 'fix-card-head');
+    head.append(el('span', `badge action-type ${action.risk === 'high' ? 'error' : ''}`.trim(), ACTION_TYPE_LABELS[action.type] ?? action.type ?? '动作'));
+    head.append(el('strong', null, action.summary ?? ''));
+    head.append(el('span', 'muted small', `风险：${action.risk ?? 'unknown'}${action.reversible === true ? ' · 可逆' : action.reversible === false ? ' · 不可逆' : ''}`));
+    card.append(head);
+    if (action.reason) card.append(el('p', 'muted small', `原因：${action.reason}`));
+    if (Array.isArray(action.requires) && action.requires.length) {
+      card.append(el('p', 'muted small', '前置条件：'));
+      const requires = el('ul', 'advice-list');
+      for (const item of action.requires) requires.append(el('li', null, item));
+      card.append(requires);
+    }
+    if (Array.isArray(action.steps) && action.steps.length) {
+      card.append(el('p', 'muted small', '执行步骤：'));
+      const steps = el('ol', 'symptom-steps');
+      for (const step of action.steps) steps.append(el('li', null, step));
+      card.append(steps);
+    }
+    if (Array.isArray(action.commands) && action.commands.length) {
+      for (const command of action.commands) {
+        const row = el('div', 'action-command');
+        const code = el('code', 'action-command-text', command.command ?? '');
+        const copy = el('button', 'secondary', '复制命令');
+        copy.type = 'button';
+        copy.addEventListener('click', async () => {
+          try {
+            await navigator.clipboard.writeText(String(command.command ?? ''));
+            copy.textContent = '已复制';
+          } catch {
+            copy.textContent = '复制失败';
+          }
+        });
+        row.append(code, copy);
+        card.append(row);
+      }
+    }
+    if (action.verification) {
+      const kind = ACTION_VERIFY_LABELS[action.verification.kind] ?? action.verification.kind ?? '验证';
+      card.append(el('p', 'muted small', `验证（${kind}）：${action.verification.description ?? ''}`));
+      if (action.verification.expected) card.append(el('p', 'muted small', `预期：${action.verification.expected}`));
+      if (action.verification.command) {
+        const row = el('div', 'action-command');
+        row.append(el('code', 'action-command-text', action.verification.command));
+        card.append(row);
+      }
+    }
+    list.append(card);
+  }
+  block.append(list);
+  return block;
+}
+
 function renderFixCard(fix, view, fixIndex, { readOnly = false } = {}) {
   if (typeof fix === 'string') return el('li', 'fix-card', fix);
   const runId = view.response?.runId ?? view.response?.result?.meta?.runId;
@@ -1476,10 +1571,74 @@ function renderRunInto(view) {
 }
 
 /** History is a chat thread: each assistant turn keeps its full diagnosis. */
+function symptomStatusMeta(check) {
+  const status = check?.status ?? 'pending';
+  return {
+    pending: { label: '待人工确认', className: '' },
+    passed: { label: '症状已消失', className: 'ok' },
+    failed: { label: '症状仍存在', className: 'error' },
+    skipped: { label: '无法验证', className: '' },
+  }[status] ?? { label: status, className: '' };
+}
+
+function renderSymptomCheck(result, view) {
+  const check = result?.symptomCheck;
+  if (!check) return null;
+  const block = el('section', 'card-section symptom-check');
+  const summary = el('div', 'verify-summary');
+  const meta = symptomStatusMeta(check);
+  summary.append(el('span', `badge ${meta.className}`.trim(), `症状验证：${meta.label}`));
+  if (check.method === 'replay') summary.append(el('span', 'muted small', '自动重放'));
+  block.append(summary);
+
+  if (Array.isArray(check.steps) && check.steps.length > 0) {
+    const list = el('ol', 'symptom-steps');
+    for (const step of check.steps) list.append(el('li', null, step));
+    block.append(list);
+  }
+  if (check.expected) block.append(el('p', 'muted small', `预期：${check.expected}`));
+  if (check.reason) block.append(el('p', 'muted small', `说明：${check.reason}`));
+  if (check.note) block.append(el('p', 'muted small', `备注：${check.note}`));
+
+  const runId = view.response?.runId ?? result.meta?.runId;
+  if (runId) {
+    const actions = el('div', 'modal-actions');
+    const addButton = (label, status, className = 'secondary') => {
+      const button = el('button', className, label);
+      button.type = 'button';
+      button.disabled = check.status === status;
+      button.addEventListener('click', async () => {
+        button.disabled = true;
+        try {
+          const updated = await api.setSymptom(runId, status);
+          if (view.response) {
+            view.response.result = updated.result;
+            view.response.report = updated.report;
+          }
+          renderRunInto(view);
+          setStatus(`症状验证已标记为：${symptomStatusMeta(updated.result?.symptomCheck).label}`, 'ok');
+        } catch (error) {
+          setStatus(`更新症状验证失败：${error.message}`, 'error');
+          button.disabled = false;
+        }
+      });
+      actions.append(button);
+    };
+    addButton('我已复现，症状已消失', 'passed');
+    addButton('我已复现，症状仍存在', 'failed');
+    addButton('暂时无法验证', 'skipped');
+    if (check.status !== 'pending') addButton('改回待确认', 'pending');
+    block.append(actions);
+  }
+  return block;
+}
+
 function renderHistoryThread(view, result) {
   const container = view.container;
   container.classList.add('history-thread-card');
   const thread = el('div', 'history-thread');
+  const symptomBlock = renderSymptomCheck(result, view);
+  if (symptomBlock) container.append(symptomBlock);
   const conversation = conversationFor(result);
   if (conversation.length === 0 && result.agent) {
     conversation.push({ role: 'assistant', agent: result.agent, text: result.agent.conclusion ?? '' });
@@ -1563,6 +1722,22 @@ function renderFixValidation(validation) {
   return block;
 }
 
+function appendRepairBadge(summary, repair) {
+  if (!repair) return;
+  if (!repair.attempted) {
+    summary.append(el('span', 'muted small', `未自动重试${repair.skippedReason ? `：${repair.skippedReason}` : ''}`));
+    return;
+  }
+  summary.append(el(
+    'span',
+    `badge ${repair.finalStatus === 'passed' ? 'ok' : 'error'}`,
+    repair.finalStatus === 'passed' ? '自动重试通过' : '自动重试仍失败',
+  ));
+  if (repair.usage?.costUsd != null) {
+    summary.append(el('span', 'muted small', `重试 $${Number(repair.usage.costUsd).toFixed(4)}`));
+  }
+}
+
 function renderWorkspaceVerification(verification) {
   if (!verification || verification.mode === 'in-place') return null;
   const block = el('section', 'card-section verification');
@@ -1582,6 +1757,7 @@ function renderWorkspaceVerification(verification) {
   if (commands.length) summary.append(el('span', 'muted small', commands.join('；')));
   if (verification.durationMs) summary.append(el('span', 'muted small', `${verification.durationMs} ms`));
   if (verification.reason) summary.append(el('span', 'muted small', verification.reason));
+  appendRepairBadge(summary, verification.repair);
   block.append(summary);
   if (verification.error) block.append(el('p', 'error-text small', verification.error));
   if (verification.output && verification.status === 'failed') {
@@ -1672,6 +1848,7 @@ function renderWorkspaceSession(session, view, runId, { readOnly = false } = {})
     if (session.selfCheck.durationMs) {
       summary.append(el('span', 'muted small', `${session.selfCheck.durationMs} ms`));
     }
+    appendRepairBadge(summary, session.selfCheck.repair);
   }
   block.append(summary);
 
@@ -1945,6 +2122,25 @@ function renderRunBody(container, result, agent, view, { readOnly = false, showH
   if (triage?.note) triageRows.push(['备注', triage.note]);
   container.append(section('诊断前提', kv(triageRows)));
 
+  const symptomBlock = renderSymptomCheck(result, view);
+  if (symptomBlock) container.append(symptomBlock);
+
+  const rejectedHypotheses = Array.isArray(agent?.rejectedHypotheses) ? agent.rejectedHypotheses : [];
+  if (rejectedHypotheses.length > 0) {
+    const list = el('ul', 'evidence-list');
+    rejectedHypotheses.forEach((item, index) => {
+      const entry = el('li', null, `${index + 1}. ${item.hypothesis || '(未命名假设)'}`);
+      if (item.reason) entry.append(el('span', 'muted small', ` — ${item.reason}`));
+      for (const ref of item.refutedBy ?? []) {
+        entry.append(el('div', 'muted small', `否定证据：[${ref.type}] ${ref.ref}${ref.note ? ` — ${ref.note}` : ''}`));
+      }
+      list.append(entry);
+    });
+    container.append(section(`排除的假设 (${rejectedHypotheses.length})`, list));
+  } else if (agent?.noRejectedHypothesesReason) {
+    container.append(section('排除的假设', el('p', 'muted small', agent.noRejectedHypothesesReason)));
+  }
+
   container.append(section('结论', el('p', 'conclusion', agent?.conclusion ?? '(无结论)')));
   if (result.databases?.notice && agent === result.agent) {
     container.append(el('p', 'error-text small', `⚠ ${result.databases.notice}`));
@@ -2061,6 +2257,13 @@ function renderRunBody(container, result, agent, view, { readOnly = false, showH
   }
   if (agent?.fixesValidation) {
     container.append(renderFixValidation(agent.fixesValidation));
+  }
+
+  const actionsBlock = renderActions(agent?.actions);
+  if (actionsBlock) container.append(actionsBlock);
+  if ((!Array.isArray(agent?.fixes) || agent.fixes.length === 0)
+    && Array.isArray(agent?.actions) && agent.actions.length > 0) {
+    container.append(el('p', 'muted small', '本次结论不需要修改代码，请按上述动作处理。'));
   }
 
   const fixes = agent?.fixes;

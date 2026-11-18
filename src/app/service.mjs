@@ -1,4 +1,4 @@
-import { readdir, readFile, rm } from 'node:fs/promises';
+import { readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { AppError } from '../core/errors.mjs';
 import { createStore } from '../core/store.mjs';
@@ -7,6 +7,8 @@ import { createAgentAuthStore } from '../core/agent-auth-store.mjs';
 import { finalizeWorkspaceJournal } from '../core/inplace-session.mjs';
 import { checkDatabases } from '../evidence/db.mjs';
 import { getLogFile } from '../core/logger.mjs';
+import { buildReport, renderMarkdown } from '../report/report.mjs';
+import { normalizeSymptomCheck, verificationLevel } from '../core/symptom.mjs';
 
 const RUN_ID_PATTERN = /^[A-Za-z0-9._-]+$/;
 const DB_QUERY_DIR = 'db-queries';
@@ -74,6 +76,8 @@ export function createService({ root = process.cwd(), configDir, runsDir, secret
           question: meta.question ?? '',
           workspaceSessionStatus: meta.workspaceSessionStatus ?? null,
           verificationStatus: meta.verificationStatus ?? null,
+          symptomStatus: meta.symptomStatus ?? null,
+          verificationLevel: meta.verificationLevel ?? null,
         });
       } catch {
         // skip incomplete runs
@@ -100,6 +104,57 @@ export function createService({ root = process.cwd(), configDir, runsDir, secret
     } catch {
       // report is optional
     }
+    return { runId, result, report };
+  }
+
+  async function updateRunSymptom(runId, { status, note = null } = {}) {
+    if (!RUN_ID_PATTERN.test(String(runId))) {
+      throw new AppError('RUN_ID_INVALID', `Invalid run id: ${runId}`, { exitCode: 2 });
+    }
+    if (!['pending', 'passed', 'failed', 'skipped'].includes(status)) {
+      throw new AppError('SYMPTOM_STATUS_INVALID', `Invalid symptom status: ${status}`, { exitCode: 2 });
+    }
+    const dir = path.join(runsRoot, runId);
+    let result;
+    try {
+      result = JSON.parse(await readFile(path.join(dir, 'result.json'), 'utf8'));
+    } catch (err) {
+      throw new AppError('RUN_NOT_FOUND', `Run not found: ${runId}`, { exitCode: 3, cause: err });
+    }
+    const symptomCheck = normalizeSymptomCheck({
+      ...(result.symptomCheck ?? {}),
+      status,
+      method: 'manual',
+      note,
+      markedAt: status === 'pending' ? null : new Date().toISOString(),
+    });
+    result.symptomCheck = symptomCheck;
+    result.meta = result.meta ?? {};
+    result.meta.symptomStatus = symptomCheck.status;
+    result.meta.verificationLevel = verificationLevel({
+      verification: result.agent?.verification,
+      symptomCheck,
+    });
+    if (result.gates) {
+      result.gates.symptom = { status: symptomCheck.status, method: 'manual' };
+      result.gates.level = result.meta.verificationLevel;
+    }
+    const tmp = path.join(dir, 'result.json.tmp');
+    await writeFile(tmp, JSON.stringify(result, null, 2), 'utf8');
+    await rename(tmp, path.join(dir, 'result.json'));
+    try {
+      const metaPath = path.join(dir, 'meta.json');
+      const meta = JSON.parse(await readFile(metaPath, 'utf8'));
+      meta.symptomStatus = symptomCheck.status;
+      meta.verificationLevel = result.meta.verificationLevel;
+      const metaTmp = `${metaPath}.tmp`;
+      await writeFile(metaTmp, JSON.stringify(meta, null, 2), 'utf8');
+      await rename(metaTmp, metaPath);
+    } catch {
+      // meta.json is optional for older runs; list badges can fall back to result.json.
+    }
+    const report = renderMarkdown(buildReport(result));
+    await writeFile(path.join(dir, 'report.md'), report, 'utf8');
     return { runId, result, report };
   }
 
@@ -229,6 +284,7 @@ export function createService({ root = process.cwd(), configDir, runsDir, secret
     saveConfig,
     listRuns,
     getRun,
+    updateRunSymptom,
     deleteRun,
     getRunWorkspacePending,
     keepRunWorkspace,

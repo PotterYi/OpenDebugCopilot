@@ -4,8 +4,8 @@
 | --- | --- |
 | 产品名 | DebugCopilot |
 | 定位 | 本地运行的后端开发辅助软件：内嵌浏览器 + 流量路由控制 + 请求/日志/源码聚合 + AI 诊断 |
-| 文档版本 | v1.11 |
-| 更新日期 | 2026-11-17 |
+| 文档版本 | v1.19 |
+| 更新日期 | 2026-11-18 |
 | 仓库路径 | G:\develop\project\OpenDebugCopilot |
 
 > 本索引是文档集的唯一入口。任何文档超过 500 行都必须拆分并在此登记；
@@ -19,10 +19,10 @@
 | --- | --- | --- | --- |
 | — | [README.md](./README.md) | 索引、变更记录、文档规范 | 本文件 |
 | 01 | [01-概述与使用场景.md](./01-概述与使用场景.md) | 背景痛点、产品定位、目标用户、设计原则、非目标、核心场景与使用流程 | 86 |
-| 02 | [02-功能需求.md](./02-功能需求.md) | FR-01 ~ FR-97，按 10 个域划分，P0/P1/P2 分级 | 114 |
-| 03 | [03-总体架构.md](./03-总体架构.md) | 分层架构、模块职责、关键数据流、拦截方案选型、规则引擎、日志采集、堆栈映射、诊断编排 | 258 |
-| 04 | [04-数据模型与接口.md](./04-数据模型与接口.md) | 文件化数据模型（无数据库）、模块接口与运行目录 | 123 |
-| 05 | [05-技术选型与安全.md](./05-技术选型与安全.md) | 技术选型、安全与隐私、非功能指标 | 81 |
+| 02 | [02-功能需求.md](./02-功能需求.md) | FR-01 ~ FR-105，按 10 个域划分，P0/P1/P2 分级 | 123 |
+| 03 | [03-总体架构.md](./03-总体架构.md) | 分层架构、模块职责、关键数据流、拦截方案选型、规则引擎、日志采集、堆栈映射、诊断编排 | 276 |
+| 04 | [04-数据模型与接口.md](./04-数据模型与接口.md) | 文件化数据模型（无数据库）、模块接口与运行目录 | 134 |
+| 05 | [05-技术选型与安全.md](./05-技术选型与安全.md) | 技术选型、安全与隐私、非功能指标 | 88 |
 | 06 | [06-里程碑与待确认.md](./06-里程碑与待确认.md) | 里程碑 M0~M5、待确认 Q1~Q9、待补充 T1~T21 | 64 |
 | 07 | [07-术语与同步约定.md](./07-术语与同步约定.md) | 术语表、文档同步约定 | 31 |
 | 08 | [08-DEMO实现现状.md](./08-DEMO实现现状.md) | 三种入口与进程模型、两条捕获路径、三钩子路由、诊断流程与稳定性、证据工具、差异对照 | 211 |
@@ -77,6 +77,14 @@
 
 | 版本 | 日期 | 变更内容 |
 | --- | --- | --- |
+| v1.19 | 2026-11-18 | 可证伪结论：新增必填 `rejectedHypotheses`（备选假设 + 否定证据 ref + 理由），空数组需 `noRejectedHypothesesReason`；新增 `core/evidence-refs.mjs` 校验引用真实存在；gate 增加 `hypothesis-disclosure` 并加强 `evidence-refs`；recheck 增加 `rejected-hypotheses`；报告/UI/CLI 在结论前展示；9 个新增测试，全量 389 个测试通过 |
+| v1.18 | 2026-11-18 | 源码/配置检索扩展：`search_source` 默认纳入 POM/YAML/properties/JSON 等配置，支持 includeConfig/caseSensitive、安全正则（worker + 5s 超时）、offset/limit/nextOffset/hasMore 稳定分页与 query_result field=matches 续页；排除 lock 文件/压缩产物/source map 与敏感文件；`read_source` 支持按路径直接读取配置并统一做越界/敏感校验；9 个新增测试，全量 380 个测试通过 |
+| v1.17 | 2026-11-18 | 参数化运行时事实：新增 `runtime_facts`（system_properties/classloader/flags/command_line），按 selectors 精确/前缀/通配读取；支持 comparePid/declaredFile 只返回差异；敏感值永久脱敏、通配只返回键名、无 selector 只给摘要；分页/溢写/query_result 复用；2 个新增测试，全量 371 个测试通过 |
+| v1.16 | 2026-11-18 | 构建/IDE 模型探针：新增 `buildProbeRoot`（留空默认源码根父目录）与 `inspect_build_model`；解析 Maven POM modules/parent、IntelliJ modules.xml/iml、时间戳与 staleHints；探针根只读白名单，不读同级源码或 workspace.xml；4 个新增测试，全量 369 个测试通过 |
+| v1.15 | 2026-11-17 | 长列表分页：列表工具全量溢写并返回 total/offset/limit/nextOffset/file/fields；新增 query_result 按 field/offset/limit/filter 二次查询；runtime_classpath 支持 mode/offset/limit 且 diff 不再内部截断；maven_dependencies 支持 offset/limit 并全量溢写；4 个新增测试，全量 365 个测试通过 |
+| v1.14 | 2026-11-17 | 非代码修复动作：`actions` 与 `fixes` 平级，支持配置/构建/依赖/运行实例/数据/部署/环境；包含前置条件、步骤、可复制命令、验证方式、风险/可逆性；P0 仅展示不执行；fixes 为空 + actions 非空时明确“不需要修改代码”；gates.remediation 记录数量；4 个新增测试，全量 361 个测试通过 |
+| v1.13 | 2026-11-17 | 症状验证与安全重放：`symptomCheck` 三态/四状态与 gates.level（verified/symptom-verified/unverified/failed），报告/UI 显式待办和手动确认，CLI `--symptom`；`workspace.replay` 默认关闭，仅安全方法/允许 origin/无认证头请求生成 fixture 并自动重放，比较 HTTP/业务 code 签名，失败回退人工确认；10 个新增测试，全量 357 个测试通过 |
+| v1.12 | 2026-11-17 | 自动修复重试：sandbox / in-place / full 验证失败时回灌结构化失败输出并自动 repair 一次，受 6 轮/$1/120s（及剩余全局预算）约束；超时/依赖/网络/权限/无关错误/recheck>1 不重试；重试后重新 extract+self-check，仍失败才落回 needsMoreInfo；usage 合并初次与 repair，报告/UI 增加「修复重试」；7 个新增测试，全量 347 个测试通过 |
 | v1.11 | 2026-11-17 | 仓库迁移：公开仓库 OpenDebugCopilot 设为主开发仓库，本地路径改为 `G:\develop\project\OpenDebugCopilot`；旧主仓库仅保留历史参考 |
 | v1.10 | 2026-11-16 | 用量与缓存诊断：usage 保留 per-model provider/canonicalModel/costBasis/cache 明细与逐轮摘要；UI/报告展示缓存读/写、模型/供应商与成本，非官方 provider 标“估算”；DC_DEBUG_USAGE=1 时写入 run.log；systemPrompt 改为静态前缀 + SYSTEM_PROMPT_DYNAMIC_BOUNDARY + 动态后缀，提升跨会话缓存命中；确认当前 1.93M cache read / 0 cache creation 与 DeepSeek Anthropic 兼容端点一致（命中生效，但不报 cache write）；2 个新增测试，全量 340 个测试通过 |
 | v1.09 | 2026-11-16 | Maven 结果复用：`run_command` 对重复 Maven 查询和成功 compile 做 per-run 缓存（pom/settings fingerprint，TTL 5 分钟，写入后清空，返回 cached/cacheAgeMs）；新增 `maven_dependencies` 原子工具，一次全量 dependency:tree、内部过滤 includes/excludes/scope，并可生成 declaredFile 供 runtime_classpath；避免模型拼 -Dincludes 和重复启动 Maven；docs/05 登记依赖元数据出站；2 个新增测试，全量 338 个测试通过 |
