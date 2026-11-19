@@ -759,7 +759,10 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
       cwd: root.cwd,
       at: Date.now(),
       truncated: run.truncated,
+      outputTruncated: run.outputTruncated,
       output: run.output,
+      suspicions: run.suspicions ?? [],
+      testSummary: run.testSummary ?? null,
       restarted,
       restartMessage,
     };

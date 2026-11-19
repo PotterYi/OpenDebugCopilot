@@ -388,3 +388,30 @@ test('renders build and test self-check as separate sections', () => {
   assert.match(markdown, /测试自检[\s\S]*状态：失败（未阻断，需人工确认）/);
   assert.match(markdown, /测试验证失败：npm test/);
 });
+
+test('renders output suspicions without turning status red', () => {
+  const withSuspicion = {
+    ...result,
+    agent: {
+      ...result.agent,
+      verification: {
+        status: 'passed',
+        buildStatus: 'passed',
+        testStatus: 'passed',
+        buildCommands: [{ command: 'mvn compile' }],
+        testCommands: [{ command: 'mvn test' }],
+        testSummary: { tests: 0, failures: 0, errors: 0 },
+        suspicions: [{
+          phase: 'build',
+          code: 'build-failure-text',
+          message: '检测到 BUILD FAILURE',
+          line: 'BUILD FAILURE',
+        }],
+      },
+    },
+  };
+  const markdown = renderMarkdown(buildReport(withSuspicion));
+  assert.match(markdown, /## 输出疑点/);
+  assert.match(markdown, /\[build\] 检测到 BUILD FAILURE：BUILD FAILURE/);
+  assert.match(markdown, /测试自检[\s\S]*通过（0 个用例，存疑）/);
+});

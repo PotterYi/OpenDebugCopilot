@@ -149,6 +149,14 @@ export function buildReport(result) {
           })),
           buildCommands: (agent.verification.buildCommands ?? []).map((entry) => entry.command).filter(Boolean),
           testCommands: (agent.verification.testCommands ?? []).map((entry) => entry.command).filter(Boolean),
+          suspicions: (agent.verification.suspicions ?? []).map((item) => ({
+            phase: item.phase ?? 'build',
+            code: item.code ?? 'suspicion',
+            message: scrubText(item.message ?? ''),
+            line: scrubText(item.line ?? ''),
+          })),
+          testSummary: agent.verification.testSummary ?? null,
+          outputTruncated: Boolean(agent.verification.outputTruncated),
           repair: agent.verification.repair
             ? {
                 attempted: Boolean(agent.verification.repair.attempted),
@@ -487,8 +495,9 @@ export function renderMarkdown(report) {
     const buildStatus = verification.buildStatus ?? verification.status;
     const testStatus = verification.testStatus ?? 'skipped';
     const buildLabel = buildStatus === 'passed' ? '通过' : buildStatus === 'failed' ? '失败' : '未执行';
+    const zeroTests = verification.testSummary && verification.testSummary.tests === 0;
     const testLabel = testStatus === 'passed'
-      ? '通过'
+      ? (zeroTests ? '通过（0 个用例，存疑）' : '通过')
       : testStatus === 'failed'
         ? `失败（${verification.testBlocking ? '已阻断' : '未阻断，需人工确认'}）`
         : '未执行';
@@ -509,6 +518,22 @@ export function renderMarkdown(report) {
       ...(verification.testReason ? [`- 说明：${verification.testReason}`] : []),
       ...(testStatus === 'skipped' && verification.testHints?.length
         ? verification.testHints.map((hint) => `- 提示：检测到 \`${hint.command}\`，未自动执行${hint.reason ? `（${hint.reason}）` : ''}`)
+        : []),
+      ...(verification.testSummary
+        ? [`- 用例统计：tests=${verification.testSummary.tests ?? '-'} failures=${verification.testSummary.failures ?? 0} errors=${verification.testSummary.errors ?? 0}`]
+        : []),
+      ...(verification.suspicions?.length
+        ? [
+            '',
+            '## 输出疑点',
+            '',
+            ...verification.suspicions.slice(0, 5).map(
+              (item) => `- [${item.phase}] ${item.message}：${item.line}`,
+            ),
+          ]
+        : []),
+      ...(verification.outputTruncated
+        ? ['', '- 注意：验证输出已截断；文本疑点基于完整流式输出，报告中的输出片段仅为尾部。']
         : []),
     );
     if (verification.repair) {

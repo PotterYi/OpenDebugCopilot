@@ -398,6 +398,9 @@ function printDiagnosis(result, runDir, root, { workspaceUndecided = false } = {
           ...(result.agent.verification.testReason ? [`  TestInfo   : ${result.agent.verification.testReason}`] : []),
           ...(result.agent.verification.error ? [`  VerifyErr  : ${result.agent.verification.error}`] : []),
           ...(result.agent.verification.testError ? [`  TestErr    : ${result.agent.verification.testError}`] : []),
+          ...(Array.isArray(result.agent.verification.suspicions) && result.agent.verification.suspicions.length
+            ? [`  Suspicion  : ${result.agent.verification.suspicions.length} 条（${result.agent.verification.suspicions.slice(0, 3).map((item) => `[${item.phase}] ${item.line}`).join('；')}）`]
+            : []),
         ]
       : []),
     ...(workspace

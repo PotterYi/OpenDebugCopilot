@@ -474,12 +474,27 @@ export async function runWorkspaceCheck({
       command: target.command,
       cwd: target.cwd,
       timeoutMs,
+      phase: target.phase,
     });
-    results.push({ ...result, phase: target.phase, required: target.required !== false, source: target.source ?? 'auto' });
+    results.push({
+      ...result,
+      phase: target.phase,
+      required: target.required !== false,
+      source: target.source ?? 'auto',
+    });
     logParts.push(`[${target.phase}] $ ${result.command}\n(cwd: ${result.cwd})\n${result.output ?? ''}`);
     if (!result.ok && (target.phase === 'build' || target.required !== false)) break;
   }
 
+  const suspicions = results.flatMap((entry) => (entry.suspicions ?? []).map((item) => ({
+    ...item,
+    phase: entry.phase,
+    command: entry.command,
+  })));
+  const testSummary = results
+    .map((entry) => entry.testSummary)
+    .filter(Boolean)
+    .sort((a, b) => (b.tests ?? 0) - (a.tests ?? 0))[0] ?? null;
   const buildResults = results.filter((entry) => entry.phase === 'build');
   const testResults = results.filter((entry) => entry.phase === 'test');
   const buildFailure = buildResults.find((entry) => !entry.ok) ?? null;
@@ -539,6 +554,9 @@ export async function runWorkspaceCheck({
     error: blockingError,
     testError,
     testReason,
+    suspicions,
+    testSummary,
+    outputTruncated: results.some((entry) => entry.outputTruncated),
     reason: status === 'skipped'
       ? (buildStatus === 'skipped' && testStatus === 'skipped'
         ? '未检测到可自动执行的构建/测试命令'
@@ -591,9 +609,20 @@ export function applyVerificationGate(gates, verification, { name = 'compile-sel
     ...(testStatus === 'passed' ? {} : { severity: verification.testBlocking ? 'error' : 'warn' }),
     detail: testDetail || 'tests=skipped',
   };
+  const suspicionName = name.includes('followup') ? 'output-suspicion-followup' : 'output-suspicion';
+  const suspicions = Array.isArray(verification.suspicions) ? verification.suspicions : [];
+  const suspicionCheck = suspicions.length > 0
+    ? {
+        name: suspicionName,
+        ok: false,
+        severity: 'warn',
+        detail: `${suspicions.length} 条输出疑点；${suspicions.slice(0, 3).map((item) => `[${item.phase}] ${item.line}`).join('；')}`,
+      }
+    : null;
   gates.checks = (Array.isArray(gates.checks) ? gates.checks : [])
-    .filter((item) => item?.name !== name && item?.name !== derivedTestName);
+    .filter((item) => item?.name !== name && item?.name !== derivedTestName && item?.name !== suspicionName);
   gates.checks.push(buildCheck, testCheck);
+  if (suspicionCheck) gates.checks.push(suspicionCheck);
   gates.ok = gates.checks.every((item) => item.ok !== false || item.severity === 'warn');
   return gates;
 }

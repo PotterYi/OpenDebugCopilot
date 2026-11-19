@@ -51,3 +51,17 @@ test('caps very large output', async (t) => {
   assert.equal(result.truncated, true);
   assert.ok(result.output.length <= 100);
 });
+
+test('annotates successful commands whose output contradicts success', async (t) => {
+  const cwd = await fixture(t, "console.log('BUILD FAILURE');\n");
+  const build = await runVerifyCommand({ command: 'node verify.mjs', cwd, phase: 'build', timeoutMs: 10_000 });
+  assert.equal(build.ok, true);
+  assert.equal(build.suspicions.length, 1);
+  assert.equal(build.suspicions[0].code, 'build-failure-text');
+
+  const testCwd = await fixture(t, "console.log('Tests run: 0, Failures: 0, Errors: 0');\n");
+  const tests = await runVerifyCommand({ command: 'node verify.mjs', cwd: testCwd, phase: 'test', timeoutMs: 10_000 });
+  assert.equal(tests.ok, true);
+  assert.equal(tests.testSummary.tests, 0);
+  assert.ok(tests.suspicions.some((item) => item.code === 'zero-tests'));
+});

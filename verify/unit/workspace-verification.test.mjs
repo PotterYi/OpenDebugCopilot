@@ -293,3 +293,23 @@ test('an advisory failure does not block when another required test passed', asy
   assert.equal(gates.ok, true);
   assert.equal(gates.checks.find((check) => check.name === 'test-self-check').severity, 'warn');
 });
+
+test('output suspicions are warnings and do not turn the verification red', async (t) => {
+  const { sourceRoot } = await prepare(t);
+  const verification = await runWorkspaceCheck({
+    roots: { sourceRoot },
+    verifyCommands: [{ command: 'node -e "console.log(\'BUILD FAILURE\')"', phase: 'build', required: true }],
+    projectRoot: sourceRoot,
+  });
+  assert.equal(verification.status, 'passed');
+  assert.equal(verification.buildStatus, 'passed');
+  assert.equal(verification.suspicions.length, 1);
+  assert.match(verification.suspicions[0].line, /BUILD FAILURE/);
+
+  const gates = applyVerificationGate({ ok: true, checks: [] }, verification);
+  assert.equal(gates.ok, true);
+  const check = gates.checks.find((item) => item.name === 'output-suspicion');
+  assert.equal(check.ok, false);
+  assert.equal(check.severity, 'warn');
+  assert.match(check.detail, /BUILD FAILURE/);
+});

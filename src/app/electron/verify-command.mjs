@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { killProcessTree, waitForExit } from './dev-server.mjs';
+import { createVerifyOutputScanner } from '../../core/verify-output.mjs';
 
 /**
  * Run the user-configured verification command once, with a hard timeout.
@@ -9,7 +10,8 @@ import { killProcessTree, waitForExit } from './dev-server.mjs';
  *   command: string,
  *   cwd: string,
  *   timeoutMs?: number,
- *   maxOutputBytes?: number
+ *   maxOutputBytes?: number,
+ *   phase?: 'build' | 'test' | null
  * }} options
  */
 export async function runVerifyCommand({
@@ -17,8 +19,10 @@ export async function runVerifyCommand({
   cwd,
   timeoutMs = 120_000,
   maxOutputBytes = 256 * 1024,
+  phase = null,
 }) {
   const startedAt = Date.now();
+  const scanner = createVerifyOutputScanner({ phase, command });
   let child;
   try {
     child = spawn(command, {
@@ -47,7 +51,9 @@ export async function runVerifyCommand({
   let truncated = false;
   let timedOut = false;
   const append = (chunk) => {
-    output += chunk.toString('utf8');
+    const text = chunk.toString('utf8');
+    scanner.push(text);
+    output += text;
     if (output.length > maxOutputBytes) {
       output = output.slice(output.length - maxOutputBytes);
       truncated = true;
@@ -86,8 +92,10 @@ export async function runVerifyCommand({
     }
   }
 
+  const ok = !timedOut && exit.code === 0;
+  const analysis = scanner.finish();
   return {
-    ok: !timedOut && exit.code === 0,
+    ok,
     exitCode: exit.code ?? null,
     signal: exit.signal ?? null,
     timedOut,
@@ -96,6 +104,9 @@ export async function runVerifyCommand({
     cwd,
     output,
     truncated,
+    outputTruncated: truncated,
+    suspicions: ok ? analysis.suspicions : [],
+    testSummary: analysis.testSummary,
     error: exit.error?.message ?? null,
   };
 }

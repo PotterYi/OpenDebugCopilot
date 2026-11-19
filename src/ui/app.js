@@ -1242,10 +1242,13 @@ async function runVerification(fixIndex, view) {
     const fix = response.result?.agent?.fixes?.[fixIndex];
     if (fix) fix.applied = { ...(fix.applied ?? {}), verification };
     renderRunInto(view);
+    const suspicion = verification.suspicions?.length
+      ? `，有 ${verification.suspicions.length} 条输出疑点，请人工确认`
+      : '';
     showMessage(
       view,
       verification.ok
-        ? `验证通过（${verification.durationMs}ms）${verification.restarted ? '，前端已重启' : ''}`
+        ? `验证通过（${verification.durationMs}ms）${verification.restarted ? '，前端已重启' : ''}${suspicion}`
         : `验证失败${verification.timedOut ? '（超时）' : `（退出码 ${verification.exitCode}）`}`,
       verification.ok ? 'message ok' : 'message error',
     );
@@ -1473,10 +1476,20 @@ function renderFixCard(fix, view, fixIndex, { readOnly = false } = {}) {
       `badge ${verification.ok ? 'ok' : 'error'}`,
       verification.ok ? '验证通过' : verification.timedOut ? '验证超时' : '验证失败',
     ));
+    if (verification.suspicions?.length) {
+      line.append(el('span', 'badge', `有疑点 ${verification.suspicions.length}`));
+    }
     line.append(el('span', 'muted small', `${verification.command ?? ''} · ${verification.durationMs ?? 0} ms`));
     if (verification.restarted) line.append(el('span', 'muted small', '前端已重启'));
     else if (verification.restartMessage) line.append(el('span', 'muted small', verification.restartMessage));
     card.append(line);
+    if (verification.suspicions?.length) {
+      const list = el('ul', 'advice-list');
+      for (const item of verification.suspicions.slice(0, 5)) {
+        list.append(el('li', 'muted small', `[${item.phase ?? 'verify'}] ${item.message}：${item.line}`));
+      }
+      card.append(list);
+    }
     const output = String(verification.output ?? '').trimEnd();
     if (output) {
       const tail = output.split('\n').slice(-40).join('\n');
@@ -1854,9 +1867,16 @@ function renderWorkspaceVerification(verification) {
       verification.testBlocking ? '测试失败（已阻断）' : '测试失败（未阻断）',
     ));
   } else if (testStatus === 'passed') {
-    summary.append(el('span', 'badge ok', '测试通过'));
+    if (verification.testSummary?.tests === 0) {
+      summary.append(el('span', 'badge', '测试通过（0 个用例，存疑）'));
+    } else {
+      summary.append(el('span', 'badge ok', '测试通过'));
+    }
   } else {
     summary.append(el('span', 'badge', '测试未执行'));
+  }
+  if (verification.suspicions?.length) {
+    summary.append(el('span', 'badge', `有疑点 ${verification.suspicions.length}`));
   }
   const buildCommands = (verification.buildCommands ?? []).map((entry) => entry.command).filter(Boolean);
   const testCommands = (verification.testCommands ?? []).map((entry) => entry.command).filter(Boolean);
@@ -1880,6 +1900,14 @@ function renderWorkspaceVerification(verification) {
     }
   } else if (testStatus === 'skipped' && verification.testReason) {
     block.append(el('p', 'muted small', verification.testReason));
+  }
+  if (verification.suspicions?.length) {
+    block.append(el('p', 'muted small', '输出疑点（退出码未失败，但文本命中以下信号，请人工确认）：'));
+    const list = el('ul', 'advice-list');
+    for (const item of verification.suspicions.slice(0, 5)) {
+      list.append(el('li', 'muted small', `[${item.phase}] ${item.message}：${item.line}`));
+    }
+    block.append(list);
   }
   if (verification.output && (buildStatus === 'failed' || testStatus === 'failed')) {
     const output = String(verification.output);
@@ -2031,6 +2059,14 @@ function renderWorkspaceSession(session, view, runId, { readOnly = false } = {})
       session.selfCheck.testBlocking ? 'error-text small' : 'muted small',
       `${session.selfCheck.testBlocking ? '测试失败（已阻断）' : '测试失败（未阻断，需人工确认）'}${session.selfCheck.testError ? `：${session.selfCheck.testError}` : ''}`,
     ));
+  }
+  if (session.selfCheck?.suspicions?.length) {
+    block.append(el('p', 'muted small', '输出疑点（退出码未失败，但文本命中以下信号，请人工确认）：'));
+    const list = el('ul', 'advice-list');
+    for (const item of session.selfCheck.suspicions.slice(0, 5)) {
+      list.append(el('li', 'muted small', `[${item.phase}] ${item.message}：${item.line}`));
+    }
+    block.append(list);
   }
   if (session.selfCheck?.output && (session.selfCheck.status === 'failed' || session.selfCheck.testStatus === 'failed')) {
     block.append(el('pre', 'verify-log', String(session.selfCheck.output).slice(-8000)));
