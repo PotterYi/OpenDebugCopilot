@@ -25,7 +25,6 @@ function formatFix(fix) {
   const fileLabel = fix.root === 'extra' && fix.extraRoot ? `${fix.extraRoot}/${fix.file}` : fix.file;
   if (fileLabel) parts.push(`文件：${fileLabel}`);
   if (fix.risk) parts.push(`风险：${fix.risk}`);
-  if (fix.verification) parts.push(`验证：${fix.verification}`);
   return parts.join('；');
 }
 
@@ -184,7 +183,6 @@ export function buildReport(result) {
       markerInjected: Boolean(result.marker?.injected),
       threads: result.threads?.total ?? 0,
       sourceFiles: result.source?.files?.length ?? 0,
-      rejectedHypotheses: Array.isArray(agent.rejectedHypotheses) ? agent.rejectedHypotheses.length : 0,
       toolCalls: agent.toolCalls?.length ?? 0,
       turns: agent.usage?.numTurns ?? null,
       tokens: agent.usage?.totalTokens ?? null,
@@ -218,7 +216,6 @@ export function buildReport(result) {
       incomplete: Boolean(result.meta?.incomplete),
       incompleteReason: result.meta?.incompleteReason ?? null,
       startedAt: result.meta?.startedAt ?? null,
-      endedAt: result.meta?.endedAt ?? null,
     },
   };
 }
@@ -272,13 +269,23 @@ export function renderMarkdown(report) {
     `- 场景：${report.target.scenario}（${report.target.driver}）`,
     `- 症状：${report.symptom}`,
     `- 验证：${verificationLevelLabel(report.verificationLevel)}`,
+    ...(report.summary.confidence != null
+      ? [`- 模型自评置信度：${Number(report.summary.confidence).toFixed(2)}（未校准，仅供参考）`]
+      : []),
     `- 耗时：${report.durationMs} ms`,
     `- Run ID：${report.meta.runId ?? '(unknown)'}`,
     ...(report.element
       ? [
-          `- 元素：${report.element.selector || '(unknown)'}`,
+          `- 元素：${report.element.selector || '(unknown)'}${report.element.tag ? `（${report.element.tag}）` : ''}`,
           `- 页面：${report.element.pageUrl || '(unknown)'}`,
+          ...(report.element.route ? [`- 路由：${report.element.route}`] : []),
           `- 组件：${report.element.componentFile || report.element.componentName || '(未解析)'}`,
+          ...(report.element.styles
+            ? [`- 样式：${['display', 'color', 'backgroundColor', 'fontSize']
+                .filter((key) => report.element.styles[key])
+                .map((key) => `${key}=${report.element.styles[key]}`)
+                .join('；') || '(unknown)'}`]
+            : []),
         ]
       : []),
     ...(report.meta.incomplete
@@ -303,6 +310,9 @@ export function renderMarkdown(report) {
     ...(report.symptomCheck?.observed ? [`- 实际观察：${report.symptomCheck.observed}`] : []),
     ...(report.symptomCheck?.reason ? [`- 说明：${report.symptomCheck.reason}`] : []),
     ...(report.symptomCheck?.note ? [`- 备注：${report.symptomCheck.note}`] : []),
+    ...(report.symptomCheck?.markedAt
+      ? [`- 确认时间：${new Date(report.symptomCheck.markedAt).toLocaleString()}`]
+      : []),
     ...(report.rejectedHypotheses?.length
       ? [
           '',
@@ -346,7 +356,7 @@ export function renderMarkdown(report) {
         if (action.verification.expected) lines.push(`  - 预期：${action.verification.expected}`);
         if (action.verification.command) lines.push(`  - 验证命令：\`${action.verification.command}\``);
       }
-      if (action.risk) lines.push(`- 风险：${action.risk}${action.reversible === true ? '；可逆' : action.reversible === false ? '；不可逆' : ''}`);
+      if (action.risk) lines.push(`- 风险：${action.risk}${action.reversible === true ? '；可逆' : action.reversible === false ? '；不可逆' : ''}${action.confirmationRequired ? '；需用户确认' : ''}`);
       lines.push('');
     });
   }
@@ -464,6 +474,7 @@ export function renderMarkdown(report) {
         (check) => `- 检查 ${check.name}：${check.ok ? '通过' : '不一致'}（${check.detail}）`,
       ),
       `- 说明：${report.recheck.note}`,
+      ...(report.recheck.detail ? [`- 详情：${report.recheck.detail}`] : []),
     );
   }
 

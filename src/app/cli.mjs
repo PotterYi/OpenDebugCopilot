@@ -363,6 +363,9 @@ function printDiagnosis(result, runDir, root, { workspaceUndecided = false } = {
     `  VerifyLevel: ${result.meta.verificationLevel ?? 'unverified'}`,
     `  Status     : ${result.gates.ok ? 'gates ok' : 'gates failed'}`,
     `  Conclusion : ${result.agent.conclusion}`,
+    ...(typeof result.agent.confidence === 'number'
+      ? [`  Confidence : ${result.agent.confidence.toFixed(2)}（模型自评，未校准）`]
+      : []),
     ...(Array.isArray(result.agent.rejectedHypotheses) && result.agent.rejectedHypotheses.length
       ? result.agent.rejectedHypotheses.map(
           (item) => `  Rejected   : ${item.hypothesis} <- ${(item.refutedBy ?? []).map((ref) => `${ref.type}:${ref.ref}`).join(',')}`,

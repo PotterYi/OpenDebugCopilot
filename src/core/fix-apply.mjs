@@ -7,6 +7,7 @@ import {
   resolveFixDestination,
   resolveFixTarget,
 } from './fixes.mjs';
+import { checkWritablePath, writeDenialMessage } from './write-policy.mjs';
 
 function toFileEol(text, eol) {
   return String(text).replace(/\r\n/g, '\n').replace(/\n/g, eol);
@@ -14,6 +15,15 @@ function toFileEol(text, eol) {
 
 function sha256(buffer) {
   return createHash('sha256').update(buffer).digest('hex');
+}
+
+async function assertWritable(target) {
+  const policy = await checkWritablePath({
+    target: target.resolved,
+    root: target.root,
+    relative: target.relative,
+  });
+  if (!policy.ok) throw new Error(`${writeDenialMessage(policy)}：${target.relative}`);
 }
 
 function countOccurrences(text, needle) {
@@ -58,6 +68,7 @@ export async function applyFix({ fix: rawFix, roots, backupPath }) {
     if (!fix.content) throw new Error('新建文件的 content 不能为空');
     const target = await resolveFixDestination(fix, roots);
     if (target.error) throw new Error(target.error);
+    await assertWritable(target);
     await mkdir(path.dirname(target.resolved), { recursive: true });
     await writeFile(target.resolved, fix.content, 'utf8');
     clearProjectMethodIndexCache();
@@ -73,6 +84,7 @@ export async function applyFix({ fix: rawFix, roots, backupPath }) {
   if (fix.kind === 'delete') {
     const target = await resolveFixTarget(fix, roots);
     if (target.error) throw new Error(target.error);
+    await assertWritable(target);
     const buffer = await readFile(target.resolved);
     if (fix.baseHash && sha256(buffer) !== fix.baseHash) {
       throw new Error('文件在诊断后已被修改，补丁基于旧版本；请重新诊断。');
@@ -89,6 +101,7 @@ export async function applyFix({ fix: rawFix, roots, backupPath }) {
 
   const target = await resolveFixTarget(fix, roots);
   if (target.error) throw new Error(target.error);
+  await assertWritable(target);
 
   const buffer = await readFile(target.resolved);
   if (fix.baseHash && sha256(buffer) !== fix.baseHash) {
@@ -136,6 +149,7 @@ export async function revertFix({ fix: rawFix, roots, backupPath }) {
   if (fix.kind === 'create') {
     const target = await resolveFixTarget(fix, roots);
     if (target.error) throw new Error(target.error);
+    await assertWritable(target);
     const current = await readFile(target.resolved, 'utf8');
     if (current.replace(/\r\n/g, '\n') !== String(fix.content ?? '').replace(/\r\n/g, '\n')) {
       throw new Error('新建文件在应用后被修改，拒绝自动删除。');
@@ -148,6 +162,7 @@ export async function revertFix({ fix: rawFix, roots, backupPath }) {
   if (fix.kind === 'delete') {
     const target = await resolveFixDestination(fix, roots);
     if (target.error) throw new Error(target.error);
+    await assertWritable(target);
     const backup = await readFile(backupPath);
     await mkdir(path.dirname(target.resolved), { recursive: true });
     await writeFile(target.resolved, backup);
@@ -157,6 +172,7 @@ export async function revertFix({ fix: rawFix, roots, backupPath }) {
 
   const target = await resolveFixTarget(fix, roots);
   if (target.error) throw new Error(target.error);
+  await assertWritable(target);
 
   const backup = await readFile(backupPath, 'utf8');
   await atomicWrite(target.resolved, backup);

@@ -294,7 +294,6 @@ export async function extractSandboxFixes(sandbox) {
           content,
           baseHash: null,
           risk: 'medium',
-          verification: '沙箱内生成，应用前仍会执行编译自测',
           note: '由沙箱新建文件提取',
         });
         changedFiles.push(`${descriptor.key}/${file}`);
@@ -347,7 +346,6 @@ export async function extractSandboxFixes(sandbox) {
         replace: updatedText,
         baseHash: sha256(originalBuffer),
         risk: 'medium',
-        verification: '沙箱内生成，应用前仍会执行编译自测',
         note: '由沙箱编辑提取',
       });
       changedFiles.push(`${descriptor.key}/${file}`);
@@ -387,7 +385,6 @@ export async function extractSandboxFixes(sandbox) {
           file,
           baseHash: sha256(buffer),
           risk: 'high',
-          verification: '沙箱内删除，应用前仍会执行编译自测',
           note: '由沙箱删除文件提取',
         });
         changedFiles.push(`${descriptor.key}/${file}`);

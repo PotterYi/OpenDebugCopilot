@@ -53,7 +53,6 @@ test('normalizes strings and structured fixes', () => {
       search: 'if (order.getQty() <= 0) {',
       replace: 'if (order.getQty() == null || order.getQty() <= 0) {',
       risk: 'low',
-      verification: '运行单测',
     },
   ]);
   assert.equal(fixes.length, 2);
@@ -380,4 +379,23 @@ test('keeps extra-root suggestions when workspace edits replace the fix list', (
   );
   assert.deepEqual(merged.map((fix) => fix.summary), ['extra', 'workspace']);
   assert.equal(merged[0].extraRoot, 'extra-1');
+});
+
+test('preview rejects sensitive and build output targets', async (t) => {
+  const dirs = await fixture(t);
+  await writeFile(path.join(dirs.backend, '.env'), 'SECRET=1\n', 'utf8');
+  await mkdir(path.join(dirs.backend, 'target'), { recursive: true });
+  await writeFile(path.join(dirs.backend, 'target', 'Out.java'), 'class Out {}\n', 'utf8');
+
+  const env = await buildFixPreview({
+    summary: '改配置', root: 'backend', file: '.env', search: 'SECRET=1', replace: 'SECRET=2', risk: 'low',
+  }, roots(dirs));
+  assert.equal(env.preview.status, 'error');
+  assert.match(env.preview.message, /敏感文件/);
+
+  const build = await buildFixPreview({
+    summary: '改产物', root: 'backend', file: 'target/Out.java', search: 'class Out', replace: 'class Out2', risk: 'low',
+  }, roots(dirs));
+  assert.equal(build.preview.status, 'error');
+  assert.match(build.preview.message, /构建产物目录/);
 });

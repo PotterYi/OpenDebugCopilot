@@ -217,7 +217,6 @@ test('renders structured fix metadata without leaking the raw diff', () => {
         search: 'secret-source-line',
         replace: 'safe-source-line',
         risk: 'low',
-        verification: '运行单测',
         preview: {
           status: 'ready',
           line: 5,
@@ -230,7 +229,7 @@ test('renders structured fix metadata without leaking the raw diff', () => {
   assert.match(markdown, /防御空数量/);
   assert.match(markdown, /com\/demo\/OrderService\.java/);
   assert.match(markdown, /风险：low/);
-  assert.match(markdown, /验证：运行单测/);
+  assert.doesNotMatch(markdown, /验证：运行单测/);
   assert.equal(markdown.includes('secret-source-line'), false);
   assert.equal(markdown.includes('safe-source-line'), false);
   assert.equal(markdown.includes('-secret-source-line'), false);
@@ -327,4 +326,9 @@ test('renders rejected hypotheses before the conclusion', () => {
   };
   const emptyMarkdown = renderMarkdown(buildReport(empty));
   assert.match(emptyMarkdown, /未形成可排除假设/);
+});
+
+test('labels model confidence as an uncalibrated self-assessment', () => {
+  const markdown = renderMarkdown(buildReport(result));
+  assert.match(markdown, /模型自评置信度：0\.80（未校准，仅供参考）/);
 });

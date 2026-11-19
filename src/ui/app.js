@@ -1306,7 +1306,6 @@ function renderFixCard(fix, view, fixIndex, { readOnly = false } = {}) {
 
   const target = [fix.root ?? null, fix.extraRoot ?? null, fix.file ?? null].filter(Boolean).join(' / ');
   if (target) card.append(el('div', 'muted small', target));
-  if (fix.verification) card.append(el('div', 'muted small', `验证：${fix.verification}`));
   if (fix.note) card.append(el('div', 'muted small', `说明：${fix.note}`));
 
   const preview = fix.preview;
@@ -2149,7 +2148,9 @@ function renderRunBody(container, result, agent, view, { readOnly = false, showH
     const element = result.element;
     container.append(section('元素信息', kv([
       ['页面', element.page?.url ?? '—'],
+      ['路由', element.page?.route ?? '—'],
       ['选择器', element.selector ?? '—'],
+      ['标签', element.tag ?? '—'],
       ['文本', element.text || '—'],
       ['组件', element.framework?.componentName ?? '—'],
       ['组件文件', element.framework?.componentFile
@@ -2158,6 +2159,8 @@ function renderRunBody(container, result, agent, view, { readOnly = false, showH
       ['尺寸', element.rect ? `${element.rect.width} × ${element.rect.height}` : '—'],
       ['display', element.styles?.display ?? '—'],
       ['color', element.styles?.color ?? '—'],
+      ['background', element.styles?.backgroundColor ?? '—'],
+      ['font-size', element.styles?.fontSize ?? '—'],
       ['API 候选', (element.apiCandidates ?? []).map((api) => `${api.method ?? 'GET'} ${api.url}`).join('、') || '—'],
       ['后端候选', (element.backendCandidates ?? []).map((candidate) => candidate.file).join('、') || '—'],
       ['截图', element.screenshot ?? '—'],
@@ -2188,6 +2191,9 @@ function renderRunBody(container, result, agent, view, { readOnly = false, showH
     ['消耗 Token', formatTokenUsage(agent?.usage)],
     ['缓存读/写', `${Number(agent?.usage?.cacheReadInputTokens ?? 0).toLocaleString()} / ${Number(agent?.usage?.cacheCreationInputTokens ?? 0).toLocaleString()}`],
     ['模型/供应商', `${agent?.usage?.canonicalModel || '—'} / ${agent?.usage?.provider || '—'}`],
+    ['置信度', agent?.confidence != null
+      ? `${Number(agent.confidence).toFixed(2)}（模型自评，未校准）`
+      : '—'],
     ['成本', formatCost(agent?.usage)],
     ['耗时', `${result.meta?.durationMs ?? 0} ms`],
   ])));

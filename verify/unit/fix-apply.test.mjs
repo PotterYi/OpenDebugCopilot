@@ -171,3 +171,38 @@ test('refuses to apply a patch when the base hash no longer matches', async (t) 
     /文件在诊断后已被修改/,
   );
 });
+
+test('rejects sensitive, VCS, dependency and build output targets before writing', async (t) => {
+  const { backend, roots } = await fixture(t);
+  const backupPath = path.join(TMP, 'backups', 'policy.orig');
+
+  async function expectDenied(relative, content, pattern) {
+    const file = path.join(backend, relative);
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, content, 'utf8');
+    await assert.rejects(
+      applyFix({
+        fix: { ...fix, file: relative, search: content.split('\n')[0], replace: `${content.split('\n')[0]} changed` },
+        roots,
+        backupPath,
+      }),
+      pattern,
+      relative,
+    );
+    assert.equal(await readFile(file, 'utf8'), content, `${relative} should be untouched`);
+  }
+
+  await expectDenied('.env', 'SECRET=1\n', /敏感文件/);
+  await expectDenied('.git/config', '[core]\n', /敏感文件/);
+  await expectDenied('node_modules/dep.js', 'value\n', /版本控制或依赖目录/);
+  await expectDenied('target/Out.java', 'class Out {}\n', /构建产物目录/);
+
+  await assert.rejects(
+    applyFix({
+      fix: { summary: '新建构建产物', kind: 'create', root: 'backend', file: 'target/New.java', content: 'class New {}\n' },
+      roots,
+      backupPath,
+    }),
+    /构建产物目录/,
+  );
+});

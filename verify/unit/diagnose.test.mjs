@@ -161,7 +161,6 @@ test('attaches read-only diff previews to structured fixes', async (t) => {
             search: '        if (order.getQty() <= 0) {',
             replace: '        if (order.getQty() == null || order.getQty() <= 0) {',
             risk: 'low',
-            verification: '运行订单单测',
           }],
         };
       },

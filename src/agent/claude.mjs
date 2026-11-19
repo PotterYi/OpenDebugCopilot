@@ -1,7 +1,5 @@
 import { realpath } from 'node:fs/promises';
-import { execFile } from 'node:child_process';
 import path from 'node:path';
-import { promisify } from 'node:util';
 import { AppError } from '../core/errors.mjs';
 import { normalizeFixList } from '../core/fixes.mjs';
 import { normalizeActionList } from '../core/actions.mjs';
@@ -9,6 +7,7 @@ import { summarizeToolCalls } from '../core/tool-calls.mjs';
 import { redactHeaders, redactValue } from '../core/redact.mjs';
 import { isSafeBashCommand } from '../core/bash-policy.mjs';
 import { inside, isSensitivePath } from '../core/path-policy.mjs';
+import { checkWritablePath, writeDenialMessage } from '../core/write-policy.mjs';
 import { triagePromptLines } from '../core/triage.mjs';
 import { boundaryGuidance, createDenialTracker } from '../tools/guidance.mjs';
 
@@ -55,14 +54,6 @@ export function sdkAuthOptions(auth = null) {
 export const READ_ONLY_BUILTIN_TOOLS = Object.freeze(['Read', 'Grep', 'Glob']);
 export const SANDBOX_BUILTIN_TOOLS = Object.freeze(['Read', 'Grep', 'Glob', 'Edit', 'Write']);
 export const FULL_BUILTIN_TOOLS = Object.freeze(['Read', 'Grep', 'Glob', 'Edit', 'Write', 'Bash']);
-
-const WRITE_DENY_ANYWHERE = new Set(['.git', 'node_modules']);
-const WRITE_OUTPUT_SEGMENTS = new Set([
-  'target', 'dist', 'build', 'out', 'bin', 'obj', 'logs', 'runs',
-  'coverage', '__pycache__', '.gradle', '.cache',
-  '.next', '.nuxt', '.idea', '.vscode', 'vendor',
-]);
-const execFileAsync = promisify(execFile);
 
 /**
  * Permission policy for the built-in tools.
@@ -119,55 +110,6 @@ export function createToolPermission(allowedRoots = [], {
       if (inside(realRoot, realTarget)) return true;
     }
     return false;
-  }
-
-  async function writableRootFor(target) {
-    const realTarget = await realpath(target).catch(() => target);
-    let best = null;
-    for (const root of writableRoots) {
-      const realRoot = await realpath(root).catch(() => root);
-      if (!inside(realRoot, realTarget)) continue;
-      if (!best || realRoot.length > best.root.length) {
-        best = { root: realRoot, relative: path.relative(realRoot, realTarget) };
-      }
-    }
-    return best;
-  }
-
-  async function gitIgnoreStatus(root, relative) {
-    try {
-      await execFileAsync('git', ['-C', root, 'check-ignore', '-q', '--', relative], {
-        windowsHide: true,
-        timeout: 5000,
-        maxBuffer: 1024 * 1024,
-      });
-      return 'ignored';
-    } catch (error) {
-      // git check-ignore exits 1 for "not ignored" and 128 when not a repo.
-      return error?.code === 1 ? 'tracked' : 'no-repo';
-    }
-  }
-
-  /**
-   * Check the path relative to the writable root, not the absolute path.
-   * Copy sandboxes live under runs/<runId>/sandbox, and projects may live under
-   * a folder literally named "build" or "out"; both must not block every write.
-   */
-  async function isDeniedWritePath(target) {
-    const match = await writableRootFor(target);
-    if (!match) return false;
-    const parts = match.relative.replace(/\\/g, '/').split('/').filter(Boolean);
-    if (parts.some((segment) => WRITE_DENY_ANYWHERE.has(segment.toLowerCase()))) return true;
-    if (parts.length === 0) return false;
-    const hasOutputSegment = parts.some((segment) => WRITE_OUTPUT_SEGMENTS.has(segment.toLowerCase()));
-    if (!hasOutputSegment) return false;
-    // Git is the source of truth inside a repository: ignored build outputs are
-    // denied, while tracked/legitimate folders named build/out stay writable.
-    const status = await gitIgnoreStatus(match.root, parts.join('/'));
-    if (status === 'ignored') return true;
-    if (status === 'tracked') return false;
-    // No Git (copy sandbox): only deny output names at the workspace root.
-    return WRITE_OUTPUT_SEGMENTS.has(parts[0].toLowerCase());
   }
 
   async function askApproval(toolName, input) {
@@ -243,11 +185,11 @@ export function createToolPermission(allowedRoots = [], {
     if (isSensitivePath(target)) {
       return { behavior: 'deny', message: `拒绝访问敏感文件：${target}` };
     }
-    if (isWrite && await isDeniedWritePath(target)) {
-      return {
-        behavior: 'deny',
-        message: `禁止修改构建产物、依赖或版本控制目录：${target}`,
-      };
+    if (isWrite) {
+      const policy = await checkWritablePath({ target, roots: writableRoots });
+      if (!policy.ok) {
+        return { behavior: 'deny', message: `${writeDenialMessage(policy)}：${target}` };
+      }
     }
     if (isWrite && typeof onBeforeWrite === 'function') {
       try {
@@ -409,7 +351,6 @@ const RESULT_SCHEMA = {
           search: { type: 'string' },
           replace: { type: 'string' },
           risk: { enum: ['low', 'medium', 'high'] },
-          verification: { type: 'string' },
           note: { type: 'string' },
         },
       },
@@ -567,7 +508,6 @@ export function buildFollowUpPrompt(question, previous = {}) {
           search: fix.search,
           replace: fix.replace,
           risk: fix.risk,
-          verification: fix.verification,
           note: fix.note,
           applied: fix.applied
             ? { applied: true, reverted: Boolean(fix.applied.revertedAt) }

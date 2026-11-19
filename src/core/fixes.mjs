@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFile, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { walkSourceFiles } from '../evidence/source.mjs';
+import { checkWritablePath, writeDenialMessage } from './write-policy.mjs';
 
 export const FIX_RISKS = ['low', 'medium', 'high'];
 
@@ -280,7 +281,6 @@ export function normalizeFix(item) {
           content: '',
           baseHash: null,
           risk: null,
-          verification: '',
           note: '',
         }
       : null;
@@ -311,7 +311,6 @@ export function normalizeFix(item) {
     content,
     baseHash: clean(item.baseHash, 128) || null,
     risk,
-    verification: clean(item.verification, 1000),
     note: clean(item.note, 1000),
   };
 }
@@ -349,6 +348,15 @@ function isInside(root, target) {
   const resolvedRoot = path.resolve(root);
   const resolvedTarget = path.resolve(target);
   return resolvedTarget === resolvedRoot || resolvedTarget.startsWith(`${resolvedRoot}${path.sep}`);
+}
+
+async function checkCandidateWritable(candidate, relative) {
+  const policy = await checkWritablePath({
+    target: candidate.resolved,
+    root: candidate.root,
+    relative,
+  });
+  return policy.ok ? null : `${writeDenialMessage(policy)}：${relative}`;
 }
 
 /**
@@ -423,6 +431,8 @@ export async function resolveFixTarget(item, {
   if (existing.length > 1) {
     return { error: `同一相对路径同时存在于后端和前端源码目录，请在修复建议中指定 root：${fix.file}` };
   }
+  const denied = await checkCandidateWritable(existing[0], relative);
+  if (denied) return { error: denied };
   return { ...existing[0], relative: relative };
 }
 
@@ -494,6 +504,8 @@ export async function resolveFixDestination(item, {
   if (missing.length > 1) {
     return { error: `同一相对路径可同时创建于后端和前端源码目录，请在修复建议中指定 root：${fix.file}` };
   }
+  const denied = await checkCandidateWritable(missing[0], relative);
+  if (denied) return { error: denied };
   return { ...missing[0], relative };
 }
 
