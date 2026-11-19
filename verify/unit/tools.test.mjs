@@ -1,13 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { rm } from 'node:fs/promises';
+import { readFile, rm } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { parseScenario } from '../../src/core/scenario.mjs';
 import { createTools } from '../../src/tools/index.mjs';
 import { parseTimestamp } from '../../src/evidence/parsers.mjs';
 import { AppError } from '../../src/core/errors.mjs';
 import { tempDir } from './tmp.mjs';
+import { MAX_TOOL_RESULT_BYTES } from '../../src/core/tool-limits.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES = path.resolve(HERE, '../fixtures');
@@ -104,11 +105,11 @@ test('source tools read config, paginate and redact secrets', async (t) => {
 
 test('oversized tool results spill to disk and can be read back', async (t) => {
   t.after(async () => { await rm(RUN_DIR, { recursive: true, force: true }); });
-  const { tools } = build(80);
+  const { tools } = build(512);
   const spilled = await tools.get_logs({});
   assert.equal(spilled.spilled, true);
   assert.match(spilled.file, /^evidence\//);
-  const slice = await tools.read({ file: spilled.file });
+  const slice = await tools.read({ file: spilled.file, startLine: 1, endLine: 3 });
   assert.match(slice.content, /"records"/);
   assert.ok(slice.totalLines > 0);
 
@@ -234,4 +235,22 @@ test('returns usage on boundary errors and escalates repeated failures', async (
   const readSecond = await tools.read({ file: '../outside-2.txt' });
   assert.equal(readSecond.guardrail.repeated, 2);
   assert.ok(readSecond.guardrail.usage.some((item) => item.includes('read_source')));
+});
+
+test('ensureSpill guarantees a file pointer for every oversized result', async (t) => {
+  t.after(async () => { await rm(RUN_DIR, { recursive: true, force: true }); });
+  const bundle = build(1_000_000);
+  const small = await bundle.ensureSpill('test', { text: 'ok' });
+  assert.equal(small.spilled, undefined);
+
+  const ascii = await bundle.ensureSpill('test', { text: 'x'.repeat(MAX_TOOL_RESULT_BYTES) });
+  assert.equal(ascii.spilled, true);
+  assert.ok(ascii.bytes > MAX_TOOL_RESULT_BYTES);
+  const file = path.join(RUN_DIR, ascii.file);
+  const saved = JSON.parse(await readFile(file, 'utf8'));
+  assert.equal(saved.text.length, MAX_TOOL_RESULT_BYTES);
+
+  const multibyte = await bundle.ensureSpill('test', { text: '中'.repeat(8000) });
+  assert.equal(multibyte.spilled, true);
+  assert.ok(multibyte.bytes > MAX_TOOL_RESULT_BYTES);
 });

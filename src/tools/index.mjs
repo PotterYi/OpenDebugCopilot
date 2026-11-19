@@ -18,8 +18,9 @@ import { inside } from '../core/path-policy.mjs';
 import { listEnvelope, pageArgs, pageItems } from '../core/list-result.mjs';
 import { boundaryGuidance, createDenialTracker } from './guidance.mjs';
 import { redactSecrets, redactValue } from '../core/redact.mjs';
+import { MAX_TOOL_RESULT_BYTES } from '../core/tool-limits.mjs';
 
-const DEFAULT_MAX_RESULT_BYTES = 32 * 1024;
+const DEFAULT_MAX_RESULT_BYTES = MAX_TOOL_RESULT_BYTES;
 const DEFAULT_READ_LINES = 200;
 
 /** Tool definitions exposed to the agent (MCP-shaped). */
@@ -376,6 +377,10 @@ export function createTools({
   limitBytes = DEFAULT_MAX_RESULT_BYTES,
   onCall = null,
 }) {
+  const resultLimitBytes = Math.max(1, Math.min(
+    Number(limitBytes) || DEFAULT_MAX_RESULT_BYTES,
+    MAX_TOOL_RESULT_BYTES,
+  ));
   const paths = resolveScenarioPaths(scenario);
   const files = logfiles ?? paths.logfiles;
   const root = sourceRoot ?? paths.sourceRoot;
@@ -538,7 +543,7 @@ export function createTools({
     const value = redactValue(rawValue);
     const text = JSON.stringify(value, null, 2);
     const bytes = Buffer.byteLength(text);
-    if (!force && bytes <= limitBytes) return value;
+    if (!force && bytes <= resultLimitBytes) return value;
     await mkdir(spillDir, { recursive: true });
     seq += 1;
     const file = path.join(spillDir, `tool-${String(seq).padStart(3, '0')}-${name}.json`);
@@ -549,6 +554,18 @@ export function createTools({
       bytes,
       preview: text.slice(0, 1000),
     };
+  }
+
+  /**
+   * Final safety net: any result that would exceed the model-facing byte
+   * budget must become a spill pointer. The SDK wrapper also calls this, but
+   * doing it here covers every tool path including future handlers.
+   */
+  async function ensureSpill(name, value) {
+    if (value?.spilled === true) return value;
+    const text = JSON.stringify(redactValue(value), null, 2);
+    if (Buffer.byteLength(text) <= resultLimitBytes) return value;
+    return spill(name, value);
   }
 
   function evidencePath(file) {
@@ -617,7 +634,10 @@ export function createTools({
       onCall?.({ id, stage: 'start', name });
       // Central choke point: every tool result is sanitized before it can reach
       // the agent, result.json, the report or a spilled evidence file.
-      const result = redactValue(await fn(args));
+      let result = redactValue(await fn(args));
+      // Every oversized result must have a file pointer. This also covers
+      // handlers that return a list envelope without forcing a spill.
+      result = await ensureSpill(name, result);
       const durationMs = Date.now() - started;
       denialTracker.recordSuccess(name);
       calls.push({ name, args: redactValue(args), result: summarizeCallResult(result), durationMs });
@@ -1154,6 +1174,7 @@ export function createTools({
     dbQueryDir,
     dbQueries,
     calls,
+    ensureSpill,
     resetCommandCache,
   };
 }

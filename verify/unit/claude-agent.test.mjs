@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { z } from 'zod';
+import { MAX_TOOL_RESULT_BYTES } from '../../src/core/tool-limits.mjs';
 import {
   CLAUDE_SETTING_SOURCES,
   buildCachedSystemPrompt,
@@ -12,6 +13,7 @@ import {
   createClaudeAgent,
   redactToolOutputHook,
   sdkAuthOptions,
+  toolResultText,
   usageFromResult,
   validationStrategyPrompt,
 } from '../../src/agent/claude.mjs';
@@ -267,4 +269,13 @@ test('sdkAuthOptions keeps user settings by default and injects app credentials'
   assert.equal(custom.env.ANTHROPIC_BASE_URL, 'https://gateway.example.com');
   // env replaces the whole subprocess environment, so process.env must survive.
   assert.equal(custom.env.PATH, process.env.PATH);
+});
+
+test('tool result serialization never silently drops an oversized result', () => {
+  const small = toolResultText({ text: 'ok' });
+  assert.doesNotMatch(small, /TOOL_RESULT_UNSPILLED/);
+
+  const oversized = toolResultText({ text: 'x'.repeat(MAX_TOOL_RESULT_BYTES) });
+  assert.match(oversized, /TOOL_RESULT_UNSPILLED/);
+  assert.match(oversized, /no evidence pointer/);
 });

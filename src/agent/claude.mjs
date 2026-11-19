@@ -10,6 +10,7 @@ import { inside, isSensitivePath } from '../core/path-policy.mjs';
 import { checkWritablePath, writeDenialMessage } from '../core/write-policy.mjs';
 import { triagePromptLines } from '../core/triage.mjs';
 import { memoryPromptLines } from '../core/diagnosis-memory.mjs';
+import { MAX_TOOL_RESULT_BYTES } from '../core/tool-limits.mjs';
 import { boundaryGuidance, createDenialTracker } from '../tools/guidance.mjs';
 
 // Never use []: SDK isolation mode drops the user's Claude Code settings,
@@ -214,7 +215,6 @@ export function createReadOnlyToolPermission(allowedRoots = [], { cwd = process.
 }
 
 const DEFAULT_TIMEOUT_MS = 600_000;
-const MAX_TOOL_TEXT = 20_000;
 
 const SYSTEM_PROMPT = `你是 DebugCopilot 的后端问题定位助手。你的任务是结合请求、响应、日志与源码证据，定位问题并给出可执行的结论。
 
@@ -712,10 +712,12 @@ export function buildRepairPrompt(failure, previous = {}) {
   ].join('\n');
 }
 
-function toolResultText(value) {
+export function toolResultText(value) {
   const text = JSON.stringify(redactValue(value), null, 2);
-  if (text.length <= MAX_TOOL_TEXT) return text;
-  return `${text.slice(0, MAX_TOOL_TEXT)}\n… (tool result truncated)`;
+  if (Buffer.byteLength(text) <= MAX_TOOL_RESULT_BYTES) return text;
+  // ensureSpill() should have converted this into a pointer. Never silently
+  // drop the tail again: fail loudly so the missing evidence is visible.
+  return `TOOL_RESULT_UNSPILLED: result is ${Buffer.byteLength(text)} bytes (> ${MAX_TOOL_RESULT_BYTES}) and has no evidence pointer. Please report this tool result.`;
 }
 
 function normalizeRejectedHypotheses(value) {
@@ -919,8 +921,13 @@ function buildSdkTools(toolFn, specs, shapes, tools) {
   });
   const sdkTools = supported.map((spec) => toolFn(spec.name, spec.description, shapes[spec.name], async (args) => {
     const result = await tools.tools[spec.name](args);
+    // Last line of defence for a handler that bypassed safe()/ensureSpill():
+    // every oversized result must leave a file pointer before serialization.
+    const prepared = typeof tools.ensureSpill === 'function'
+      ? await tools.ensureSpill(spec.name, result)
+      : result;
     return {
-      content: [{ type: 'text', text: toolResultText(result) }],
+      content: [{ type: 'text', text: toolResultText(prepared) }],
       isError: Boolean(result?.error),
     };
   }));
