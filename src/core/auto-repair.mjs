@@ -18,11 +18,21 @@ function normalizeChangedFile(entry) {
   return entry?.file ?? entry?.relative ?? entry?.path ?? null;
 }
 
+export function failureSignature(failure) {
+  return JSON.stringify({
+    commands: (failure?.commands ?? []).map((entry) => entry.command),
+    errorLines: failure?.errorLines ?? [],
+    changedFiles: failure?.changedFiles ?? [],
+    outputTail: failure?.outputTail ?? '',
+  });
+}
+
 export function buildRepairFailure({
   verification,
   phase,
   changedFiles = [],
   previousFixes = [],
+  previousAttempts = [],
   attempt = 1,
 } = {}) {
   const output = String(verification?.output ?? '');
@@ -44,7 +54,14 @@ export function buildRepairFailure({
       .map((fix) => (typeof fix === 'string' ? fix : fix?.summary ?? fix?.file))
       .filter(Boolean)
       .slice(0, 10),
-    instruction: '只修复本次失败；不要重复相同修改；不要删除/跳过测试；环境/依赖问题请停止并说明。',
+    previousAttempts: previousAttempts.slice(-3).map((entry) => ({
+      attempt: entry.attempt,
+      changedFiles: (entry.changedFiles ?? []).slice(0, 20),
+      fixSummaries: (entry.fixSummaries ?? []).slice(0, 10),
+      errorLines: (entry.errorLines ?? []).slice(0, 10),
+      commands: (entry.commands ?? []).slice(0, 5),
+    })),
+    instruction: '只修复本次失败；带上并避免重复上一轮已尝试的相同修改；不要删除/跳过测试；环境/依赖问题请停止并说明。',
   };
 }
 
@@ -81,27 +98,47 @@ export function shouldAutoRepair({
   return { ok: true };
 }
 
-export function planRepairBudget({ workspace = {}, usage = null, config = null } = {}) {
+export function planRepairBudget({
+  workspace = {},
+  usage = null,
+  config = null,
+  elapsedMs = 0,
+  repairSpentUsd = 0,
+} = {}) {
   const retry = config ?? workspace.agent?.repairRetry ?? {};
   if (retry.enabled === false) return { ok: false, reason: 'disabled' };
-  const maxTurns = Math.max(1, Math.min(12, Number(retry.maxTurns ?? 6) || 6));
-  const maxBudgetUsd = Math.max(0.01, Number(retry.maxBudgetUsd ?? 1) || 1);
-  const timeoutMs = Math.max(10_000, Math.min(600_000, Number(retry.timeoutMs ?? 120_000) || 120_000));
+  const maxAttempts = Math.max(1, Math.min(5, Number(retry.maxAttempts ?? 3) || 3));
+  // maxRounds was the old (misleading) name for per-attempt model/tool turns.
+  const maxTurns = Math.max(1, Math.min(20, Number(retry.maxTurns ?? retry.maxRounds ?? 6) || 6));
+  const totalBudgetUsd = Math.max(0.01, Number(retry.maxBudgetUsd ?? 3) || 3);
+  const totalTimeoutMs = Math.max(10_000, Math.min(1_800_000, Number(retry.timeoutMs ?? 300_000) || 300_000));
   const globalMax = Number(workspace.agent?.maxBudgetUsd);
   const spent = Number(usage?.costUsd ?? 0) || 0;
-  const remaining = Number.isFinite(globalMax) && globalMax > 0
+  const spentRepair = Math.max(0, Number(repairSpentUsd) || 0);
+  const remainingRepair = totalBudgetUsd - spentRepair;
+  const remainingGlobal = Number.isFinite(globalMax) && globalMax > 0
     ? globalMax - spent
-    : maxBudgetUsd;
-  const budgetUsd = Math.min(maxBudgetUsd, remaining);
+    : Infinity;
+  const budgetUsd = Math.min(remainingRepair, remainingGlobal);
+  const remainingMs = totalTimeoutMs - Math.max(0, Number(elapsedMs) || 0);
   if (!Number.isFinite(budgetUsd) || budgetUsd <= 0.01) {
-    return { ok: false, reason: 'budget', remaining: Number.isFinite(remaining) ? remaining : 0 };
+    return {
+      ok: false,
+      reason: 'budget',
+      maxAttempts,
+      remaining: Number.isFinite(budgetUsd) ? budgetUsd : 0,
+    };
+  }
+  if (!Number.isFinite(remainingMs) || remainingMs <= 0) {
+    return { ok: false, reason: 'timeout', maxAttempts, remainingMs: Math.max(0, remainingMs) };
   }
   return {
     ok: true,
+    maxAttempts,
     budget: {
-      maxRounds: maxTurns,
+      maxTurns,
       maxBudgetUsd: Number(budgetUsd.toFixed(4)),
-      timeoutMs,
+      timeoutMs: Math.floor(remainingMs),
     },
   };
 }

@@ -44,6 +44,13 @@ test('saves workspace atomically and reads it back', async (t) => {
     maxTurns: null,
     maxBudgetUsd: 1.5,
     timeoutMs: 60000,
+    repairRetry: {
+      enabled: true,
+      maxAttempts: 3,
+      maxTurns: 6,
+      maxBudgetUsd: 3,
+      timeoutMs: 300000,
+    },
     toolMode: 'sandbox',
   });
   const reloaded = await createStore({ configDir: TMP }).getWorkspace();

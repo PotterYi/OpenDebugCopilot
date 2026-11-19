@@ -19,6 +19,7 @@ import {
 } from '../core/replay.mjs';
 import {
   buildRepairFailure,
+  failureSignature,
   mergeUsage,
   planRepairBudget,
   shouldAutoRepair,
@@ -754,79 +755,171 @@ async function diagnoseWithFired({
     changedFiles = [],
     previousFixes = [],
     allowUnknownFiles = false,
+    recheck: recheckFn = null,
   }) {
-    if (agent.id === 'mock' || typeof agent.followUp !== 'function') {
+    if (agent.id === 'mock' || typeof agent.followUp !== 'function' || typeof recheckFn !== 'function') {
       return { attempted: false, skippedReason: 'agent-no-repair' };
     }
-    const decision = shouldAutoRepair({
-      verification,
-      changedFiles,
-      recheck,
-      enabled: workspace.agent?.repairRetry?.enabled !== false,
-      allowUnknownFiles,
-    });
-    if (!decision.ok) return { attempted: false, skippedReason: decision.reason };
-    const plan = planRepairBudget({ workspace, usage: agentResult.usage });
-    if (!plan.ok) return { attempted: false, skippedReason: plan.reason };
-    const failure = buildRepairFailure({
-      verification,
-      phase,
-      changedFiles,
-      previousFixes,
-      attempt: 1,
-    });
-    progress('repair', '构建或必需测试失败，自动重试修复', 'start', failure.error);
-    await runLog.info(`auto-repair start phase=${phase} command=${failure.commands[0]?.command ?? '-'}`);
-    try {
-      const repair = await agent.followUp({
-        question: '',
-        previous: {
-          meta: { question },
-          agent: agentResult,
-          request: evidence.request,
-          response: evidence.response,
-          logs: evidence.logs,
-        },
-        tools: toolsBundle,
-        budget: plan.budget,
-        onToolUse: onAgentToolUse,
-        purpose: 'repair',
-        failure,
+    const startedAt = Date.now();
+    let current = { verification, changedFiles, previousFixes };
+    let maxAttempts = Math.max(1, Math.min(5, Number(workspace.agent?.repairRetry?.maxAttempts ?? 3) || 3));
+    let attempts = 0;
+    let repairSpentUsd = 0;
+    let lastFailure = null;
+    let lastPlan = null;
+    let lastError = null;
+    let skippedReason = null;
+    const history = [];
+
+    while (attempts < maxAttempts) {
+      const decision = shouldAutoRepair({
+        verification: current.verification,
+        changedFiles: current.changedFiles,
+        recheck,
+        enabled: workspace.agent?.repairRetry?.enabled !== false,
+        allowUnknownFiles,
       });
+      if (!decision.ok) {
+        if (attempts === 0) return { attempted: false, skippedReason: decision.reason };
+        skippedReason = decision.reason;
+        await runLog.info(`auto-repair stop attempt=${attempts} reason=${decision.reason}`);
+        break;
+      }
+      const plan = planRepairBudget({
+        workspace,
+        usage: agentResult.usage,
+        elapsedMs: Date.now() - startedAt,
+        repairSpentUsd,
+      });
+      if (!plan.ok) {
+        if (attempts === 0) return { attempted: false, skippedReason: plan.reason };
+        skippedReason = plan.reason;
+        await runLog.info(`auto-repair stop attempt=${attempts} reason=${plan.reason}`);
+        break;
+      }
+      maxAttempts = Math.min(maxAttempts, plan.maxAttempts);
+      const attempt = attempts + 1;
+      const failure = buildRepairFailure({
+        verification: current.verification,
+        phase,
+        changedFiles: current.changedFiles,
+        previousFixes: current.previousFixes,
+        previousAttempts: history,
+        attempt,
+      });
+      if (lastFailure && failureSignature(lastFailure) === failureSignature(failure)) {
+        skippedReason = 'no-progress';
+        await runLog.info(`auto-repair stop attempt=${attempts} reason=no-progress`);
+        break;
+      }
+      attempts = attempt;
+      lastFailure = failure;
+      lastPlan = plan;
+      progress('repair', `自动修复尝试 ${attempt}/${maxAttempts}`, 'start', failure.error);
+      await runLog.info(`auto-repair start attempt=${attempt}/${maxAttempts} phase=${phase} command=${failure.commands[0]?.command ?? '-'}`);
+
+      let repair;
+      try {
+        repair = await agent.followUp({
+          question: '',
+          previous: {
+            meta: { question },
+            agent: agentResult,
+            request: evidence.request,
+            response: evidence.response,
+            logs: evidence.logs,
+          },
+          tools: toolsBundle,
+          budget: plan.budget,
+          onToolUse: onAgentToolUse,
+          purpose: 'repair',
+          failure,
+        });
+      } catch (error) {
+        lastError = error?.message ?? String(error);
+        skippedReason = 'repair-error';
+        progress('repair', '自动修复失败', 'error', lastError);
+        await runLog.error(`auto-repair failed: ${lastError}`);
+        break;
+      }
+
       agentResult.usage = mergeUsage(agentResult.usage, repair.usage);
-      const info = {
-        attempted: true,
-        attempts: 1,
-        failure,
-        budget: plan.budget,
-        usage: repair.usage ?? null,
-        status: 'completed',
-      };
-      agentResult.repair = info;
+      repairSpentUsd += Number(repair.usage?.costUsd ?? 0) || 0;
       if (repair.needsMoreInfo?.length) {
         agentResult.needsMoreInfo = [...(agentResult.needsMoreInfo ?? []), ...repair.needsMoreInfo];
       }
-      progress('repair', '自动重试修复完成', 'done');
-      await runLog.info(`auto-repair done turns=${repair.usage?.numTurns ?? '?'} cost=${repair.usage?.costUsd ?? '?'}`);
-      return { attempted: true, repair, info };
-    } catch (error) {
-      const info = {
-        attempted: true,
-        attempts: 1,
-        failure,
-        budget: plan.budget,
-        status: 'error',
-        error: error?.message ?? String(error),
+
+      let next;
+      try {
+        next = await recheckFn({ repair, failure, attempt });
+      } catch (error) {
+        lastError = error?.message ?? String(error);
+        skippedReason = 'recheck-error';
+        break;
+      }
+      const nextChangedFiles = next?.changedFiles ?? current.changedFiles;
+      const nextFixes = next?.previousFixes ?? current.previousFixes;
+      history.push({
+        attempt,
+        changedFiles: nextChangedFiles.slice(0, 20),
+        fixSummaries: nextFixes
+          .map((fix) => (typeof fix === 'string' ? fix : fix?.summary ?? fix?.file))
+          .filter(Boolean)
+          .slice(0, 10),
+        errorLines: (failure.errorLines ?? []).slice(0, 10),
+        commands: (failure.commands ?? []).map((entry) => entry.command).slice(0, 5),
+      });
+      current = {
+        verification: next?.verification ?? current.verification,
+        changedFiles: nextChangedFiles,
+        previousFixes: nextFixes,
       };
-      agentResult.repair = info;
+      if (current.verification?.status !== 'failed') break;
+      if (next?.progress === false) {
+        skippedReason = 'no-progress';
+        await runLog.info(`auto-repair stop attempt=${attempts} reason=no-progress-after-recheck`);
+        break;
+      }
+    }
+
+    if (lastError) {
       agentResult.needsMoreInfo = [
         ...(agentResult.needsMoreInfo ?? []),
-        `自动重试修复失败：${error?.message ?? error}`,
+        `自动修复未完成：${lastError}`,
       ];
-      progress('repair', '自动重试修复失败', 'error', error?.message ?? String(error));
-      await runLog.error(`auto-repair failed: ${error?.message ?? error}`);
-      return { attempted: true, error, info };
     }
+    const info = {
+      attempted: attempts > 0,
+      attempts,
+      maxAttempts,
+      failure: lastFailure,
+      lastFailure,
+      history,
+      budget: lastPlan?.budget ?? null,
+      finalStatus: current.verification?.status ?? 'unknown',
+      skippedReason: skippedReason ?? undefined,
+      ...(lastError ? { error: lastError } : {}),
+    };
+    if (attempts > 0) agentResult.repair = info;
+    if (attempts > 0) {
+      progress(
+        'repair',
+        current.verification?.status === 'failed'
+          ? `自动修复结束（${attempts} 次尝试，仍失败）`
+          : `自动修复结束（${attempts} 次尝试，已通过）`,
+        current.verification?.status === 'failed' ? 'error' : 'done',
+        current.verification?.error ?? current.verification?.testError ?? current.verification?.reason,
+      );
+      await runLog.info(`auto-repair done attempts=${attempts} final=${current.verification?.status ?? 'unknown'} cost=${repairSpentUsd}`);
+    }
+    return {
+      attempted: attempts > 0,
+      info,
+      verification: current.verification,
+      changedFiles: current.changedFiles,
+      previousFixes: current.previousFixes,
+      history,
+    };
   }
 
   if (sandboxContext) {
@@ -891,27 +984,53 @@ async function diagnoseWithFired({
             phase: 'in-place-self-check',
             changedFiles: extracted.changedFiles,
             previousFixes: agentResult.fixes,
+            recheck: async () => {
+              extracted = await sandboxContext.extract();
+              extractedFixes = (extracted.fixes ?? []).map((fix) => ({
+                ...fix,
+                workspaceApplied: true,
+                pendingDecision: true,
+              }));
+              agentResult.fixes = [...previewedExtras, ...extractedFixes];
+              const hasChangesAfter = (extracted.changedFiles?.length ?? 0) > 0
+                || (toolMode === 'full' && wroteWorkspace);
+              selfCheck = hasChangesAfter
+                ? await sandboxContext.runSelfCheck()
+                : {
+                    status: 'failed',
+                    ok: false,
+                    error: '自动修复回合没有产生新的文件修改',
+                    commands: [],
+                    durationMs: 0,
+                    output: '',
+                  };
+              agentResult.workspaceSession = {
+                ...agentResult.workspaceSession,
+                changedFiles: extracted.changedFiles,
+                touchedFiles: extracted.touchedFiles ?? [],
+                skipped: extracted.skipped,
+                conflicts: extracted.conflicts,
+                selfCheck,
+              };
+              agentResult.verification = {
+                scope: 'workspace',
+                mode: 'in-place',
+                ...selfCheck,
+              };
+              const retryUi = verificationProgress(selfCheck, '自动修复复验');
+              progress('selfcheck', retryUi.label, retryUi.level, retryUi.detail);
+              await runLog.info(`in-place auto-repair recheck=${selfCheck.status}`);
+              return {
+                verification: selfCheck,
+                changedFiles: extracted.changedFiles,
+                previousFixes: agentResult.fixes,
+                progress: hasChangesAfter,
+              };
+            },
           });
           if (repair.attempted) {
-            extracted = await sandboxContext.extract();
-            extractedFixes = (extracted.fixes ?? []).map((fix) => ({
-              ...fix,
-              workspaceApplied: true,
-              pendingDecision: true,
-            }));
-            agentResult.fixes = [...previewedExtras, ...extractedFixes];
-            const hasChangesAfter = (extracted.changedFiles?.length ?? 0) > 0
-              || (toolMode === 'full' && wroteWorkspace);
-            selfCheck = hasChangesAfter
-              ? await sandboxContext.runSelfCheck()
-              : {
-                  status: 'failed',
-                  ok: false,
-                  error: '自动修复回合没有产生新的文件修改',
-                  commands: [],
-                  durationMs: 0,
-                  output: '',
-                };
+            selfCheck = repair.verification;
+            selfCheck.repair = { ...repair.info, finalStatus: selfCheck.status };
             agentResult.workspaceSession = {
               ...agentResult.workspaceSession,
               changedFiles: extracted.changedFiles,
@@ -920,21 +1039,11 @@ async function diagnoseWithFired({
               conflicts: extracted.conflicts,
               selfCheck,
             };
-            selfCheck.repair = { ...repair.info, finalStatus: selfCheck.status };
             agentResult.verification = {
               scope: 'workspace',
               mode: 'in-place',
               ...selfCheck,
             };
-            progress(
-              'selfcheck',
-              selfCheck.status === 'passed'
-                ? '自动重试后编译自测通过，等待保留/丢弃'
-                : '自动重试后编译自测仍失败',
-              selfCheck.status === 'passed' ? 'done' : 'error',
-              selfCheck.error ?? selfCheck.reason,
-            );
-            await runLog.info(`in-place auto-repair selfCheck=${selfCheck.status}`);
           } else {
             selfCheck.repair = {
               attempted: false,
@@ -943,6 +1052,7 @@ async function diagnoseWithFired({
             agentResult.verification.repair = selfCheck.repair;
           }
         }
+
         if (extracted.skipped.length > 0 || extracted.conflicts.length > 0) {
           agentResult.needsMoreInfo = [
             ...(agentResult.needsMoreInfo ?? []),
@@ -1035,13 +1145,7 @@ async function diagnoseWithFired({
         await runLog.info(`sandbox self-check ${verification.status} commands=${(verification.commands ?? []).length}`);
 
         if (verification.status === 'failed') {
-          const repair = await attemptRepair({
-            verification,
-            phase: 'sandbox-self-check',
-            changedFiles: extracted.changedFiles,
-            previousFixes: extracted.fixes,
-          });
-          if (repair.attempted) {
+          const recheckSandbox = async () => {
             extracted = await extractSandboxFixes(sandboxContext);
             agentResult.sandbox = {
               changedFiles: extracted.changedFiles,
@@ -1052,11 +1156,32 @@ async function diagnoseWithFired({
               scope: 'sandbox',
               mode: 'copy',
               ...verification,
+            };
+            const retryUi = verificationProgress(verification, '自动修复复验（沙箱）');
+            progress('selfcheck', retryUi.label, retryUi.level, retryUi.detail);
+            await runLog.info(`sandbox auto-repair recheck=${verification.status}`);
+            return {
+              verification,
+              changedFiles: extracted.changedFiles,
+              previousFixes: extracted.fixes,
+              progress: (extracted.changedFiles?.length ?? 0) > 0,
+            };
+          };
+          const repair = await attemptRepair({
+            verification,
+            phase: 'sandbox-self-check',
+            changedFiles: extracted.changedFiles,
+            previousFixes: extracted.fixes,
+            recheck: recheckSandbox,
+          });
+          if (repair.attempted) {
+            verification = repair.verification;
+            agentResult.verification = {
+              scope: 'sandbox',
+              mode: 'copy',
+              ...verification,
               repair: { ...repair.info, finalStatus: verification.status },
             };
-            const retryUi = verificationProgress(verification, '自动重试后沙箱内');
-            progress('selfcheck', retryUi.label, retryUi.level, retryUi.detail);
-            await runLog.info(`sandbox auto-repair selfCheck=${verification.status}`);
           } else {
             agentResult.verification.repair = {
               attempted: false,
@@ -1131,23 +1256,38 @@ async function diagnoseWithFired({
       reportVerification(verification);
       await runLog.info(`workspace self-check ${verification.status} commands=${(verification.commands ?? []).length}`);
       if (verification.status === 'failed') {
+        const recheckFull = async () => {
+          verification = await runFullCheck();
+          agentResult.verification = {
+            scope: 'workspace',
+            mode: 'full',
+            ...verification,
+          };
+          reportVerification(verification);
+          await runLog.info(`workspace auto-repair recheck=${verification.status}`);
+          return {
+            verification,
+            changedFiles: [],
+            previousFixes: agentResult.fixes,
+            progress: true,
+          };
+        };
         const repair = await attemptRepair({
           verification,
           phase: 'workspace-self-check',
           changedFiles: [],
           previousFixes: agentResult.fixes,
           allowUnknownFiles: true,
+          recheck: recheckFull,
         });
         if (repair.attempted) {
-          verification = await runFullCheck();
+          verification = repair.verification;
           agentResult.verification = {
             scope: 'workspace',
             mode: 'full',
             ...verification,
             repair: { ...repair.info, finalStatus: verification.status },
           };
-          reportVerification(verification);
-          await runLog.info(`workspace auto-repair selfCheck=${verification.status}`);
         } else {
           agentResult.verification.repair = {
             attempted: false,
@@ -1155,6 +1295,7 @@ async function diagnoseWithFired({
           };
         }
       }
+
       if (verification.status === 'failed') {
         agentResult.needsMoreInfo = [
           ...(agentResult.needsMoreInfo ?? []),

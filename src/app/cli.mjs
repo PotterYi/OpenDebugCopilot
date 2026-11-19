@@ -401,6 +401,14 @@ function printDiagnosis(result, runDir, root, { workspaceUndecided = false } = {
           ...(Array.isArray(result.agent.verification.suspicions) && result.agent.verification.suspicions.length
             ? [`  Suspicion  : ${result.agent.verification.suspicions.length} 条（${result.agent.verification.suspicions.slice(0, 3).map((item) => `[${item.phase}] ${item.line}`).join('；')}）`]
             : []),
+          ...(result.agent.verification.repair?.attempted
+            ? [
+                `  Repair     : ${result.agent.verification.repair.attempts ?? '?'}/${result.agent.verification.repair.maxAttempts ?? '?'} 次，${result.agent.verification.repair.finalStatus === 'passed' ? '最终通过' : '仍失败'}`,
+                ...(result.agent.verification.repair.failure?.errorLines?.length
+                  ? [`  RepairErr  : ${result.agent.verification.repair.failure.errorLines.slice(0, 3).join('；')}`]
+                  : []),
+              ]
+            : []),
         ]
       : []),
     ...(workspace

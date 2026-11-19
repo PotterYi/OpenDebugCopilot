@@ -1150,7 +1150,7 @@ export function createClaudeAgent({
         alwaysLoad: true,
       });
 
-      const turnLimit = budget?.maxRounds ?? maxTurns;
+      const turnLimit = budget?.maxTurns ?? budget?.maxRounds ?? maxTurns;
       const dynamicSystemSuffix = `${turnLimitNote(turnLimit)}${scope.systemPromptSuffix}${modeSuffix}${validationStrategyPrompt(scope.toolMode)}`;
       const systemPrompt = buildCachedSystemPrompt(
         SYSTEM_PROMPT,
@@ -1316,7 +1316,7 @@ export function createClaudeAgent({
           alwaysLoad: true,
         });
       }
-      const followUpTurnLimit = budget?.maxRounds ?? maxTurns;
+      const followUpTurnLimit = budget?.maxTurns ?? budget?.maxRounds ?? maxTurns;
       const followUpBudgetUsd = Number.isFinite(budget?.maxBudgetUsd) ? budget.maxBudgetUsd : maxBudgetUsd;
       const followUpTimeoutMs = Number.isFinite(budget?.timeoutMs)
         ? Math.max(1000, budget.timeoutMs)

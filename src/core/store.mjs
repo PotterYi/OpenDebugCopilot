@@ -22,6 +22,13 @@ export const DEFAULT_WORKSPACE = Object.freeze({
     maxBudgetUsd: null,
     timeoutMs: 600000,
     toolMode: 'sandbox',
+    repairRetry: {
+      enabled: true,
+      maxAttempts: 3,
+      maxTurns: 6,
+      maxBudgetUsd: 3,
+      timeoutMs: 300000,
+    },
   },
   window: { beforeMs: 3000, afterMs: 2000 },
   replay: {
@@ -61,6 +68,22 @@ export function validateWorkspace(value) {
         maxTurns: Number.isFinite(maxTurns) && maxTurns > 0 ? Math.floor(maxTurns) : null,
         maxBudgetUsd: Number.isFinite(maxBudget) && maxBudget > 0 ? maxBudget : null,
         timeoutMs: Number.isFinite(timeout) && timeout > 0 ? Math.floor(timeout) : DEFAULT_WORKSPACE.agent.timeoutMs,
+        repairRetry: (() => {
+          const repair = isObject(raw.repairRetry) ? raw.repairRetry : {};
+          const attempts = Number(repair.maxAttempts ?? DEFAULT_WORKSPACE.agent.repairRetry.maxAttempts);
+          const turns = Number(repair.maxTurns ?? repair.maxRounds ?? DEFAULT_WORKSPACE.agent.repairRetry.maxTurns);
+          const budget = Number(repair.maxBudgetUsd ?? DEFAULT_WORKSPACE.agent.repairRetry.maxBudgetUsd);
+          const repairTimeout = Number(repair.timeoutMs ?? DEFAULT_WORKSPACE.agent.repairRetry.timeoutMs);
+          return {
+            enabled: repair.enabled !== false,
+            maxAttempts: Number.isFinite(attempts) ? Math.max(1, Math.min(5, Math.floor(attempts))) : 3,
+            maxTurns: Number.isFinite(turns) ? Math.max(1, Math.min(20, Math.floor(turns))) : 6,
+            maxBudgetUsd: Number.isFinite(budget) && budget > 0 ? budget : 3,
+            timeoutMs: Number.isFinite(repairTimeout) && repairTimeout > 0
+              ? Math.max(10_000, Math.min(1_800_000, Math.floor(repairTimeout)))
+              : 300_000,
+          };
+        })(),
         toolMode: (() => {
           if (['readonly', 'sandbox', 'full'].includes(raw.toolMode)) return raw.toolMode;
           // Legacy boolean: sandbox=false meant read-only.

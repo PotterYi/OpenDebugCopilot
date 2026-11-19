@@ -90,13 +90,15 @@ test('renders the automatic repair retry section', () => {
         commands: [{ command: 'mvn -q -DskipTests compile' }],
         repair: {
           attempted: true,
+          attempts: 2,
+          maxAttempts: 3,
           finalStatus: 'passed',
           failure: {
             error: '编译/测试验证失败',
             errorLines: ['OrderService.java:12: error: cannot find symbol'],
             commands: ['mvn -q -DskipTests compile'],
           },
-          budget: { maxRounds: 6, maxBudgetUsd: 1, timeoutMs: 120000 },
+          budget: { maxTurns: 6, maxBudgetUsd: 1, timeoutMs: 120000 },
           usage: { numTurns: 1, costUsd: 0.01 },
         },
       },
@@ -104,7 +106,7 @@ test('renders the automatic repair retry section', () => {
   };
   const markdown = renderMarkdown(buildReport(withRepair));
   assert.match(markdown, /## 修复重试/);
-  assert.match(markdown, /重试后通过/);
+  assert.match(markdown, /2\/3 次，最终通过/);
   assert.match(markdown, /OrderService\.java:12/);
   assert.match(markdown, /\$0\.0100/);
 });

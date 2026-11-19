@@ -160,6 +160,8 @@ export function buildReport(result) {
           repair: agent.verification.repair
             ? {
                 attempted: Boolean(agent.verification.repair.attempted),
+                attempts: agent.verification.repair.attempts ?? null,
+                maxAttempts: agent.verification.repair.maxAttempts ?? null,
                 finalStatus: agent.verification.repair.finalStatus ?? null,
                 skippedReason: agent.verification.repair.skippedReason ?? null,
                 error: scrubText(agent.verification.repair.error ?? ''),
@@ -539,7 +541,7 @@ export function renderMarkdown(report) {
     if (verification.repair) {
       const repair = verification.repair;
       const repairStatus = repair.attempted
-        ? (repair.finalStatus === 'passed' ? '重试后通过' : '重试后仍失败')
+        ? `尝试 ${repair.attempts ?? '?'}/${repair.maxAttempts ?? '?'} 次，${repair.finalStatus === 'passed' ? '最终通过' : '仍失败'}`
         : `未执行（${repair.skippedReason ?? '不满足条件'}）`;
       lines.push(
         '',
@@ -551,7 +553,7 @@ export function renderMarkdown(report) {
           ? ['- 错误摘要：', ...repair.failure.errorLines.map((line) => `  - ${line}`)]
           : []),
         ...(repair.budget
-          ? [`- 预算：${repair.budget.maxRounds ?? '?'} 轮 / $${repair.budget.maxBudgetUsd ?? '?'} / ${repair.budget.timeoutMs ?? '?'}ms`]
+          ? [`- 预算：每次最多 ${repair.budget.maxTurns ?? repair.budget.maxRounds ?? '?'} 个工具轮 / 剩余 $${repair.budget.maxBudgetUsd ?? '?'} / ${repair.budget.timeoutMs ?? '?'}ms`]
           : []),
         ...(repair.usage?.costUsd != null
           ? [`- 用量：${repair.usage.numTurns ?? '?'} 轮 / $${Number(repair.usage.costUsd).toFixed(4)}`]

@@ -58,7 +58,8 @@ test('plans a bounded repair budget', () => {
     usage: { costUsd: 0.4 },
   });
   assert.equal(enabled.ok, true);
-  assert.deepEqual(enabled.budget, { maxRounds: 4, maxBudgetUsd: 0.5, timeoutMs: 30000 });
+  assert.deepEqual(enabled.budget, { maxTurns: 4, maxBudgetUsd: 0.5, timeoutMs: 30000 });
+  assert.equal(enabled.maxAttempts, 3);
 
   const exhausted = planRepairBudget({
     workspace: { agent: { maxBudgetUsd: 0.5, repairRetry: { maxBudgetUsd: 1 } } },
@@ -117,7 +118,7 @@ test('merges initial and repair usage', () => {
   assert.deepEqual(merged.perTurn, [{ id: 'a' }, { id: 'b', attempt: 2 }]);
 });
 
-test('automatically retries a failing sandbox self-check once', async (t) => {
+test('automatically retries a failing sandbox self-check up to configured attempts', async (t) => {
   const dir = tempDir('auto-repair-test');
   await rm(dir, { recursive: true, force: true });
   await mkdir(path.join(dir, 'src'), { recursive: true });
@@ -157,7 +158,11 @@ test('automatically retries a failing sandbox self-check once', async (t) => {
       assert.equal(failure.status, 'failed');
       assert.match(failure.outputTail, /answer\.txt is wrong/);
       repairCalls += 1;
-      await writeAnswer('good\n');
+      if (failure.attempt === 2) {
+        assert.equal(failure.previousAttempts.length, 1);
+        assert.ok(failure.previousAttempts[0].changedFiles.some((file) => file.includes('answer.txt')));
+      }
+      await writeAnswer(failure.attempt === 1 ? 'still-bad\n' : 'good\n');
       return {
         conclusion: '已修复',
         evidenceRefs: [{ type: 'request', ref: 'request' }],
@@ -190,12 +195,31 @@ test('automatically retries a failing sandbox self-check once', async (t) => {
   });
   const { result } = outcome;
 
-  assert.equal(repairCalls, 1);
+  assert.equal(repairCalls, 2);
   assert.equal(result.agent.repair.attempted, true);
+  assert.equal(result.agent.repair.attempts, 2);
   assert.equal(result.agent.verification.status, 'passed');
   assert.equal(result.agent.verification.repair.finalStatus, 'passed');
-  assert.equal(result.agent.usage.costUsd, 0.03);
-  assert.equal(result.agent.usage.numTurns, 2);
+  assert.equal(result.agent.usage.costUsd, 0.05);
+  assert.equal(result.agent.usage.numTurns, 3);
   assert.ok(result.agent.fixes.some((fix) => /answer\.txt/.test(fix.file ?? fix.content ?? '')));
   if (outcome.workspaceSession) await outcome.workspaceSession.discard();
+});
+
+test('uses three attempts and a shared total budget by default', () => {
+  const plan = planRepairBudget({ workspace: { agent: { repairRetry: {} } } });
+  assert.equal(plan.ok, true);
+  assert.equal(plan.maxAttempts, 3);
+  assert.equal(plan.budget.maxTurns, 6);
+  assert.equal(plan.budget.maxBudgetUsd, 3);
+  assert.equal(plan.budget.timeoutMs, 300000);
+
+  const remaining = planRepairBudget({
+    workspace: { agent: { repairRetry: { maxBudgetUsd: 1, timeoutMs: 300000 } } },
+    repairSpentUsd: 0.6,
+    elapsedMs: 250000,
+  });
+  assert.equal(remaining.ok, true);
+  assert.equal(remaining.budget.maxBudgetUsd, 0.4);
+  assert.equal(remaining.budget.timeoutMs, 50000);
 });

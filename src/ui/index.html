@@ -442,6 +442,23 @@
           <option value="full">完全权限（最高权限：原地工作区 + Bash，危险命令确认）</option>
         </select>
       </label>
+      <div class="panel-head"><h3>自动修复</h3></div>
+      <label class="inline">
+        <input id="model-repair-enabled" type="checkbox" /> 构建/测试失败时自动修复
+      </label>
+      <label>修复尝试次数
+        <input id="model-repair-attempts" type="number" min="1" max="5" step="1" placeholder="3" />
+      </label>
+      <label>每次最多工具轮数
+        <input id="model-repair-turns" type="number" min="1" max="20" step="1" placeholder="6" />
+      </label>
+      <label>修复总预算（USD）
+        <input id="model-repair-budget" type="number" min="0.01" step="0.01" placeholder="3" />
+      </label>
+      <label>修复总超时（秒）
+        <input id="model-repair-timeout" type="number" min="10" step="1" placeholder="300" />
+      </label>
+      <p class="muted small">尝试次数是真正的修复循环次数；预算和超时是整个循环的总量。每轮会带上上一轮改动和失败行。</p>
       <p class="muted small">默认 60 轮、超时 600 秒；轮次留空表示不限制。完全权限在原地工作区直接修改；构建/测试类 Bash 直接执行，其他 Bash 命令会额外确认；修改写入 baseline/journal，结束时选择保留或丢弃。请仅在受控环境使用。</p>
 
       <div id="agent-auth-section" class="agent-auth">

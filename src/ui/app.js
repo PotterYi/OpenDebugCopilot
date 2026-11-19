@@ -77,6 +77,11 @@ const modelMaxTurnsInput = $('model-max-turns');
 const modelMaxBudgetInput = $('model-max-budget');
 const modelTimeoutInput = $('model-timeout');
 const modelToolModeInput = $('model-tool-mode');
+const modelRepairEnabledInput = $('model-repair-enabled');
+const modelRepairAttemptsInput = $('model-repair-attempts');
+const modelRepairTurnsInput = $('model-repair-turns');
+const modelRepairBudgetInput = $('model-repair-budget');
+const modelRepairTimeoutInput = $('model-repair-timeout');
 const agentAuthSection = $('agent-auth-section');
 const agentAuthModes = $('agent-auth-modes');
 const agentAuthBaseRow = $('agent-auth-base-row');
@@ -1837,10 +1842,13 @@ function appendRepairBadge(summary, repair) {
     summary.append(el('span', 'muted small', `未自动重试${repair.skippedReason ? `：${repair.skippedReason}` : ''}`));
     return;
   }
+  const attemptText = repair.attempts != null
+    ? `（${repair.attempts}/${repair.maxAttempts ?? '?'} 次）`
+    : '';
   summary.append(el(
     'span',
     `badge ${repair.finalStatus === 'passed' ? 'ok' : 'error'}`,
-    repair.finalStatus === 'passed' ? '自动重试通过' : '自动重试仍失败',
+    `${repair.finalStatus === 'passed' ? '自动修复通过' : '自动修复仍失败'}${attemptText}`,
   ));
   if (repair.usage?.costUsd != null) {
     summary.append(el('span', 'muted small', `重试 $${Number(repair.usage.costUsd).toFixed(4)}`));
@@ -3665,6 +3673,12 @@ async function openModelModal({ focus = null } = {}) {
   modelToolModeInput.value = ['readonly', 'sandbox', 'full'].includes(agent.toolMode)
     ? agent.toolMode
     : (agent.sandbox === false ? 'readonly' : 'sandbox');
+  const repairRetry = agent.repairRetry ?? {};
+  modelRepairEnabledInput.checked = repairRetry.enabled !== false;
+  modelRepairAttemptsInput.value = repairRetry.maxAttempts ?? 3;
+  modelRepairTurnsInput.value = repairRetry.maxTurns ?? repairRetry.maxRounds ?? 6;
+  modelRepairBudgetInput.value = repairRetry.maxBudgetUsd ?? 3;
+  modelRepairTimeoutInput.value = Math.round((repairRetry.timeoutMs ?? 300000) / 1000);
   modelModal.hidden = false;
   hideBrowserForModal();
   agentAuthSection.hidden = false;
@@ -3721,6 +3735,10 @@ async function saveModelSettings() {
   const maxBudget = Number(modelMaxBudgetInput.value);
   // The modal shows seconds; workspace.agent.timeoutMs stays in milliseconds.
   const timeoutSeconds = Number(modelTimeoutInput.value);
+  const repairAttempts = Number(modelRepairAttemptsInput.value);
+  const repairTurns = Number(modelRepairTurnsInput.value);
+  const repairBudget = Number(modelRepairBudgetInput.value);
+  const repairTimeoutSeconds = Number(modelRepairTimeoutInput.value);
   const agent = {
     model,
     maxTurns: Number.isFinite(maxTurns) && maxTurns > 0 ? Math.floor(maxTurns) : null,
@@ -3729,6 +3747,19 @@ async function saveModelSettings() {
       ? Math.floor(timeoutSeconds * 1000)
       : 600000,
     toolMode: modelToolModeInput.value,
+    repairRetry: {
+      enabled: modelRepairEnabledInput.checked,
+      maxAttempts: Number.isFinite(repairAttempts) && repairAttempts > 0
+        ? Math.max(1, Math.min(5, Math.floor(repairAttempts)))
+        : 3,
+      maxTurns: Number.isFinite(repairTurns) && repairTurns > 0
+        ? Math.max(1, Math.min(20, Math.floor(repairTurns)))
+        : 6,
+      maxBudgetUsd: Number.isFinite(repairBudget) && repairBudget > 0 ? repairBudget : 3,
+      timeoutMs: Number.isFinite(repairTimeoutSeconds) && repairTimeoutSeconds > 0
+        ? Math.max(10_000, Math.min(1_800_000, Math.floor(repairTimeoutSeconds * 1000)))
+        : 300000,
+    },
   };
   try {
     if (authPayload) {
