@@ -588,9 +588,15 @@ export function buildFollowUpPrompt(question, previous = {}) {
     verification: agent.verification
       ? {
           status: agent.verification.status,
+          buildStatus: agent.verification.buildStatus,
+          testStatus: agent.verification.testStatus,
+          testRequired: Boolean(agent.verification.testRequired),
+          testBlocking: Boolean(agent.verification.testBlocking),
           mode: agent.verification.mode,
           error: agent.verification.error,
+          testError: agent.verification.testError,
           reason: agent.verification.reason,
+          testReason: agent.verification.testReason,
           commands: (agent.verification.commands ?? []).slice(0, 5).map((entry) => entry.command).filter(Boolean),
         }
       : null,

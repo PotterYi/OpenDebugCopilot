@@ -30,7 +30,7 @@ export function buildRepairFailure({
     attempt,
     phase,
     status: 'failed',
-    error: redactSecrets(verification?.error ?? '编译/测试验证失败'),
+    error: redactSecrets(verification?.error ?? '构建或必需测试验证失败'),
     commands: (verification?.commands ?? []).map((entry) => ({
       command: redactSecrets(entry.command ?? ''),
       exitCode: entry.exitCode ?? null,

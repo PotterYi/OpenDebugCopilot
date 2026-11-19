@@ -136,6 +136,19 @@ export function buildReport(result) {
           reason: scrubText(agent.verification.reason ?? ''),
           durationMs: agent.verification.durationMs ?? null,
           commands: (agent.verification.commands ?? []).map((entry) => entry.command).filter(Boolean),
+          buildStatus: agent.verification.buildStatus ?? agent.verification.status ?? 'unknown',
+          testStatus: agent.verification.testStatus ?? 'skipped',
+          testRequired: Boolean(agent.verification.testRequired),
+          testBlocking: Boolean(agent.verification.testBlocking),
+          testError: agent.verification.testError ? scrubText(agent.verification.testError) : null,
+          testReason: agent.verification.testReason ? scrubText(agent.verification.testReason) : null,
+          testsAvailable: Boolean(agent.verification.testsAvailable),
+          testHints: (agent.verification.testHints ?? []).map((hint) => ({
+            command: scrubText(hint.command ?? ''),
+            reason: hint.reason ? scrubText(hint.reason) : null,
+          })),
+          buildCommands: (agent.verification.buildCommands ?? []).map((entry) => entry.command).filter(Boolean),
+          testCommands: (agent.verification.testCommands ?? []).map((entry) => entry.command).filter(Boolean),
           repair: agent.verification.repair
             ? {
                 attempted: Boolean(agent.verification.repair.attempted),
@@ -216,7 +229,12 @@ export function buildReport(result) {
       frontendErrors: result.frontend?.errors?.length ?? 0,
       frontendSources: result.frontend?.files?.length ?? 0,
     },
-    selfCheck: (result.gates?.checks ?? []).map((check) => ({ name: check.name, ok: check.ok })),
+    selfCheck: (result.gates?.checks ?? []).map((check) => ({
+      name: check.name,
+      ok: check.ok,
+      severity: check.severity ?? null,
+      detail: check.detail ? scrubText(check.detail) : null,
+    })),
     recheck: result.recheck
       ? {
           verdict: result.recheck.verdict,
@@ -280,9 +298,9 @@ function memorySourceLabel(source) {
 
 function verificationLevelLabel(level) {
   return {
-    verified: '已验证（编译/测试通过 + 症状确认）',
-    'symptom-verified': '症状已确认（编译/测试未执行）',
-    unverified: '待确认（编译/测试通过，症状未确认）',
+    verified: '已验证（构建自检通过 + 症状确认）',
+    'symptom-verified': '症状已确认（构建/测试未执行）',
+    unverified: '待确认（构建自检通过，症状未确认）',
     failed: '验证失败',
   }[level] ?? '未提供';
 }
@@ -456,25 +474,42 @@ export function renderMarkdown(report) {
     '',
     '## 自检',
     '',
-    ...report.selfCheck.map((check) => `- ${check.name}：${yesNo(check.ok)}`),
+    ...report.selfCheck.map((check) => {
+      if (check.severity === 'warn') {
+        return `- ${check.name}：⚠ ${check.ok ? '通过（有警告）' : '警告'}${check.detail ? `（${check.detail}）` : ''}`;
+      }
+      return `- ${check.name}：${yesNo(check.ok)}${check.detail ? `（${check.detail}）` : ''}`;
+    }),
   );
 
   if (report.verification) {
     const verification = report.verification;
-    const statusLabel = verification.status === 'passed'
+    const buildStatus = verification.buildStatus ?? verification.status;
+    const testStatus = verification.testStatus ?? 'skipped';
+    const buildLabel = buildStatus === 'passed' ? '通过' : buildStatus === 'failed' ? '失败' : '未执行';
+    const testLabel = testStatus === 'passed'
       ? '通过'
-      : verification.status === 'failed'
-        ? '失败'
+      : testStatus === 'failed'
+        ? `失败（${verification.testBlocking ? '已阻断' : '未阻断，需人工确认'}）`
         : '未执行';
     lines.push(
       '',
-      '## 编译/测试验证',
+      '## 构建自检',
       '',
-      `- 状态：${statusLabel}${verification.mode ? `（${verification.mode}）` : ''}`,
-      ...(verification.commands?.length ? [`- 命令：${verification.commands.join('；')}`] : []),
-      ...(verification.durationMs ? [`- 耗时：${verification.durationMs} ms`] : []),
+      `- 状态：${buildLabel}${verification.mode ? `（${verification.mode}）` : ''}`,
+      ...(verification.buildCommands?.length ? [`- 命令：${verification.buildCommands.join('；')}`] : []),
       ...(verification.error ? [`- 错误：${verification.error}`] : []),
-      ...(verification.reason ? [`- 说明：${verification.reason}`] : []),
+      ...(buildStatus === 'skipped' && verification.reason ? [`- 说明：${verification.reason}`] : []),
+      '',
+      '## 测试自检',
+      '',
+      `- 状态：${testLabel}`,
+      ...(verification.testCommands?.length ? [`- 命令：${verification.testCommands.join('；')}`] : []),
+      ...(verification.testError ? [`- 错误：${verification.testError}`] : []),
+      ...(verification.testReason ? [`- 说明：${verification.testReason}`] : []),
+      ...(testStatus === 'skipped' && verification.testHints?.length
+        ? verification.testHints.map((hint) => `- 提示：检测到 \`${hint.command}\`，未自动执行${hint.reason ? `（${hint.reason}）` : ''}`)
+        : []),
     );
     if (verification.repair) {
       const repair = verification.repair;

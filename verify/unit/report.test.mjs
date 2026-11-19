@@ -75,7 +75,7 @@ test('renders symptom verification status and steps', () => {
   assert.match(markdown, /已确认症状消失/);
   assert.match(markdown, /自动重放/);
   assert.match(markdown, /HTTP 200 \/ code 200/);
-  assert.match(markdown, /已验证（编译\/测试通过 \+ 症状确认）/);
+  assert.match(markdown, /已验证（构建自检通过 \+ 症状确认）/);
 });
 
 test('renders the automatic repair retry section', () => {
@@ -290,7 +290,7 @@ test('report shows compile/test verification and a failed gate', () => {
   assert.equal(report.verification.mode, 'full');
 
   const markdown = renderMarkdown(report);
-  assert.match(markdown, /## 编译\/测试验证/);
+  assert.match(markdown, /## 构建自检/);
   assert.match(markdown, /状态：失败（full）/);
   assert.match(markdown, /mvn -q -DskipTests compile/);
   assert.match(markdown, /compile-self-check：失败/);
@@ -357,4 +357,34 @@ test('renders project memory separately from triage', () => {
   assert.match(markdown, /\[项目笔记 \|/);
   assert.match(markdown, /\[历史诊断 \|/);
   assert.match(markdown, /部署环境 profile=prod/);
+});
+
+test('renders build and test self-check as separate sections', () => {
+  const withTestFailure = {
+    ...result,
+    agent: {
+      ...result.agent,
+      verification: {
+        status: 'passed',
+        mode: 'copy',
+        scope: 'sandbox',
+        buildStatus: 'passed',
+        testStatus: 'failed',
+        testRequired: false,
+        testError: '测试验证失败：npm test',
+        testReason: '测试失败（未阻断，需人工确认）',
+        buildCommands: [{ command: 'npm run build' }],
+        testCommands: [{ command: 'npm test' }],
+        commands: [{ command: 'npm run build' }, { command: 'npm test' }],
+        durationMs: 1200,
+      },
+    },
+  };
+  const markdown = renderMarkdown(buildReport(withTestFailure));
+  const buildAt = markdown.indexOf('## 构建自检');
+  const testAt = markdown.indexOf('## 测试自检');
+  assert.ok(buildAt >= 0 && testAt > buildAt);
+  assert.match(markdown, /构建自检[\s\S]*状态：通过/);
+  assert.match(markdown, /测试自检[\s\S]*状态：失败（未阻断，需人工确认）/);
+  assert.match(markdown, /测试验证失败：npm test/);
 });

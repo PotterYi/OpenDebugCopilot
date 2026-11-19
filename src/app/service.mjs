@@ -78,6 +78,9 @@ export function createService({ root = process.cwd(), configDir, runsDir, secret
           question: meta.question ?? '',
           workspaceSessionStatus: meta.workspaceSessionStatus ?? null,
           verificationStatus: meta.verificationStatus ?? null,
+          testStatus: meta.testStatus ?? null,
+          testRequired: Boolean(meta.testRequired),
+          testBlocking: Boolean(meta.testBlocking),
           symptomStatus: meta.symptomStatus ?? null,
           verificationLevel: meta.verificationLevel ?? null,
         });

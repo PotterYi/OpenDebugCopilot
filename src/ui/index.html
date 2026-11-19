@@ -70,8 +70,14 @@
           <label>前端启动命令（可选）
             <input name="frontendStartCommand" placeholder="留空自动识别（如 npm run dev）" />
           </label>
-          <label>验证命令（可选）
-            <input name="verifyCommand" placeholder="如 npm run build 或 npm test" />
+          <label>单条自定义验证命令（可选，优先于列表和自动探测）
+            <input name="verifyCommand" placeholder="如 mvn -q test 或 npm test" />
+          </label>
+          <label>验证命令列表（有序，每行一个；格式：build: / test: / test!:，可加 frontend/backend 前缀）
+            <textarea name="verifyCommands" rows="3" placeholder="build: mvn -q -DskipTests compile&#10;test: mvn -q test&#10;frontend build: npm run build"></textarea>
+          </label>
+          <label class="inline" title="自动探测到测试命令时执行；前端 test 脚本只提示，不自动执行">
+            <input name="verifyRunTests" type="checkbox" /> 自动执行探测到的后端测试命令
           </label>
           <label class="inline" title="仅对本地/允许 origin 的捕获请求生效；默认只允许 GET/HEAD，带认证头的请求回退为人工确认">
             <input name="replayEnabled" type="checkbox" /> 自动重放捕获请求以验证症状（仅安全方法和允许的 origin）

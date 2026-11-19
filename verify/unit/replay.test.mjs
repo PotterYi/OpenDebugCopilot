@@ -163,3 +163,23 @@ test('marks the symptom passed after replaying a safe captured request', async (
   assert.equal(outcome.result.replayFixture.method, 'GET');
   if (outcome.workspaceSession) await outcome.workspaceSession.discard();
 });
+
+test('normalizes ordered verification commands and test execution flag', () => {
+  const workspace = validateWorkspace({
+    verifyCommands: [
+      { command: 'mvn -q -DskipTests compile' },
+      { command: 'mvn -q test', phase: 'test' },
+      { command: 'npm test', phase: 'test', required: true, root: 'frontend' },
+    ],
+    verifyRunTests: false,
+  });
+  assert.equal(workspace.verifyCommands.length, 3);
+  assert.deepEqual(workspace.verifyCommands.map((entry) => [entry.phase, entry.required]), [
+    ['build', true],
+    ['test', false],
+    ['test', true],
+  ]);
+  assert.equal(workspace.verifyCommands[2].root, 'frontend');
+  assert.equal(workspace.verifyRunTests, false);
+  assert.equal(validateWorkspace({}).verifyRunTests, true);
+});

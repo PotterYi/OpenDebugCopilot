@@ -5,7 +5,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { runCaptureDiagnosis } from '../../src/diagnose/run.mjs';
-import { runWorkspaceCheck } from '../../src/core/fix-validation.mjs';
+import { applyVerificationGate, runWorkspaceCheck } from '../../src/core/fix-validation.mjs';
 import { tempDir } from './tmp.mjs';
 
 const exec = promisify(execFile);
@@ -57,7 +57,7 @@ test('runWorkspaceCheck runs the configured command and reports both outcomes', 
   });
   assert.equal(failed.status, 'failed');
   assert.equal(failed.ok, false);
-  assert.match(failed.error, /编译\/测试验证失败/);
+  assert.match(failed.error, /构建验证失败/);
 });
 
 test('runWorkspaceCheck skips with an explicit reason when no command is detected', async (t) => {
@@ -226,4 +226,70 @@ test('full mode reuses the in-place session instead of editing unmanaged files',
   await outcome.workspaceSession.discard();
   assert.equal(await readFile(file, 'utf8'), 'old\n');
   await assert.rejects(access(path.join(outcome.runDir, 'baseline')));
+});
+
+test('advisory test failure surfaces without blocking the build result', async (t) => {
+  const { sourceRoot } = await prepare(t);
+  const verification = await runWorkspaceCheck({
+    roots: { sourceRoot },
+    verifyCommands: [
+      { command: 'node -e "process.exit(0)"', phase: 'build', required: true },
+      { command: 'node -e "process.exit(1)"', phase: 'test', required: false },
+    ],
+    projectRoot: sourceRoot,
+  });
+  assert.equal(verification.buildStatus, 'passed');
+  assert.equal(verification.testStatus, 'failed');
+  assert.equal(verification.testRequired, false);
+  assert.equal(verification.status, 'passed');
+  assert.equal(verification.ok, true);
+  assert.match(verification.testError, /测试验证失败/);
+
+  const gates = applyVerificationGate({ ok: true, checks: [] }, verification);
+  assert.equal(gates.ok, true);
+  assert.equal(gates.checks.find((check) => check.name === 'compile-self-check').ok, true);
+  const testCheck = gates.checks.find((check) => check.name === 'test-self-check');
+  assert.equal(testCheck.ok, false);
+  assert.equal(testCheck.severity, 'warn');
+  assert.match(testCheck.detail, /tests=failed/);
+});
+
+test('required test failure blocks the verification gate', async (t) => {
+  const { sourceRoot } = await prepare(t);
+  const verification = await runWorkspaceCheck({
+    roots: { sourceRoot },
+    verifyCommands: [
+      { command: 'node -e "process.exit(0)"', phase: 'build', required: true },
+      { command: 'node -e "process.exit(1)"', phase: 'test', required: true },
+    ],
+    projectRoot: sourceRoot,
+  });
+  assert.equal(verification.status, 'failed');
+  assert.equal(verification.testRequired, true);
+  assert.match(verification.error, /测试验证失败/);
+
+  const gates = applyVerificationGate({ ok: true, checks: [] }, verification);
+  assert.equal(gates.ok, false);
+  assert.equal(gates.checks.find((check) => check.name === 'test-self-check').severity, 'error');
+});
+
+test('an advisory failure does not block when another required test passed', async (t) => {
+  const { sourceRoot } = await prepare(t);
+  const verification = await runWorkspaceCheck({
+    roots: { sourceRoot },
+    verifyCommands: [
+      { command: 'node -e "process.exit(0)"', phase: 'build', required: true },
+      { command: 'node -e "process.exit(0)"', phase: 'test', required: true },
+      { command: 'node -e "process.exit(1)"', phase: 'test', required: false },
+    ],
+    projectRoot: sourceRoot,
+  });
+  assert.equal(verification.buildStatus, 'passed');
+  assert.equal(verification.testStatus, 'failed');
+  assert.equal(verification.testRequired, true);
+  assert.equal(verification.testBlocking, false);
+  assert.equal(verification.status, 'passed');
+  const gates = applyVerificationGate({ ok: true, checks: [] }, verification);
+  assert.equal(gates.ok, true);
+  assert.equal(gates.checks.find((check) => check.name === 'test-self-check').severity, 'warn');
 });

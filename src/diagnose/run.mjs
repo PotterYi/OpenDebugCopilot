@@ -191,6 +191,27 @@ async function waitForMarker({ logfiles, parser, encoding, anchor, window, marke
   }
 }
 
+function verificationProgress(verification, scopeLabel) {
+  const buildStatus = verification?.buildStatus ?? verification?.status ?? 'skipped';
+  const testStatus = verification?.testStatus ?? 'skipped';
+  let label = `${scopeLabel}未执行构建自检`;
+  if (buildStatus === 'failed') label = `${scopeLabel}构建自检失败`;
+  else if (verification?.status === 'failed' && testStatus === 'failed') label = `${scopeLabel}必需测试失败`;
+  else if (testStatus === 'failed') {
+    label = buildStatus === 'passed'
+      ? `${scopeLabel}构建通过，测试失败（未阻断）`
+      : `${scopeLabel}测试失败（未阻断）`;
+  } else if (buildStatus === 'passed' && testStatus === 'passed') label = `${scopeLabel}构建与测试通过`;
+  else if (buildStatus === 'passed') label = `${scopeLabel}构建通过（测试未执行）`;
+  else if (testStatus === 'passed') label = `${scopeLabel}未执行构建，测试通过`;
+  const failed = buildStatus === 'failed' || verification?.status === 'failed' || verification?.detectionError;
+  return {
+    label,
+    level: failed ? 'error' : 'done',
+    detail: verification?.error ?? verification?.testError ?? verification?.testReason ?? verification?.reason,
+  };
+}
+
 function describeInvalidRefs(invalid) {
   return invalid
     .slice(0, 3)
@@ -754,7 +775,7 @@ async function diagnoseWithFired({
       previousFixes,
       attempt: 1,
     });
-    progress('repair', '编译/测试失败，自动重试修复', 'start', failure.error);
+    progress('repair', '构建或必需测试失败，自动重试修复', 'start', failure.error);
     await runLog.info(`auto-repair start phase=${phase} command=${failure.commands[0]?.command ?? '-'}`);
     try {
       const repair = await agent.followUp({
@@ -981,7 +1002,7 @@ async function diagnoseWithFired({
               output: '',
             };
           }
-          progress('selfcheck', '沙箱内编译/测试验证', 'start');
+          progress('selfcheck', '沙箱内构建/测试自检', 'start');
           try {
             return await runWorkspaceCheck({
               roots: sandboxRootsForCheck(sandboxContext),
@@ -1009,16 +1030,8 @@ async function diagnoseWithFired({
         // real source tree is never written for validation.
         let verification = await runSandboxCheck(extracted.changedFiles);
         agentResult.verification = { scope: 'sandbox', mode: 'copy', ...verification };
-        progress(
-          'selfcheck',
-          verification.status === 'passed'
-            ? '沙箱内编译/测试验证通过'
-            : verification.status === 'failed'
-              ? '沙箱内编译/测试验证失败，修改建议已隐藏'
-              : '未执行编译/测试验证',
-          verification.status === 'failed' || verification.detectionError ? 'error' : 'done',
-          verification.error ?? verification.reason,
-        );
+        const verificationUi = verificationProgress(verification, '沙箱内');
+        progress('selfcheck', verificationUi.label, verificationUi.level, verificationUi.detail);
         await runLog.info(`sandbox self-check ${verification.status} commands=${(verification.commands ?? []).length}`);
 
         if (verification.status === 'failed') {
@@ -1041,16 +1054,8 @@ async function diagnoseWithFired({
               ...verification,
               repair: { ...repair.info, finalStatus: verification.status },
             };
-            progress(
-              'selfcheck',
-              verification.status === 'passed'
-                ? '自动重试后沙箱验证通过'
-                : verification.status === 'failed'
-                  ? '自动重试后沙箱验证仍失败'
-                  : '自动重试后未执行验证',
-              verification.status === 'failed' ? 'error' : 'done',
-              verification.error ?? verification.reason,
-            );
+            const retryUi = verificationProgress(verification, '自动重试后沙箱内');
+            progress('selfcheck', retryUi.label, retryUi.level, retryUi.detail);
             await runLog.info(`sandbox auto-repair selfCheck=${verification.status}`);
           } else {
             agentResult.verification.repair = {
@@ -1066,7 +1071,7 @@ async function diagnoseWithFired({
           agentResult.fixes = [];
           agentResult.needsMoreInfo = [
             ...(agentResult.needsMoreInfo ?? []),
-            `沙箱修改未通过编译/测试，已隐藏。${verification.error ?? ''}`.trim(),
+            `沙箱修改未通过构建或必需测试，已隐藏。${verification.error ?? ''}`.trim(),
           ];
         } else {
           agentResult.fixes = mergedFixes;
@@ -1116,23 +1121,12 @@ async function diagnoseWithFired({
         projectRoot: scenario.dir ?? process.cwd(),
         runDir,
       });
-      progress('selfcheck', '编译/测试验证工作区修改', 'start');
+      progress('selfcheck', '构建/测试自检工作区修改', 'start');
       let verification = await runFullCheck();
       agentResult.verification = { scope: 'workspace', mode: 'full', ...verification };
       const reportVerification = (value) => {
-        const level = value.status === 'failed'
-          ? 'error'
-          : (value.status === 'skipped' && value.detectionError ? 'error' : 'done');
-        progress(
-          'selfcheck',
-          value.status === 'passed'
-            ? '编译/测试验证通过'
-            : value.status === 'failed'
-              ? '编译/测试验证失败，工作区修改可能未修复问题'
-              : '未执行编译/测试验证',
-          level,
-          value.error ?? value.reason,
-        );
+        const ui = verificationProgress(value, '工作区');
+        progress('selfcheck', ui.label, ui.level, ui.detail);
       };
       reportVerification(verification);
       await runLog.info(`workspace self-check ${verification.status} commands=${(verification.commands ?? []).length}`);
@@ -1164,7 +1158,7 @@ async function diagnoseWithFired({
       if (verification.status === 'failed') {
         agentResult.needsMoreInfo = [
           ...(agentResult.needsMoreInfo ?? []),
-          `工作区修改未通过编译/测试：${verification.error ?? ''}`.trim(),
+          `工作区修改未通过构建或必需测试：${verification.error ?? ''}`.trim(),
         ];
       } else if (verification.detectionError) {
         agentResult.needsMoreInfo = [
@@ -1374,6 +1368,9 @@ async function diagnoseWithFired({
       agentErrors: agentResult.errors ?? [],
       workspaceSessionStatus: agentResult.workspaceSession?.status ?? null,
       verificationStatus: agentResult.verification?.status ?? null,
+      testStatus: agentResult.verification?.testStatus ?? null,
+      testRequired: Boolean(agentResult.verification?.testRequired),
+      testBlocking: Boolean(agentResult.verification?.testBlocking),
       workspaceNotice,
       memory: memoryContext
         ? {

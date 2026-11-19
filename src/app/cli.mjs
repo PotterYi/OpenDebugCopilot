@@ -391,9 +391,13 @@ function printDiagnosis(result, runDir, root, { workspaceUndecided = false } = {
     `  Recheck    : ${result.recheck ? `${result.recheck.verdict} (${result.recheck.runs} runs, 一致不等于正确)` : 'off'}`,
     ...(result.agent?.verification
       ? [
-          `  Verify     : ${result.agent.verification.status}${result.agent.verification.mode ? ` (${result.agent.verification.mode})` : ''}`,
+          `  Build      : ${result.agent.verification.buildStatus ?? result.agent.verification.status}${result.agent.verification.mode ? ` (${result.agent.verification.mode})` : ''}`,
+          `  Tests      : ${result.agent.verification.testStatus ?? 'skipped'}${result.agent.verification.testStatus === 'failed'
+            ? (result.agent.verification.testBlocking ? ' (blocking)' : ' (advisory)')
+            : (result.agent.verification.testRequired ? ' (required)' : ' (advisory)')}`,
+          ...(result.agent.verification.testReason ? [`  TestInfo   : ${result.agent.verification.testReason}`] : []),
           ...(result.agent.verification.error ? [`  VerifyErr  : ${result.agent.verification.error}`] : []),
-          ...(result.agent.verification.reason ? [`  VerifyInfo : ${result.agent.verification.reason}`] : []),
+          ...(result.agent.verification.testError ? [`  TestErr    : ${result.agent.verification.testError}`] : []),
         ]
       : []),
     ...(workspace
@@ -578,9 +582,10 @@ export async function main(argv = process.argv.slice(2), { root = ROOT } = {}) {
     if (workspaceSession) {
       const verification = result.agent?.verification;
       if (verification) {
-        const detail = verification.error ?? verification.reason;
-        const line = `[verify] ${verification.status}${verification.mode ? ` (${verification.mode})` : ''}${detail ? `: ${detail}` : ''}`;
+        const detail = verification.error ?? verification.testError ?? verification.testReason ?? verification.reason;
+        const line = `[verify] build=${verification.buildStatus ?? verification.status} tests=${verification.testStatus ?? 'skipped'}${verification.mode ? ` (${verification.mode})` : ''}${detail ? `: ${detail}` : ''}`;
         if (verification.status === 'failed') log.error(line);
+        else if (verification.testStatus === 'failed') log.warn(line);
         else log.info(line);
       }
       let keep = false;
@@ -591,7 +596,7 @@ export async function main(argv = process.argv.slice(2), { root = ROOT } = {}) {
         const rl = createInterface({ input: process.stdin, output: process.stderr });
         try {
           const question = verification?.status === 'failed'
-            ? '编译/测试验证失败，仍要保留这些修改？[y/N] '
+            ? '构建或必需测试失败，仍要保留这些修改？[y/N] '
             : '本次诊断已修改工作区，是否保留这些修改？[y/N] ';
           const answer = await rl.question(question);
           keep = /^y(?:es)?$/i.test(answer.trim());

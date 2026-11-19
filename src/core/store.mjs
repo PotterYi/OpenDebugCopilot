@@ -13,6 +13,8 @@ export const DEFAULT_WORKSPACE = Object.freeze({
   frontendProjectRoot: '',
   frontendStartCommand: '',
   verifyCommand: '',
+  verifyCommands: [],
+  verifyRunTests: true,
   buildProbeRoot: '',
   agent: {
     model: '',
@@ -70,6 +72,24 @@ export function validateWorkspace(value) {
     frontendProjectRoot: String(value.frontendProjectRoot ?? ''),
     frontendStartCommand: String(value.frontendStartCommand ?? ''),
     verifyCommand: String(value.verifyCommand ?? ''),
+    verifyCommands: (Array.isArray(value.verifyCommands) ? value.verifyCommands : [])
+      .slice(0, 10)
+      .map((item) => {
+        const raw = typeof item === 'string' ? { command: item } : item;
+        if (!raw || typeof raw !== 'object') return null;
+        const command = String(raw.command ?? '').replace(/[\r\n]+/g, ' ').trim().slice(0, 500);
+        if (!command) return null;
+        const phase = raw.phase === 'test' ? 'test' : 'build';
+        return {
+          command,
+          phase,
+          required: raw.required === undefined ? phase === 'build' : raw.required === true,
+          ...(raw.root === 'backend' || raw.root === 'frontend' || raw.root === 'extra' ? { root: raw.root } : {}),
+          ...(raw.extraRoot ? { extraRoot: String(raw.extraRoot).trim().slice(0, 80) } : {}),
+        };
+      })
+      .filter(Boolean),
+    verifyRunTests: value.verifyRunTests !== false,
     buildProbeRoot: String(value.buildProbeRoot ?? '').trim(),
     replay: (() => {
       const raw = isObject(value.replay) ? value.replay : {};

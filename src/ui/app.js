@@ -171,6 +171,26 @@ function setMessage(text, kind = '') {
   messageEl.className = `message ${kind}`.trim();
 }
 
+function formatVerifyCommand(entry) {
+  const root = entry.root ? `${entry.root} ` : '';
+  const phase = entry.phase === 'test' ? (entry.required ? 'test!' : 'test') : 'build';
+  return `${root}${phase}: ${entry.command}`;
+}
+
+function parseVerifyCommands(text) {
+  return String(text ?? '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line) => {
+    const match = line.match(/^(?:(backend|frontend|extra)\s+)?(build|test)(!?):\s*(.+)$/i);
+    if (!match) return { command: line, phase: 'build', required: true };
+    const phase = match[2].toLowerCase();
+    return {
+      command: match[4].trim(),
+      phase,
+      required: phase === 'build' ? true : Boolean(match[3]),
+      ...(match[1] ? { root: match[1].toLowerCase() } : {}),
+    };
+  }).filter((entry) => entry.command);
+}
+
 function fillForm(config) {
   const workspace = config.workspace ?? {};
   form.elements.backendUrl.value = workspace.backendUrl ?? '';
@@ -184,6 +204,8 @@ function fillForm(config) {
   form.elements.frontendProjectRoot.value = workspace.frontendProjectRoot ?? '';
   form.elements.frontendStartCommand.value = workspace.frontendStartCommand ?? '';
   form.elements.verifyCommand.value = workspace.verifyCommand ?? '';
+  form.elements.verifyCommands.value = (workspace.verifyCommands ?? []).map(formatVerifyCommand).join('\n');
+  form.elements.verifyRunTests.checked = workspace.verifyRunTests !== false;
   form.elements.replayEnabled.checked = workspace.replay?.enabled === true;
   form.elements.replayAllowOrigins.value = (workspace.replay?.allowOrigins ?? []).join('\n');
   form.elements.replayAllowMethods.value = (workspace.replay?.allowMethods ?? ['GET', 'HEAD', 'OPTIONS']).join(',');
@@ -206,6 +228,8 @@ function readForm() {
       frontendProjectRoot: form.elements.frontendProjectRoot.value.trim(),
       frontendStartCommand: form.elements.frontendStartCommand.value.trim(),
       verifyCommand: form.elements.verifyCommand.value.trim(),
+      verifyCommands: parseVerifyCommands(form.elements.verifyCommands.value),
+      verifyRunTests: form.elements.verifyRunTests.checked,
       replay: {
         enabled: form.elements.replayEnabled.checked,
         allowOrigins: form.elements.replayAllowOrigins.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean),
@@ -704,6 +728,8 @@ async function loadRuns() {
       }
       if (run.verificationStatus === 'failed') {
         head.append(el('span', 'badge error', '验证失败'));
+      } else if (run.testStatus === 'failed') {
+        head.append(el('span', `badge${run.testBlocking ? ' error' : ''}`.trim(), run.testBlocking ? '测试失败（已阻断）' : '测试失败（未阻断）'));
       } else if (run.verificationLevel === 'verified') {
         head.append(el('span', 'badge ok', '已验证'));
       } else if (run.verificationLevel === 'symptom-verified') {
@@ -1812,25 +1838,50 @@ function renderWorkspaceVerification(verification) {
   if (!verification || verification.mode === 'in-place') return null;
   const block = el('section', 'card-section verification');
   const summary = el('div', 'verify-summary');
-  if (verification.status === 'passed') {
-    summary.append(el('span', 'badge ok', '编译/测试验证通过'));
-  } else if (verification.status === 'failed') {
-    summary.append(el('span', 'badge error', '编译/测试验证失败'));
+  const buildStatus = verification.buildStatus ?? verification.status;
+  const testStatus = verification.testStatus ?? 'skipped';
+  if (buildStatus === 'failed') {
+    summary.append(el('span', 'badge error', '构建自检失败'));
+  } else if (buildStatus === 'passed') {
+    summary.append(el('span', 'badge ok', '构建自检通过'));
   } else {
+    summary.append(el('span', 'badge', verification.detectionError ? '未能探测构建命令' : '未执行构建自检'));
+  }
+  if (testStatus === 'failed') {
     summary.append(el(
       'span',
-      `badge ${verification.detectionError ? 'error' : ''}`,
-      verification.detectionError ? '未能执行验证' : '未执行编译/测试验证',
+      `badge ${verification.testBlocking ? 'error' : ''}`,
+      verification.testBlocking ? '测试失败（已阻断）' : '测试失败（未阻断）',
     ));
+  } else if (testStatus === 'passed') {
+    summary.append(el('span', 'badge ok', '测试通过'));
+  } else {
+    summary.append(el('span', 'badge', '测试未执行'));
   }
-  const commands = (verification.commands ?? []).map((entry) => entry.command).filter(Boolean);
-  if (commands.length) summary.append(el('span', 'muted small', commands.join('；')));
+  const buildCommands = (verification.buildCommands ?? []).map((entry) => entry.command).filter(Boolean);
+  const testCommands = (verification.testCommands ?? []).map((entry) => entry.command).filter(Boolean);
+  if (buildCommands.length) summary.append(el('span', 'muted small', `构建：${buildCommands.join('；')}`));
+  if (testCommands.length) summary.append(el('span', 'muted small', `测试：${testCommands.join('；')}`));
   if (verification.durationMs) summary.append(el('span', 'muted small', `${verification.durationMs} ms`));
   if (verification.reason) summary.append(el('span', 'muted small', verification.reason));
   appendRepairBadge(summary, verification.repair);
   block.append(summary);
   if (verification.error) block.append(el('p', 'error-text small', verification.error));
-  if (verification.output && verification.status === 'failed') {
+  if (testStatus === 'failed') {
+    block.append(el(
+      'p',
+      verification.testBlocking ? 'error-text small' : 'muted small',
+      `${verification.testBlocking ? '测试失败（已阻断）' : '测试失败（未阻断，需人工确认）'}${verification.testError ? `：${verification.testError}` : ''}`,
+    ));
+  }
+  if (testStatus === 'skipped' && verification.testHints?.length) {
+    for (const hint of verification.testHints) {
+      block.append(el('p', 'muted small', `检测到 ${hint.command}，未自动执行${hint.reason ? `：${hint.reason}` : ''}`));
+    }
+  } else if (testStatus === 'skipped' && verification.testReason) {
+    block.append(el('p', 'muted small', verification.testReason));
+  }
+  if (verification.output && (buildStatus === 'failed' || testStatus === 'failed')) {
     const output = String(verification.output);
     const tail = output.length > 8000 ? output.slice(-8000) : output;
     block.append(el('pre', 'verify-log', tail));
@@ -1887,7 +1938,7 @@ function retryWorkspaceDiagnosis(state) {
 
 function confirmKeepAfterFailedCheck(error = null) {
   if (typeof window.confirm !== 'function') return true;
-  return window.confirm(`编译/测试验证失败${error ? `：${error}` : ''}。仍要保留这些修改吗？`);
+  return window.confirm(`构建或必需测试失败${error ? `：${error}` : ''}。仍要保留这些修改吗？`);
 }
 
 function renderWorkspaceSession(session, view, runId, { readOnly = false } = {}) {
@@ -1915,6 +1966,15 @@ function renderWorkspaceSession(session, view, runId, { readOnly = false } = {})
           ? '编译自测失败'
           : '未执行编译自测',
     ));
+    if (session.selfCheck.testStatus === 'passed') {
+      summary.append(el('span', 'badge ok', '测试通过'));
+    } else if (session.selfCheck.testStatus === 'failed') {
+      summary.append(el(
+        'span',
+        `badge${session.selfCheck.testBlocking ? ' error' : ''}`.trim(),
+        session.selfCheck.testBlocking ? '测试失败（已阻断）' : '测试失败（未阻断）',
+      ));
+    }
     if (session.selfCheck.durationMs) {
       summary.append(el('span', 'muted small', `${session.selfCheck.durationMs} ms`));
     }
@@ -1965,7 +2025,14 @@ function renderWorkspaceSession(session, view, runId, { readOnly = false } = {})
   if (session.selfCheck?.error) {
     block.append(el('p', 'error-text small', session.selfCheck.error));
   }
-  if (session.selfCheck?.output && session.selfCheck.status === 'failed') {
+  if (session.selfCheck?.testStatus === 'failed') {
+    block.append(el(
+      'p',
+      session.selfCheck.testBlocking ? 'error-text small' : 'muted small',
+      `${session.selfCheck.testBlocking ? '测试失败（已阻断）' : '测试失败（未阻断，需人工确认）'}${session.selfCheck.testError ? `：${session.selfCheck.testError}` : ''}`,
+    ));
+  }
+  if (session.selfCheck?.output && (session.selfCheck.status === 'failed' || session.selfCheck.testStatus === 'failed')) {
     block.append(el('pre', 'verify-log', String(session.selfCheck.output).slice(-8000)));
   }
 
@@ -2076,7 +2143,7 @@ function renderWorkspaceRecovery() {
     const meta = el('div', 'workspace-recovery-meta');
     const startedAt = session.startedAt ? new Date(session.startedAt).toLocaleString() : '未知时间';
     const statusLabel = session.status === 'pending' ? '待决定' : '编辑中（可能未生成诊断结果）';
-    const verifyLabel = session.selfCheckStatus === 'failed' ? ' · 编译/测试验证失败' : '';
+    const verifyLabel = session.selfCheckStatus === 'failed' ? ' · 构建或必需测试失败' : '';
     const detail = el('span', null, `${statusLabel}${verifyLabel} · 改动 ${session.changedFiles ?? 0} 个文件 · 已快照 ${session.touchedFiles ?? 0} 个 · ${session.repoCount ?? 0} 个仓库 · ${startedAt}`);
     meta.append(el('strong', null, session.runId), detail);
     if (Array.isArray(session.files) && session.files.length > 0) {
@@ -2323,7 +2390,10 @@ function renderRunBody(container, result, agent, view, { readOnly = false, showH
   const checks = result.gates?.checks;
   if (Array.isArray(checks) && checks.length > 0) {
     const list = el('ul', 'advice-list');
-    for (const check of checks) list.append(el('li', null, `${check.ok ? '✅' : '❌'} ${check.name}`));
+    for (const check of checks) {
+      const icon = check.severity === 'warn' ? '⚠' : check.ok ? '✅' : '❌';
+      list.append(el('li', null, `${icon} ${check.name}${check.detail ? ` — ${check.detail}` : ''}`));
+    }
     container.append(section('自检', list));
   }
   if (result.recheck) {

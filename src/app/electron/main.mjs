@@ -1319,7 +1319,7 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
 
           let verification;
           if (extracted.changedFiles.length > 0) {
-            sendProgress({ id: 'selfcheck', label: '沙箱内编译/测试验证', status: 'start' });
+            sendProgress({ id: 'selfcheck', label: '沙箱内构建/测试自检', status: 'start' });
             try {
               verification = await runWorkspaceCheck({
                 roots: sandboxRootsForCheck(followSandbox),
@@ -1352,22 +1352,26 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
             };
           }
           followVerification = { scope: 'sandbox', mode: 'copy', ...verification };
+          const followBuild = verification.buildStatus ?? verification.status;
+          const followTest = verification.testStatus ?? 'skipped';
           sendProgress({
             id: 'selfcheck',
-            label: verification.status === 'passed'
-              ? '沙箱内编译/测试验证通过'
-              : verification.status === 'failed'
-                ? '沙箱内编译/测试验证失败，修改建议已隐藏'
-                : '未执行编译/测试验证',
+            label: verification.status === 'failed'
+              ? '沙箱内构建或必需测试失败，修改建议已隐藏'
+              : followTest === 'failed'
+                ? '沙箱内构建通过，测试失败（未阻断）'
+                : followBuild === 'passed'
+                  ? (followTest === 'passed' ? '沙箱内构建与测试通过' : '沙箱内构建通过（测试未执行）')
+                  : '未执行构建自检',
             status: verification.status === 'failed' || verification.detectionError ? 'error' : 'done',
-            detail: verification.error ?? verification.reason,
+            detail: verification.error ?? verification.testError ?? verification.testReason ?? verification.reason,
           });
           if (verification.status === 'failed') {
             follow.fixesWithheld = followFixes;
             followFixes = [];
             follow.needsMoreInfo = [
               ...(follow.needsMoreInfo ?? []),
-              `沙箱修改未通过编译/测试，已隐藏。${verification.error ?? ''}`.trim(),
+              `沙箱修改未通过构建或必需测试，已隐藏。${verification.error ?? ''}`.trim(),
             ];
           }
 
@@ -1438,7 +1442,7 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
             output: '',
           };
         } else {
-          sendProgress({ id: 'selfcheck', label: '编译/测试验证工作区修改', status: 'start' });
+          sendProgress({ id: 'selfcheck', label: '构建/测试自检工作区修改', status: 'start' });
           const verification = await runWorkspaceCheck({
             roots: result.meta?.fixRoots ?? {},
             verifyCommand: workspace.verifyCommand ?? '',
@@ -1450,20 +1454,24 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
           const level = verification.status === 'failed'
             ? 'error'
             : (verification.status === 'skipped' && verification.detectionError ? 'error' : 'done');
+          const followBuild = verification.buildStatus ?? verification.status;
+          const followTest = verification.testStatus ?? 'skipped';
           sendProgress({
             id: 'selfcheck',
-            label: verification.status === 'passed'
-              ? '编译/测试验证通过'
-              : verification.status === 'failed'
-                ? '编译/测试验证失败，工作区修改可能未修复问题'
-                : '未执行编译/测试验证',
+            label: verification.status === 'failed'
+              ? '构建或必需测试失败，工作区修改可能未修复问题'
+              : followTest === 'failed'
+                ? '构建通过，测试失败（未阻断）'
+                : followBuild === 'passed'
+                  ? (followTest === 'passed' ? '构建与测试通过' : '构建自检通过（测试未执行）')
+                  : '未执行构建自检',
             status: level,
-            detail: verification.error ?? verification.reason,
+            detail: verification.error ?? verification.testError ?? verification.testReason ?? verification.reason,
           });
           if (verification.status === 'failed') {
             followAgent.needsMoreInfo = [
               ...(followAgent.needsMoreInfo ?? []),
-              `工作区修改未通过编译/测试：${verification.error ?? ''}`.trim(),
+              `工作区修改未通过构建或必需测试：${verification.error ?? ''}`.trim(),
             ];
           } else if (verification.detectionError) {
             followAgent.needsMoreInfo = [

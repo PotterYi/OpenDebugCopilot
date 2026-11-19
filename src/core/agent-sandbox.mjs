@@ -419,7 +419,10 @@ export function createSandboxCommandRunner({
       commandsPromise = detectCompileCommands({
         roots,
         verifyCommand,
-        workspace: {},
+        workspace: {
+          verifyCommands: workspace.verifyCommands,
+          verifyRunTests: workspace.verifyRunTests,
+        },
         projectRoot: sandbox.dir,
       }).catch(() => []);
     }

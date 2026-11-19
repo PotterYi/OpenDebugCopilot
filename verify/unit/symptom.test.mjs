@@ -68,5 +68,5 @@ test('persists a manual symptom confirmation to result.json and report.md', asyn
   const report = await readFile(path.join(runDir, 'report.md'), 'utf8');
   assert.match(report, /## 症状验证/);
   assert.match(report, /已确认症状消失/);
-  assert.match(report, /已验证（编译\/测试通过 \+ 症状确认）/);
+  assert.match(report, /已验证（构建自检通过 \+ 症状确认）/);
 });
