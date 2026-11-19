@@ -6,6 +6,7 @@ import { buildEvidenceRefIndex, validateEvidenceRefs } from '../core/evidence-re
 import { newRunId } from '../core/ids.mjs';
 import { resolveScenarioPaths } from '../core/scenario.mjs';
 import { normalizeTriage } from '../core/triage.mjs';
+import { buildMemoryCandidates, selectPromptNotes } from '../core/diagnosis-memory.mjs';
 import {
   applySymptomToGates,
   buildSymptomCheck,
@@ -313,9 +314,16 @@ async function diagnoseWithFired({
   workspace = {},
   sandbox = false,
   element = null,
+  memory = null,
+  onMemory = null,
   onProgress = () => {},
 }) {
   const normalizedTriage = normalizeTriage(triage);
+  const memoryProject = memory?.enabled && memory?.project ? memory.project : null;
+  const memoryNotes = memoryProject
+    ? selectPromptNotes(memory?.notes ?? memory?.promptNotes ?? [])
+    : [];
+  const memoryContext = memoryProject ? { project: memoryProject, notes: memoryNotes } : null;
   const progress = (id, label, status = 'done', detail = null) => {
     try {
       onProgress({ id, label, status, detail, at: Date.now() });
@@ -673,6 +681,7 @@ async function diagnoseWithFired({
         question,
         evidence,
         tools: toolsBundle,
+        memory: memoryContext,
         onToolUse: onAgentToolUse,
       });
     } catch (error) {
@@ -1279,7 +1288,9 @@ async function diagnoseWithFired({
           checks: evaluation.checks,
           detail: evaluation.detail,
           conclusions: agentRuns.map((run) => run?.conclusion ?? ''),
-          note: '一致不等于正确',
+          note: memoryNotes.length > 0
+            ? '一致不等于正确；复检共享同一项目前提，一致性可能被放大'
+            : '一致不等于正确',
         };
       })()
     : null;
@@ -1364,6 +1375,30 @@ async function diagnoseWithFired({
       workspaceSessionStatus: agentResult.workspaceSession?.status ?? null,
       verificationStatus: agentResult.verification?.status ?? null,
       workspaceNotice,
+      memory: memoryContext
+        ? {
+            enabled: true,
+            projectKey: memoryContext.project.key,
+            projectName: memoryContext.project.name,
+            noteCount: memoryNotes.length,
+            used: memoryNotes.map((note) => ({
+              id: note.id,
+              kind: note.kind,
+              source: note.source,
+              text: note.text,
+              runId: note.runId ?? null,
+              lastSeenAt: note.lastSeenAt ?? null,
+              pinned: Boolean(note.pinned),
+            })),
+            candidatesSaved: 0,
+            candidatesUpdated: 0,
+          }
+        : {
+            enabled: false,
+            reason: memory?.reason ?? 'not-provided',
+            noteCount: 0,
+            used: [],
+          },
       // Needed by 2b apply/undo to re-resolve fix files safely.
       fixRoots: {
         sourceRoot: paths.sourceRoot ?? null,
@@ -1416,6 +1451,22 @@ async function diagnoseWithFired({
     recheck: recheckInfo,
   };
 
+  const memoryCandidates = memoryProject ? buildMemoryCandidates(result) : [];
+  if (memoryProject && typeof onMemory === 'function' && memoryCandidates.length > 0) {
+    try {
+      const saved = await onMemory({
+        project: memoryProject,
+        candidates: memoryCandidates,
+        runId,
+      });
+      result.meta.memory.candidatesSaved = saved?.saved ?? 0;
+      result.meta.memory.candidatesUpdated = saved?.updated ?? 0;
+    } catch (error) {
+      result.meta.memory.saveError = error?.message ?? String(error);
+      await runLog.warn(`diagnosis memory save failed: ${error?.message ?? error}`);
+    }
+  }
+
   const report = buildReport(result);
   await writeFile(path.join(runDir, 'result.json'), JSON.stringify(result, null, 2), 'utf8');
   await writeFile(path.join(runDir, 'report.md'), renderMarkdown(report), 'utf8');
@@ -1464,6 +1515,8 @@ export async function runDiagnosis(scenario, options = {}) {
     verifyCommand = '',
     workspace = {},
     sandbox = false,
+    memory = null,
+    onMemory = null,
     onProgress = () => {},
   } = options;
 
@@ -1515,6 +1568,8 @@ export async function runDiagnosis(scenario, options = {}) {
     verifyCommand,
     workspace,
     sandbox,
+    memory,
+    onMemory,
     onProgress,
   });
 
@@ -1559,6 +1614,8 @@ export async function runCaptureDiagnosis(observation, options = {}) {
     databaseConnect,
     verifyCommand = '',
     sandbox = false,
+    memory = null,
+    onMemory = null,
     onProgress = () => {},
   } = options;
 
@@ -1665,6 +1722,8 @@ export async function runCaptureDiagnosis(observation, options = {}) {
     verifyCommand,
     workspace,
     sandbox,
+    memory,
+    onMemory,
     onProgress,
   });
 }
@@ -1700,6 +1759,8 @@ export async function runElementDiagnosis(element, options = {}) {
     databaseConnect,
     verifyCommand = '',
     sandbox = false,
+    memory = null,
+    onMemory = null,
     onProgress = () => {},
   } = options;
 
@@ -1829,6 +1890,8 @@ export async function runElementDiagnosis(element, options = {}) {
     verifyCommand,
     workspace,
     sandbox,
+    memory,
+    onMemory,
     element: elementForRun,
     onProgress,
   });

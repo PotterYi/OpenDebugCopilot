@@ -4,6 +4,7 @@ import { AppError } from '../core/errors.mjs';
 import { createStore } from '../core/store.mjs';
 import { createDatabaseStore } from '../core/database-store.mjs';
 import { createAgentAuthStore } from '../core/agent-auth-store.mjs';
+import { createDiagnosisMemoryStore, projectIdentityForWorkspace } from '../core/diagnosis-memory.mjs';
 import { finalizeWorkspaceJournal } from '../core/inplace-session.mjs';
 import { checkDatabases } from '../evidence/db.mjs';
 import { getLogFile } from '../core/logger.mjs';
@@ -28,6 +29,7 @@ export function createService({ root = process.cwd(), configDir, runsDir, secret
   const store = createStore({ configDir: effectiveConfigDir });
   const databaseStore = createDatabaseStore({ configDir: effectiveConfigDir, secretCodec });
   const agentAuthStore = createAgentAuthStore({ configDir: effectiveConfigDir, secretCodec });
+  const memoryStore = createDiagnosisMemoryStore({ configDir: effectiveConfigDir });
   const runsRoot = path.resolve(runsDir ?? path.join(root, 'runs'));
 
   async function getConfig() {
@@ -274,6 +276,57 @@ export function createService({ root = process.cwd(), configDir, runsDir, secret
     return agentAuthStore.getRuntime();
   }
 
+  async function currentMemoryIdentity() {
+    const workspace = await store.getWorkspace();
+    return projectIdentityForWorkspace(workspace, { root });
+  }
+
+  async function getProjectMemory() {
+    try {
+      return await memoryStore.getProject(await currentMemoryIdentity());
+    } catch (error) {
+      return {
+        enabled: false,
+        reason: error?.message ?? 'project-memory-unavailable',
+        project: null,
+        notes: [],
+        promptNotes: [],
+      };
+    }
+  }
+
+  async function addProjectMemoryNote(note) {
+    const identity = await currentMemoryIdentity();
+    if (!identity) throw new AppError('PROJECT_MEMORY_UNAVAILABLE', '请先配置后端源码目录或前端项目目录', { exitCode: 2 });
+    return memoryStore.addNote(identity, note);
+  }
+
+  async function updateProjectMemoryNote(id, patch) {
+    const identity = await currentMemoryIdentity();
+    if (!identity) throw new AppError('PROJECT_MEMORY_UNAVAILABLE', '请先配置后端源码目录或前端项目目录', { exitCode: 2 });
+    try {
+      return await memoryStore.updateNote(identity, id, patch);
+    } catch (error) {
+      throw new AppError('PROJECT_MEMORY_NOTE_NOT_FOUND', error?.message ?? 'note not found', { exitCode: 3 });
+    }
+  }
+
+  async function deleteProjectMemoryNote(id) {
+    const identity = await currentMemoryIdentity();
+    if (!identity) throw new AppError('PROJECT_MEMORY_UNAVAILABLE', '请先配置后端源码目录或前端项目目录', { exitCode: 2 });
+    try {
+      return await memoryStore.deleteNote(identity, id);
+    } catch (error) {
+      throw new AppError('PROJECT_MEMORY_NOTE_NOT_FOUND', error?.message ?? 'note not found', { exitCode: 3 });
+    }
+  }
+
+  async function mergeProjectMemory(candidates) {
+    const identity = await currentMemoryIdentity();
+    if (!identity) return { saved: 0, updated: 0, total: 0 };
+    return memoryStore.mergeCandidates(identity, candidates);
+  }
+
   return {
     root,
     runsRoot,
@@ -299,8 +352,14 @@ export function createService({ root = process.cwd(), configDir, runsDir, secret
     getDiagnosisDatabases,
     testDatabase,
     agentAuthStore,
+    memoryStore,
     getAgentAuth,
     saveAgentAuth,
     getAgentAuthRuntime,
+    getProjectMemory,
+    addProjectMemoryNote,
+    updateProjectMemoryNote,
+    deleteProjectMemoryNote,
+    mergeProjectMemory,
   };
 }

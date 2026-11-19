@@ -213,3 +213,8 @@ test('parses explicit workspace keep/discard flags', () => {
     /--workspace must be keep or discard/,
   );
 });
+
+test('parses --no-memory for a clean diagnosis run', () => {
+  assert.equal(parseArgv(['run', 's.json']).noMemory, false);
+  assert.equal(parseArgv(['run', 's.json', '--no-memory']).noMemory, true);
+});

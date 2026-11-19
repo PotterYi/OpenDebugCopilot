@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { loadConfig } from '../core/config.mjs';
 import { createDatabaseStore } from '../core/database-store.mjs';
 import { createStore } from '../core/store.mjs';
+import { createDiagnosisMemoryStore, projectIdentityForWorkspace } from '../core/diagnosis-memory.mjs';
 import { loadScenario, resolveScenarioPaths } from '../core/scenario.mjs';
 import { selectDriver } from '../driver/index.mjs';
 import { UsageError, toErrorPayload } from '../core/errors.mjs';
@@ -63,6 +64,7 @@ Options:
   --max-turns <n>   Max model turns for one live diagnosis (omit = unlimited)
   --budget-usd <n>  Cost cap for one live diagnosis (SDK maxBudgetUsd)
   --recheck <n>     Run consistency recheck n times (default: 1)
+  --no-memory       Disable project diagnosis memory for this run
   -q, --question    Symptom description used by the diagnoser
   --triage <kv>     Pre-diagnosis answers: environment=deploy-only,scope=endpoint,change=dependency
   --triage-note <text>  Optional note attached to --triage
@@ -151,6 +153,7 @@ export function parseArgv(argv) {
     maxTurns: undefined,
     budgetUsd: undefined,
     workspaceDecision: undefined,
+    noMemory: false,
   };
   for (let i = 1; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -161,6 +164,8 @@ export function parseArgv(argv) {
       opts.check = true;
     } else if (arg === '--json') {
       opts.json = true;
+    } else if (arg === '--no-memory') {
+      opts.noMemory = true;
     } else if (arg === '--question' || arg === '-q') {
       const value = argv[i + 1];
       if (value === undefined) throw new UsageError('--question requires a value');
@@ -359,6 +364,9 @@ function printDiagnosis(result, runDir, root, { workspaceUndecided = false } = {
     `  Agent      : ${result.meta.agent} (${result.meta.mode})`,
     `  Question   : ${result.meta.question || '(none)'}`,
     `  Triage     : ${triageSummary(result.meta.triage)}`,
+    `  Memory     : ${result.meta.memory?.enabled
+      ? `${result.meta.memory.noteCount ?? 0} note(s)${result.meta.memory.projectName ? ` · ${result.meta.memory.projectName}` : ''}`
+      : 'off'}`,
     `  Symptom    : ${result.meta.symptomStatus ?? 'pending'}`,
     `  VerifyLevel: ${result.meta.verificationLevel ?? 'unverified'}`,
     `  Status     : ${result.gates.ok ? 'gates ok' : 'gates failed'}`,
@@ -532,6 +540,19 @@ export async function main(argv = process.argv.slice(2), { root = ROOT } = {}) {
       if (!triage) throw new UsageError('invalid --triage answers');
     }
 
+    let projectMemory = { enabled: false, reason: 'disabled', notes: [], promptNotes: [] };
+    let memoryStore = null;
+    let memoryIdentity = null;
+    if (!parsed.noMemory) {
+      memoryStore = createDiagnosisMemoryStore({ configDir: path.join(root, 'configs') });
+      memoryIdentity = await projectIdentityForWorkspace(workspace, { root });
+      try {
+        projectMemory = await memoryStore.getProject(memoryIdentity);
+      } catch (error) {
+        log.warn('[memory] unreadable; continuing without project memory:', error?.message ?? error);
+      }
+    }
+
     const outcome = await runDiagnosis(scenario, {
       runsDir: parsed.runsDir ? path.resolve(parsed.runsDir) : path.resolve(root, config.runsDir ?? 'runs'),
       question: parsed.question,
@@ -547,6 +568,10 @@ export async function main(argv = process.argv.slice(2), { root = ROOT } = {}) {
       verifyCommand: workspace.verifyCommand ?? '',
       workspace,
       sandbox: toolMode === 'sandbox' || toolMode === 'full',
+      memory: projectMemory,
+      onMemory: memoryStore && memoryIdentity
+        ? ({ candidates }) => memoryStore.mergeCandidates(memoryIdentity, candidates)
+        : null,
     });
     const { result, runDir, workspaceSession } = outcome;
     let workspaceUndecided = false;

@@ -9,6 +9,12 @@ const $ = (id) => document.getElementById(id);
 const statusEl = $('status');
 const form = $('config-form');
 const messageEl = $('config-message');
+const memoryListEl = $('memory-list');
+const memoryProjectEl = $('memory-project');
+const memoryKindEl = $('memory-kind');
+const memoryTextEl = $('memory-text');
+const memoryAddBtn = $('memory-add');
+const memoryMessageEl = $('memory-message');
 const runsEl = $('runs');
 const reportEl = $('report');
 const historyMessageEl = $('history-message');
@@ -548,6 +554,70 @@ async function testDatabaseModal() {
   }
 }
 
+function memorySourceLabel(source) {
+  return { user: '项目笔记', tool: '工具积累', 'previous-run': '历史诊断' }[source] ?? source ?? '历史';
+}
+
+function renderProjectMemory(state) {
+  if (!memoryListEl) return;
+  memoryListEl.textContent = '';
+  const notes = Array.isArray(state?.notes) ? state.notes : [];
+  const projectName = state?.project?.name ?? state?.name ?? null;
+  const enabled = state?.enabled !== false && Boolean(projectName);
+  memoryProjectEl.textContent = enabled
+    ? `项目：${projectName} · ${notes.length} 条`
+    : `未启用：${state?.reason ?? '请先配置后端源码目录或前端项目目录'}`;
+  if (!enabled && notes.length === 0) return;
+  if (notes.length === 0) {
+    memoryListEl.append(el('p', 'muted small', '暂无项目笔记；诊断完成后会自动沉淀日志格式与已排除假设。'));
+    return;
+  }
+  for (const note of notes) {
+    const item = el('div', 'memory-item');
+    const text = el('div', null, note.text ?? '');
+    if (note.pinned) text.prepend(el('span', 'badge ok', '置顶 '));
+    item.append(text);
+    const date = note.lastSeenAt ? new Date(note.lastSeenAt).toLocaleDateString() : '-';
+    item.append(el('div', 'muted small', `${memorySourceLabel(note.source)} · ${date} · ${note.kind ?? 'general'}${note.runId ? ` · run ${note.runId}` : ''}${note.seenCount > 1 ? ` · 出现 ${note.seenCount} 次` : ''}`));
+    const actions = el('div', 'row');
+    const pin = el('button', 'secondary small', note.pinned ? '取消置顶' : '置顶');
+    pin.type = 'button';
+    pin.addEventListener('click', async () => {
+      try {
+        const next = await api.updateProjectMemoryNote(note.id, { pinned: !note.pinned });
+        renderProjectMemory(next);
+      } catch (error) {
+        memoryMessageEl.textContent = `更新失败：${error.message}`;
+      }
+    });
+    const remove = el('button', 'secondary small', '删除');
+    remove.type = 'button';
+    remove.addEventListener('click', async () => {
+      if (!window.confirm('删除这条项目笔记？')) return;
+      try {
+        const next = await api.deleteProjectMemoryNote(note.id);
+        renderProjectMemory(next);
+        memoryMessageEl.textContent = '已删除';
+      } catch (error) {
+        memoryMessageEl.textContent = `删除失败：${error.message}`;
+      }
+    });
+    actions.append(pin, remove);
+    item.append(actions);
+    memoryListEl.append(item);
+  }
+}
+
+async function loadProjectMemory() {
+  if (!memoryListEl) return;
+  try {
+    renderProjectMemory(await api.getProjectMemory());
+    memoryMessageEl.textContent = '';
+  } catch (error) {
+    memoryProjectEl.textContent = `项目笔记不可用：${error.message}`;
+  }
+}
+
 async function loadConfig() {
   try {
     const config = await api.getConfig();
@@ -557,6 +627,7 @@ async function loadConfig() {
     fillForm(config);
     renderRouting();
     loadProfiles().catch(() => {});
+    loadProjectMemory().catch(() => {});
     refreshTargetCandidates().catch(() => {});
     refreshDevServer().catch(() => {});
     renderLogSource(config.workspace?.logfiles ?? []);
@@ -2124,6 +2195,20 @@ function renderRunBody(container, result, agent, view, { readOnly = false, showH
   const symptomBlock = renderSymptomCheck(result, view);
   if (symptomBlock) container.append(symptomBlock);
 
+  const memory = result.meta?.memory;
+  const memoryUsed = Array.isArray(memory?.used) ? memory.used : [];
+  if (memory?.enabled && memoryUsed.length > 0) {
+    const list = el('ul', 'evidence-list');
+    const sourceLabels = { user: '项目笔记', tool: '工具积累', 'previous-run': '历史诊断' };
+    for (const note of memoryUsed) {
+      const date = note.lastSeenAt ? new Date(note.lastSeenAt).toLocaleDateString() : '-';
+      const entry = el('li', null, note.text ?? '');
+      entry.append(el('span', 'muted small', ` — ${sourceLabels[note.source] ?? note.source ?? '历史'} · ${date} · ${note.kind ?? 'general'}${note.runId ? ` · run ${note.runId}` : ''}`));
+      list.append(entry);
+    }
+    container.append(section(`项目前提（历史，${memoryUsed.length}）${memory.projectName ? ` · ${memory.projectName}` : ''}`, list));
+  }
+
   const rejectedHypotheses = Array.isArray(agent?.rejectedHypotheses) ? agent.rejectedHypotheses : [];
   if (rejectedHypotheses.length > 0) {
     const list = el('ul', 'evidence-list');
@@ -3577,6 +3662,29 @@ modelModal.addEventListener('click', (event) => {
   if (event.target === modelModal) closeModelModal();
 });
 
+memoryAddBtn?.addEventListener('click', async () => {
+  const text = String(memoryTextEl?.value ?? '').trim();
+  if (!text) return;
+  try {
+    const next = await api.addProjectMemoryNote({
+      kind: memoryKindEl?.value ?? 'general',
+      text,
+      source: 'user',
+    });
+    memoryTextEl.value = '';
+    renderProjectMemory(next);
+    memoryMessageEl.textContent = '已添加';
+  } catch (error) {
+    memoryMessageEl.textContent = `添加失败：${error.message}`;
+  }
+});
+memoryTextEl?.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    memoryAddBtn?.click();
+  }
+});
+
 profileSaveAsBtn.addEventListener('click', () => openProfileModal('create'));
 profileRenameBtn.addEventListener('click', () => openProfileModal('rename', profilesState.activeId));
 profileDeleteBtn.addEventListener('click', deleteSelectedProfile);
@@ -3637,6 +3745,7 @@ form.addEventListener('submit', async (event) => {
     setMessage(saved.meta?.configDir ? `已保存到 ${saved.meta.configDir}` : '已保存', 'ok');
     if (logParser) logParser.value = saved.workspace?.logParser ?? 'auto';
     loadProfiles().catch(() => {});
+    loadProjectMemory().catch(() => {});
     refreshDevServer().catch(() => {});
     if (currentRunView) renderRunInto(currentRunView);
   } catch (err) {

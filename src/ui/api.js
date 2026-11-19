@@ -98,6 +98,22 @@ export const api = {
     if (dc?.invoke) return dc.invoke('dc:diagnose', payload);
     return http('/api/diagnose', { method: 'POST', body: JSON.stringify(payload) });
   },
+  async getProjectMemory() {
+    if (dc?.invoke) return dc.invoke('dc:memory', { action: 'get' });
+    return http('/api/memory');
+  },
+  async addProjectMemoryNote(note) {
+    if (dc?.invoke) return dc.invoke('dc:memory', { action: 'add', note });
+    return http('/api/memory', { method: 'POST', body: JSON.stringify({ note }) });
+  },
+  async updateProjectMemoryNote(id, patch) {
+    if (dc?.invoke) return dc.invoke('dc:memory', { action: 'update', id, patch });
+    return http(`/api/memory/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(patch) });
+  },
+  async deleteProjectMemoryNote(id) {
+    if (dc?.invoke) return dc.invoke('dc:memory', { action: 'delete', id });
+    return http(`/api/memory/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  },
   async listProfiles() {
     if (dc?.invoke) return dc.invoke('dc:profiles', { action: 'list' });
     return http('/api/profiles');

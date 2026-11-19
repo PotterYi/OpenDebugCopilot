@@ -178,3 +178,57 @@ test('persists an incomplete agent result with evidence', async (t) => {
   const persisted = JSON.parse(await readFile(path.join(runDir, 'result.json'), 'utf8'));
   assert.equal(persisted.meta.incomplete, true);
 });
+
+test('injects and saves project memory during capture diagnosis', async (t) => {
+  await rm(TMP, { recursive: true, force: true });
+  await mkdir(TMP, { recursive: true });
+  t.after(async () => { await rm(TMP, { recursive: true, force: true }); });
+  let seenMemory = null;
+  let savedCandidates = null;
+  const agent = {
+    id: 'memory-agent',
+    async diagnose({ memory }) {
+      seenMemory = memory;
+      return {
+        conclusion: '库存不足',
+        evidenceRefs: [{ type: 'response', ref: 'response.status' }],
+        rejectedHypotheses: [{
+          hypothesis: '请求未到达后端',
+          refutedBy: [{ type: 'response', ref: 'response.status' }],
+          reason: '已收到 500 响应',
+        }],
+        confidence: 0.7,
+        needsMoreInfo: [],
+        fixes: [],
+        toolCalls: [],
+      };
+    },
+  };
+  const { result } = await runCaptureDiagnosis({
+    request: { method: 'POST', url: 'http://localhost/api/order', headers: {}, body: '{}', startedAt: Date.now() },
+    response: { status: 500, statusText: 'Internal Server Error', ok: false, headers: {}, body: '{}', durationMs: 5 },
+    firedAt: Date.now(),
+  }, {
+    workspace: { logfiles: [], sourceRoot: '', window: { beforeMs: 1000, afterMs: 1000 } },
+    root: TMP,
+    runsDir: path.join(TMP, 'runs'),
+    agent,
+    memory: {
+      enabled: true,
+      project: { key: 'm-test', name: 'demo' },
+      notes: [{ id: 'n1', kind: 'environment', source: 'user', text: '部署环境 profile=prod', pinned: true }],
+    },
+    onMemory: async ({ candidates }) => {
+      savedCandidates = candidates;
+      return { saved: candidates.length, updated: 0, total: candidates.length };
+    },
+  });
+
+  assert.equal(seenMemory.notes[0].text, '部署环境 profile=prod');
+  assert.equal(result.meta.memory.enabled, true);
+  assert.equal(result.meta.memory.projectName, 'demo');
+  assert.equal(result.meta.memory.used.length, 1);
+  assert.equal(result.meta.memory.candidatesSaved, savedCandidates.length);
+  assert.ok(savedCandidates.some((note) => note.kind === 'log-format'));
+  assert.ok(savedCandidates.some((note) => note.kind === 'excluded-hypothesis'));
+});

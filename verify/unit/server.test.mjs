@@ -150,3 +150,47 @@ test('manages workspace profiles over HTTP', async (t) => {
   assert.equal(deletedA.profiles.activeId, null);
   assert.deepEqual(deletedA.profiles.profiles, []);
 });
+
+test('manages project diagnosis memory over HTTP', async (t) => {
+  const DIR = path.join(TMP, 'memory');
+  await rm(DIR, { recursive: true, force: true });
+  await mkdir(path.join(DIR, 'backend'), { recursive: true });
+  t.after(async () => { await rm(DIR, { recursive: true, force: true }); });
+  const service = createService({ root: DIR, configDir: path.join(DIR, 'configs'), runsDir: path.join(DIR, 'runs') });
+  await service.saveConfig({
+    workspace: {
+      frontendUrl: 'http://localhost:3000',
+      backendUrl: 'http://127.0.0.1:8080',
+      logfiles: [],
+      sourceRoot: 'backend',
+      window: { beforeMs: 1000, afterMs: 500 },
+    },
+    routing: { rules: [] },
+  });
+  const server = await startServer({ service, uiDir: UI_DIR, port: 0 });
+  t.after(async () => { await server.close(); });
+
+  const empty = await fetch(`${server.url}/api/memory`).then((r) => r.json());
+  assert.equal(empty.enabled, true);
+  assert.equal(empty.notes.length, 0);
+
+  const added = await fetch(`${server.url}/api/memory`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ note: { kind: 'environment', text: '部署环境 profile=prod' } }),
+  }).then((r) => r.json());
+  assert.equal(added.notes.length, 1);
+  const id = added.notes[0].id;
+
+  const pinned = await fetch(`${server.url}/api/memory/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pinned: true }),
+  }).then((r) => r.json());
+  assert.equal(pinned.notes.find((note) => note.id === id).pinned, true);
+
+  const removed = await fetch(`${server.url}/api/memory/${encodeURIComponent(id)}`, { method: 'DELETE' })
+    .then((r) => r.json());
+  assert.equal(removed.notes.length, 0);
+  assert.equal((await fetch(`${server.url}/api/memory/missing`, { method: 'DELETE' })).status, 404);
+});

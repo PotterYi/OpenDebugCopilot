@@ -9,6 +9,7 @@ import { isSafeBashCommand } from '../core/bash-policy.mjs';
 import { inside, isSensitivePath } from '../core/path-policy.mjs';
 import { checkWritablePath, writeDenialMessage } from '../core/write-policy.mjs';
 import { triagePromptLines } from '../core/triage.mjs';
+import { memoryPromptLines } from '../core/diagnosis-memory.mjs';
 import { boundaryGuidance, createDenialTracker } from '../tools/guidance.mjs';
 
 // Never use []: SDK isolation mode drops the user's Claude Code settings,
@@ -244,6 +245,7 @@ const SYSTEM_PROMPT = `你是 DebugCopilot 的后端问题定位助手。你的�
 24. 运行时事实用 runtime_facts；selectors 只传需要看的键/前缀/简单通配，comparePid 可比较两个实例。敏感值会被脱敏，通配只返回键名；不要要求输出全部系统属性或环境变量。
 25. 源码与配置检索用 search_source：默认包含 POM/YAML/properties/JSON 等配置文件，可用 includeConfig=false 只看代码。需要正则时传 regex=true（≤200 字符，禁用反向引用/后顾/嵌套量词；在 worker 中执行，5 秒超时）。结果按 path+line 稳定排序，用 offset/nextOffset 翻页；标记 spilled/file 时用 query_result field=matches 取后续页，不要重复同一关键词。pom.xml、application-*.yml 等配置可直接用 read_source 按路径读取。
 26. 结论必须可证伪：在 rejectedHypotheses 中列出本轮认真考虑后排除的备选假设（建议 1-3 条，最多 5 条），每条写清 hypothesis、refutedBy（至少 1 条真实存在的证据引用）和 reason（为什么该证据否定它）。只把“被正面证据否定”的假设列入；仅有证据缺失时不要声称已排除。若确实没有可排除的备选假设，rejectedHypotheses 留空，并在 noRejectedHypothesesReason 中说明原因；不要为了填字段编造假设或引用。
+27. 用户 prompt 中的「工具积累的项目前提」是历史诊断/项目笔记，不是用户本次回答，也不是当前证据。把它当作待验证线索：必须用本次证据复核，不得写入 evidenceRefs，不得仅凭历史前提下结论；与本次回答冲突时并列说明。
 
 # 工具边界（先看这里，不要试探）
 - run_command：只允许项目构建/测试工具链（mvn/gradle/npm/pnpm/yarn/npx/pytest/go/dotnet/cargo/python），一次一条；禁止 ; | && $()、install/publish/run/dev server。不要用 python -V、echo、print 试探能力。
@@ -269,7 +271,8 @@ const FOLLOWUP_SYSTEM_PROMPT = `你是 DebugCopilot 的诊断助手，正在和�
 13. 正确修法不是改代码时（配置/构建/依赖/运行实例/部署/数据），用 actions 输出结构化动作，不要塞进 needsMoreInfo；能在仓库内修改的仍用 fixes。
 14. 列表结果标记 spilled/nextOffset/file 时用 query_result 分页/过滤，不要重复调用大列表工具。工程模型过期用 inspect_build_model，探针根只读，不读同级源码或 workspace.xml。运行时事实用 runtime_facts，按 selector 精确查询。源码/配置检索用 search_source（默认含配置，regex=true 走受控 worker），可按 offset/nextOffset 或 query_result field=matches 翻页。
 15. 不要直接修改文件。使用中文回答。
-16. 追问若重新定位了根因，必须同步更新 rejectedHypotheses（排除的备选假设 + 真实存在的否定证据 + 理由）；若只是解释、评估或修改建议，且没有重新定位根因，rejectedHypotheses 留空并在 noRejectedHypothesesReason 中说明“本轮为追问解释，未重新定位根因”。不要输出不存在的证据引用。`;
+16. 追问若重新定位了根因，必须同步更新 rejectedHypotheses（排除的备选假设 + 真实存在的否定证据 + 理由）；若只是解释、评估或修改建议，且没有重新定位根因，rejectedHypotheses 留空并在 noRejectedHypothesesReason 中说明“本轮为追问解释，未重新定位根因”。不要输出不存在的证据引用。
+17. 上一轮快照中的 memory 是当时注入的项目前提，不是当前证据，也不是用户本次回答；可用它理解上下文，但不得当作 evidenceRefs，冲突时以当前证据为准。`;
 
 /** Build a system prompt array with a static cacheable prefix. */
 export function buildCachedSystemPrompt(staticPrompt, dynamicSuffix, boundary = '__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__') {
@@ -443,17 +446,29 @@ function sanitizeEvidence(evidence) {
   };
 }
 
-export function buildPrompt(question, evidence) {
+export function buildPrompt(question, evidence, memory = null) {
   const pack = JSON.stringify(redactValue(sanitizeEvidence(evidence)), null, 2);
+  const memoryNotes = Array.isArray(memory?.notes) ? memory.notes : [];
   return [
     '# 用户描述的症状',
     question?.trim() || '(用户未提供描述，请从证据中推断现象)',
     '',
-    '# 诊断前确认（用户回答）',
+    '# 诊断前确认（用户本次回答）',
     ...triagePromptLines(evidence.triage),
     '',
+    ...(memoryNotes.length > 0
+      ? [
+          '# 工具积累的项目前提（历史沉淀，不是本次用户回答）',
+          ...memoryPromptLines(memoryNotes),
+          '',
+        ]
+      : []),
     '# 诊断前提使用规则',
-    '- 这些是用户先验，不是已验证事实；与日志/源码/请求证据冲突时，明确指出冲突并请求确认。',
+    '- 诊断前确认来自用户本次回答；工具积累的项目前提来自历史诊断/项目笔记，两者来源不同，冲突时并列说明，不要合并成一条。',
+    '- 这些前提都不是已验证事实；与日志/源码/请求证据冲突时，明确指出冲突并请求确认。',
+    '- 工具积累的项目前提不是当前证据：必须用本次证据复核，不能写入 evidenceRefs，也不能仅凭它下结论。',
+    '- 历史 runId/ref 只是线索；当前证据包中不存在的 ref 不能当作证据。',
+    '- 上次排除的假设这次若再次出现，先验证当时证据是否仍成立；旧证据失效则重新考虑。',
     '- 不要重复询问已经回答的问题；needsMoreInfo 只写未回答且无法从证据推断的信息。',
     '- 仅部署复现或仅本机复现时，优先比较配置、profile、classpath、依赖、数据和权限，不要直接改业务代码。',
     '- 仅当前接口/页面：优先路由、Controller、Service、页面组件；整个服务/多个模块：优先共享配置、数据库、网络和公共依赖。',
@@ -517,6 +532,7 @@ export function buildFollowUpPrompt(question, previous = {}) {
   const snapshot = {
     originalQuestion: previous.meta?.question ?? '',
     triage: previous.meta?.triage ?? null,
+    memory: previous.meta?.memory?.used ?? [],
     conclusion: agent.conclusion ?? '',
     rejectedHypotheses: (Array.isArray(agent.rejectedHypotheses) ? agent.rejectedHypotheses : [])
       .slice(0, 5)
@@ -1083,7 +1099,7 @@ export function createClaudeAgent({
   return {
     id: 'claude',
     configureScope,
-    async diagnose({ question, evidence, tools, budget, onToolUse = null }) {
+    async diagnose({ question, evidence, tools, budget, memory = null, onToolUse = null }) {
       const {
         query,
         tool,
@@ -1129,7 +1145,7 @@ export function createClaudeAgent({
         SYSTEM_PROMPT_DYNAMIC_BOUNDARY ?? '__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__',
       );
       const session = query({
-        prompt: buildPrompt(question, evidence),
+        prompt: buildPrompt(question, evidence, memory),
         options: {
           tools: builtinTools,
           mcpServers: { debugcopilot: server },

@@ -9,3 +9,4 @@ configs/databases.json
 configs/agent-auth.json
 logs/
 *.bundle
+configs/diagnosis-memory.json

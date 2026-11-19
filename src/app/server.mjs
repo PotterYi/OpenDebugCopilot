@@ -38,8 +38,9 @@ function httpStatusFor(err) {
     'PROFILE_NAME_REQUIRED',
     'DATABASE_CONFIG_INVALID',
     'DB_SECRET_UNAVAILABLE',
+    'PROJECT_MEMORY_UNAVAILABLE',
   ].includes(err.code)) return 400;
-  if (['RUN_NOT_FOUND', 'PROFILE_NOT_FOUND'].includes(err.code)) return 404;
+  if (['RUN_NOT_FOUND', 'PROFILE_NOT_FOUND', 'PROJECT_MEMORY_NOTE_NOT_FOUND'].includes(err.code)) return 404;
   return 500;
 }
 
@@ -145,6 +146,34 @@ export async function startServer({ service, uiDir, host = '127.0.0.1', port = 7
           sendJson(res, 200, { config: await service.getConfig(), profiles: await service.listProfiles() });
           return;
         }
+      }
+      if (pathname === '/api/memory') {
+        if (req.method === 'GET') {
+          sendJson(res, 200, await service.getProjectMemory());
+          return;
+        }
+        if (req.method === 'POST') {
+          const body = await readJsonBody(req);
+          sendJson(res, 200, await service.addProjectMemoryNote(body?.note ?? body));
+          return;
+        }
+        sendJson(res, 405, { error: 'method_not_allowed' });
+        return;
+      }
+      const memoryMatch = pathname.match(/^\/api\/memory\/([^/]+)$/);
+      if (memoryMatch) {
+        const id = decodeURIComponent(memoryMatch[1]);
+        if (req.method === 'PATCH') {
+          const body = await readJsonBody(req);
+          sendJson(res, 200, await service.updateProjectMemoryNote(id, body));
+          return;
+        }
+        if (req.method === 'DELETE') {
+          sendJson(res, 200, await service.deleteProjectMemoryNote(id));
+          return;
+        }
+        sendJson(res, 405, { error: 'method_not_allowed' });
+        return;
       }
       if (pathname === '/api/databases') {
         if (req.method === 'GET') {

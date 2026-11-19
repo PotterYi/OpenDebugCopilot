@@ -426,6 +426,21 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
     }
   });
 
+  handle('dc:memory', async (_event, payload = {}) => {
+    switch (payload.action) {
+      case 'get':
+        return service.getProjectMemory();
+      case 'add':
+        return service.addProjectMemoryNote(payload.note);
+      case 'update':
+        return service.updateProjectMemoryNote(payload.id, payload.patch ?? {});
+      case 'delete':
+        return service.deleteProjectMemoryNote(payload.id);
+      default:
+        throw new Error(`dc:memory: unknown action ${payload.action}`);
+    }
+  });
+
   handle('dc:profiles', async (_event, payload = {}) => {
     switch (payload.action) {
       case 'list':
@@ -994,6 +1009,14 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
     } catch (error) {
       log.warn('[db] database config unreadable; diagnosis continues without db tools:', error?.message ?? error);
     }
+    let projectMemory = { enabled: false, reason: 'disabled', notes: [], promptNotes: [] };
+    if (payload.useMemory !== false) {
+      try {
+        projectMemory = await service.getProjectMemory();
+      } catch (error) {
+        log.warn('[memory] unreadable; diagnosis continues without project memory:', error?.message ?? error);
+      }
+    }
     try {
       const options = {
         workspace,
@@ -1009,6 +1032,10 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
         approveWrite: createWriteApprover(event),
         verifyCommand: workspace.verifyCommand ?? '',
         sandbox: toolMode === 'sandbox' || toolMode === 'full',
+        memory: projectMemory,
+        onMemory: payload.useMemory === false
+          ? null
+          : ({ candidates }) => service.mergeProjectMemory(candidates),
         onProgress: sendProgress,
       };
       const outcome = element

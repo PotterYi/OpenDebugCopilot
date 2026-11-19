@@ -96,6 +96,27 @@
         <p id="config-path" class="muted small"></p>
         <p id="log-path" class="muted small"></p>
       </form>
+      <section id="project-memory" class="advanced-config">
+        <div class="panel-head">
+          <h3>项目诊断笔记</h3>
+          <span id="memory-project" class="muted small"></span>
+        </div>
+        <p class="muted small">
+          历史诊断沉淀的日志格式、环境差异和已排除假设。它只作为下次诊断的待验证前提，不会替代本次证据；可随时删除或置顶。
+        </p>
+        <div id="memory-list" class="advice-list"></div>
+        <div class="row">
+          <select id="memory-kind" title="笔记类型">
+            <option value="general">通用</option>
+            <option value="log-format">日志格式</option>
+            <option value="environment">环境差异</option>
+            <option value="excluded-hypothesis">已排除假设</option>
+          </select>
+          <input id="memory-text" placeholder="例如：部署环境 profile=prod；日志为 logback" />
+          <button id="memory-add" type="button" class="secondary">添加笔记</button>
+        </div>
+        <p id="memory-message" class="message"></p>
+      </section>
       <section class="devserver-section">
         <div class="panel-head">
           <h2>前端服务</h2>

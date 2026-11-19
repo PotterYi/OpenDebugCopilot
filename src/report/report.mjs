@@ -59,6 +59,23 @@ export function buildReport(result) {
       note: triage?.note ? scrubText(redactSecrets(triage.note)) : null,
       skipped: !triage || Boolean(triage.skipped),
     },
+    memory: result.meta?.memory
+      ? {
+          enabled: result.meta.memory.enabled !== false,
+          projectName: result.meta.memory.projectName ?? null,
+          noteCount: result.meta.memory.noteCount ?? 0,
+          candidatesSaved: result.meta.memory.candidatesSaved ?? 0,
+          saveError: result.meta.memory.saveError ? scrubText(result.meta.memory.saveError) : null,
+          used: (result.meta.memory.used ?? []).map((note) => ({
+            kind: note.kind ?? 'general',
+            source: note.source ?? 'user',
+            text: scrubText(note.text ?? ''),
+            runId: note.runId ?? null,
+            lastSeenAt: note.lastSeenAt ?? null,
+            pinned: Boolean(note.pinned),
+          })),
+        }
+      : null,
     symptomCheck: result.symptomCheck
       ? {
           status: result.symptomCheck.status ?? 'pending',
@@ -253,6 +270,14 @@ function symptomStatusLabel(check) {
   return labels[check.status] ?? check.status;
 }
 
+function memorySourceLabel(source) {
+  return {
+    user: '项目笔记',
+    tool: '工具积累',
+    'previous-run': '历史诊断',
+  }[source] ?? source ?? 'unknown';
+}
+
 function verificationLevelLabel(level) {
   return {
     verified: '已验证（编译/测试通过 + 症状确认）',
@@ -298,6 +323,18 @@ export function renderMarkdown(report) {
       ? report.triage.entries.map((entry) => `- ${entry.label}：${entry.value}`)
       : ['- 前提信息：未提供（诊断前已跳过）']),
     ...(report.triage.note ? [`- 备注：${report.triage.note}`] : []),
+    ...(report.memory?.used?.length
+      ? [
+          '',
+          '## 项目前提（历史沉淀）',
+          '',
+          `- 项目：${report.memory.projectName ?? '-'} · 本次使用 ${report.memory.used.length} 条${report.memory.candidatesSaved ? ` · 新增 ${report.memory.candidatesSaved} 条` : ''}`,
+          ...report.memory.used.map((note) => {
+            const date = note.lastSeenAt ? new Date(note.lastSeenAt).toISOString().slice(0, 10) : '-';
+            return `- [${memorySourceLabel(note.source)} | ${date} | ${note.kind}] ${note.text}${note.runId ? `（run ${note.runId}）` : ''}`;
+          }),
+        ]
+      : []),
     '',
     '## 症状验证',
     '',

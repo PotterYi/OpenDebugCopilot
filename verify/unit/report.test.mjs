@@ -332,3 +332,29 @@ test('labels model confidence as an uncalibrated self-assessment', () => {
   const markdown = renderMarkdown(buildReport(result));
   assert.match(markdown, /模型自评置信度：0\.80（未校准，仅供参考）/);
 });
+
+test('renders project memory separately from triage', () => {
+  const withMemory = {
+    ...result,
+    meta: {
+      ...result.meta,
+      memory: {
+        enabled: true,
+        projectName: 'demo',
+        noteCount: 2,
+        used: [
+          { kind: 'environment', source: 'user', text: '部署环境 profile=prod', lastSeenAt: Date.now(), pinned: true },
+          { kind: 'excluded-hypothesis', source: 'previous-run', text: '已排除：缓存未命中', runId: 'run-1', lastSeenAt: Date.now() },
+        ],
+      },
+    },
+  };
+  const markdown = renderMarkdown(buildReport(withMemory));
+  const triageAt = markdown.indexOf('## 诊断前提');
+  const memoryAt = markdown.indexOf('## 项目前提（历史沉淀）');
+  const conclusionAt = markdown.indexOf('## 结论');
+  assert.ok(triageAt >= 0 && memoryAt > triageAt && conclusionAt > memoryAt);
+  assert.match(markdown, /\[项目笔记 \|/);
+  assert.match(markdown, /\[历史诊断 \|/);
+  assert.match(markdown, /部署环境 profile=prod/);
+});
