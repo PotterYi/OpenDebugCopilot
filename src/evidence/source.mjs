@@ -3,7 +3,7 @@ import path from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { AppError } from '../core/errors.mjs';
 import { DEFAULT_IGNORED_DIRS, isSensitivePath, resolveWithinRoot } from '../core/path-policy.mjs';
-import { MAX_PAGE_OFFSET, MAX_PAGE_SIZE } from '../core/list-result.mjs';
+import { MAX_TOTAL_ITEMS } from '../core/list-result.mjs';
 import { MAX_FILE_BYTES, scanFiles } from './source-scan.mjs';
 
 const SOURCE_EXTS = new Set([
@@ -27,7 +27,7 @@ const EXCLUDED_FILE = /(?:\.min\.(?:js|css)|\.map)$/i;
 const MAX_REGEX_SOURCE = 200;
 const DEFAULT_REGEX_TIMEOUT_MS = 5000;
 const BACKSLASH = String.fromCharCode(92);
-export const MAX_SEARCH_MATCHES = MAX_PAGE_OFFSET + MAX_PAGE_SIZE;
+export const MAX_SEARCH_MATCHES = MAX_TOTAL_ITEMS;
 
 const UNREADABLE_TYPES = 'supported types: source code, config (.xml/.yml/.yaml/.properties/.json/.toml/.gradle/.kts/.ini/.conf/.cfg, Dockerfile, Makefile, .editorconfig), or frontend assets (.html/.css/.scss/.less/.svelte/.astro)';
 

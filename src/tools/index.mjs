@@ -15,7 +15,7 @@ import { runtimeFacts } from '../evidence/runtime-facts.mjs';
 import { gitDiff, gitLog, gitStatus } from '../evidence/git.mjs';
 import { parseMavenTree, filterMavenDependencies } from '../evidence/maven.mjs';
 import { inside } from '../core/path-policy.mjs';
-import { listEnvelope, pageArgs, pageItems } from '../core/list-result.mjs';
+import { MAX_TOTAL_ITEMS, listEnvelope, pageArgs, pageItems } from '../core/list-result.mjs';
 import { boundaryGuidance, createDenialTracker } from './guidance.mjs';
 import { redactSecrets, redactValue } from '../core/redact.mjs';
 import { MAX_TOOL_RESULT_BYTES } from '../core/tool-limits.mjs';
@@ -37,15 +37,23 @@ export function toolSpecs({ databases = [], runCommand = null } = {}) {
           thread: { type: 'string' },
           level: { type: 'string' },
           minLevel: { type: 'string' },
-          limit: { type: 'integer', minimum: 1, maximum: 500 },
+          offset: { type: 'integer', minimum: 0, maximum: 20000 },
+          limit: { type: 'integer', minimum: 1, maximum: 200 },
         },
         additionalProperties: false,
       },
     },
     {
       name: 'list_threads',
-      description: 'Thread histogram inside the scenario time window. Use it to find which thread handled the request.',
-      input_schema: { type: 'object', properties: {}, additionalProperties: false },
+      description: 'Thread histogram inside the scenario time window. Use it to find which thread handled the request. Results are paged.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          offset: { type: 'integer', minimum: 0, maximum: 20000 },
+          limit: { type: 'integer', minimum: 1, maximum: 200 },
+        },
+        additionalProperties: false,
+      },
     },
     {
       name: 'search_log',
@@ -54,7 +62,8 @@ export function toolSpecs({ databases = [], runCommand = null } = {}) {
         type: 'object',
         properties: {
           keyword: { type: 'string' },
-          limit: { type: 'integer', minimum: 1, maximum: 500 },
+          offset: { type: 'integer', minimum: 0, maximum: 20000 },
+          limit: { type: 'integer', minimum: 1, maximum: 200 },
         },
         required: ['keyword'],
         additionalProperties: false,
@@ -88,7 +97,7 @@ export function toolSpecs({ databases = [], runCommand = null } = {}) {
           includeConfig: { type: 'boolean' },
           root: { enum: ['backend', 'frontend', 'extra'] },
           extraRoot: { type: 'string' },
-          offset: { type: 'integer', minimum: 0, maximum: 10000 },
+          offset: { type: 'integer', minimum: 0, maximum: 20000 },
           limit: { type: 'integer', minimum: 1, maximum: 200 },
         },
         required: ['keyword'],
@@ -117,7 +126,7 @@ export function toolSpecs({ databases = [], runCommand = null } = {}) {
         properties: {
           file: { type: 'string' },
           field: { type: 'string' },
-          offset: { type: 'integer', minimum: 0, maximum: 10000 },
+          offset: { type: 'integer', minimum: 0, maximum: 20000 },
           limit: { type: 'integer', minimum: 1, maximum: 200 },
           filter: { type: 'string' },
         },
@@ -132,6 +141,8 @@ export function toolSpecs({ databases = [], runCommand = null } = {}) {
         type: 'object',
         properties: {
           port: { type: 'integer', minimum: 1, maximum: 65535 },
+          offset: { type: 'integer', minimum: 0, maximum: 20000 },
+          limit: { type: 'integer', minimum: 1, maximum: 200 },
         },
         additionalProperties: false,
       },
@@ -158,6 +169,7 @@ export function toolSpecs({ databases = [], runCommand = null } = {}) {
           name: { type: 'string' },
           commandContains: { type: 'string' },
           javaOnly: { type: 'boolean' },
+          offset: { type: 'integer', minimum: 0, maximum: 20000 },
           limit: { type: 'integer', minimum: 1, maximum: 200 },
         },
         additionalProperties: false,
@@ -173,7 +185,8 @@ export function toolSpecs({ databases = [], runCommand = null } = {}) {
           extraRoot: { type: 'string' },
           path: { type: 'string' },
           depth: { type: 'integer', minimum: 1, maximum: 2 },
-          limit: { type: 'integer', minimum: 1, maximum: 500 },
+          offset: { type: 'integer', minimum: 0, maximum: 20000 },
+          limit: { type: 'integer', minimum: 1, maximum: 200 },
         },
         additionalProperties: false,
       },
@@ -194,12 +207,14 @@ export function toolSpecs({ databases = [], runCommand = null } = {}) {
     },
     {
       name: 'git_status',
-      description: 'Read-only git status for an authorized source root: branch, upstream, ahead/behind and changed paths. Paths are limited to the source root and sensitive paths are hidden.',
+      description: 'Read-only git status for an authorized source root: branch, upstream, ahead/behind and changed paths. Paths are limited to the source root and sensitive paths are hidden. Changed paths are paged.',
       input_schema: {
         type: 'object',
         properties: {
           root: { enum: ['backend', 'frontend', 'extra'] },
           extraRoot: { type: 'string' },
+          offset: { type: 'integer', minimum: 0, maximum: 20000 },
+          limit: { type: 'integer', minimum: 1, maximum: 200 },
         },
         additionalProperties: false,
       },
@@ -212,7 +227,8 @@ export function toolSpecs({ databases = [], runCommand = null } = {}) {
         properties: {
           root: { enum: ['backend', 'frontend', 'extra'] },
           extraRoot: { type: 'string' },
-          limit: { type: 'integer', minimum: 1, maximum: 50 },
+          offset: { type: 'integer', minimum: 0, maximum: 20000 },
+          limit: { type: 'integer', minimum: 1, maximum: 200 },
           since: { type: 'string' },
           path: { type: 'string' },
         },
@@ -230,6 +246,8 @@ export function toolSpecs({ databases = [], runCommand = null } = {}) {
           path: { type: 'string' },
           staged: { type: 'boolean' },
           statOnly: { type: 'boolean' },
+          offset: { type: 'integer', minimum: 0, maximum: 20000 },
+          limit: { type: 'integer', minimum: 1, maximum: 200 },
         },
         additionalProperties: false,
       },
@@ -246,7 +264,7 @@ export function toolSpecs({ databases = [], runCommand = null } = {}) {
           selectors: { type: 'array', items: { type: 'string' } },
           comparePid: { type: 'integer', minimum: 1 },
           declaredFile: { type: 'string' },
-          offset: { type: 'integer', minimum: 0, maximum: 10000 },
+          offset: { type: 'integer', minimum: 0, maximum: 20000 },
           limit: { type: 'integer', minimum: 1, maximum: 200 },
         },
         additionalProperties: false,
@@ -262,7 +280,7 @@ export function toolSpecs({ databases = [], runCommand = null } = {}) {
           port: { type: 'integer', minimum: 1, maximum: 65535 },
           declaredFile: { type: 'string' },
           mode: { enum: ['all', 'missing', 'versionMismatch', 'runtimeOnly'] },
-          offset: { type: 'integer', minimum: 0, maximum: 10000 },
+          offset: { type: 'integer', minimum: 0, maximum: 20000 },
           limit: { type: 'integer', minimum: 1, maximum: 200 },
         },
         required: ['declaredFile'],
@@ -294,7 +312,7 @@ export function toolSpecs({ databases = [], runCommand = null } = {}) {
               excludes: { type: 'array', items: { type: 'string' } },
               includeClasspath: { type: 'boolean' },
               verbose: { type: 'boolean' },
-              offset: { type: 'integer', minimum: 0, maximum: 10000 },
+              offset: { type: 'integer', minimum: 0, maximum: 20000 },
               limit: { type: 'integer', minimum: 1, maximum: 200 },
             },
             additionalProperties: false,
@@ -561,6 +579,24 @@ export function createTools({
    * budget must become a spill pointer. The SDK wrapper also calls this, but
    * doing it here covers every tool path including future handlers.
    */
+  async function paginateResult(name, raw, field, args = {}, extraMeta = {}) {
+    const page = pageArgs({ offset: args.offset, limit: args.limit ?? 50 });
+    if (page.error) throw new AppError('INVALID_PAGE', page.error, { exitCode: 2 });
+    const source = raw && typeof raw === 'object' ? raw : {};
+    const items = Array.isArray(source[field]) ? source[field] : [];
+    const { [field]: _items, ...rest } = source;
+    const stored = await spill(name, source, { force: items.length > page.limit });
+    const envelope = listEnvelope({
+      field,
+      items,
+      offset: page.offset,
+      limit: page.limit,
+      meta: { ...rest, ...extraMeta, ...(source.truncated ? { capped: true } : {}) },
+      file: stored?.spilled ? stored.file : null,
+    });
+    return { ...envelope, hasMore: envelope.nextOffset !== null };
+  }
+
   async function ensureSpill(name, value) {
     if (value?.spilled === true) return value;
     const text = JSON.stringify(redactValue(value), null, 2);
@@ -691,9 +727,9 @@ export function createTools({
         thread: args.thread,
         level: args.level,
         minLevel: args.minLevel,
-        limit: args.limit ?? 200,
+        limit: MAX_TOTAL_ITEMS,
       });
-      return spill('get_logs', result);
+      return paginateResult('get_logs', result, 'records', args);
     }, args),
 
     list_threads: (args = {}) => safe('list_threads', async () => {
@@ -704,7 +740,7 @@ export function createTools({
         anchor,
         window: timeWindow,
       });
-      return spill('list_threads', result);
+      return paginateResult('list_threads', result, 'threads', args);
     }, args),
 
     search_log: (args = {}) => safe('search_log', async () => {
@@ -713,9 +749,9 @@ export function createTools({
         parser: scenario.parser,
         encoding: scenario.logEncoding,
         keyword: args.keyword,
-        limit: args.limit ?? 100,
+        limit: MAX_TOTAL_ITEMS,
       });
-      return spill('search_log', result);
+      return paginateResult('search_log', result, 'matches', args);
     }, args),
 
     read_source: (args = {}) => safe('read_source', async () => {
@@ -859,7 +895,8 @@ export function createTools({
     }, args),
 
     list_java_processes: (args = {}) => safe('list_java_processes', async () => {
-      return listJavaProcesses({ port: args.port });
+      const result = await listJavaProcesses({ port: args.port });
+      return paginateResult('list_java_processes', result, 'processes', args);
     }, args),
 
     list_processes: (args = {}) => safe('list_processes', async () => {
@@ -869,9 +906,9 @@ export function createTools({
         name: args.name,
         commandContains: args.commandContains,
         javaOnly: args.javaOnly,
-        limit: args.limit,
+        limit: 200,
       });
-      return spill('list_processes', result);
+      return paginateResult('list_processes', result, 'processes', args);
     }, args),
 
     list_dir: (args = {}) => safe('list_dir', async () => {
@@ -879,9 +916,9 @@ export function createTools({
         root: pickRoot(args.root, args.extraRoot),
         path: args.path,
         depth: args.depth,
-        limit: args.limit,
+        limit: 500,
       });
-      return spill('list_dir', result);
+      return paginateResult('list_dir', result, 'entries', args);
     }, args),
 
     stat_file: (args = {}) => safe('stat_file', async () => {
@@ -889,17 +926,17 @@ export function createTools({
     }, args),
 
     git_status: (args = {}) => safe('git_status', async () => {
-      return spill('git_status', await gitStatus({ root: pickRoot(args.root, args.extraRoot) }));
+      return paginateResult('git_status', await gitStatus({ root: pickRoot(args.root, args.extraRoot) }), 'entries', args);
     }, args),
 
     git_log: (args = {}) => safe('git_log', async () => {
       const result = await gitLog({
         root: pickRoot(args.root, args.extraRoot),
-        limit: args.limit,
+        limit: 200,
         since: args.since,
         path: args.path,
       });
-      return spill('git_log', result);
+      return paginateResult('git_log', result, 'commits', args);
     }, args),
 
     git_diff: (args = {}) => safe('git_diff', async () => {
@@ -909,7 +946,9 @@ export function createTools({
         staged: args.staged,
         statOnly: args.statOnly !== false,
       });
-      return spill('git_diff', result);
+      return result?.statOnly === false
+        ? spill('git_diff', result)
+        : paginateResult('git_diff', result, 'files', args);
     }, args),
 
     runtime_facts: (args = {}) => safe('runtime_facts', async () => {

@@ -794,12 +794,17 @@ export function buildToolShapes(z) {
       thread: z.string().optional(),
       level: z.string().optional(),
       minLevel: z.string().optional(),
-      limit: z.number().int().min(1).max(500).optional(),
+      offset: z.number().int().min(0).max(20000).optional(),
+      limit: z.number().int().min(1).max(200).optional(),
     },
-    list_threads: {},
+    list_threads: {
+      offset: z.number().int().min(0).max(20000).optional(),
+      limit: z.number().int().min(1).max(200).optional(),
+    },
     search_log: {
       keyword: z.string(),
-      limit: z.number().int().min(1).max(500).optional(),
+      offset: z.number().int().min(0).max(20000).optional(),
+      limit: z.number().int().min(1).max(200).optional(),
     },
     read_source: {
       target: z.string(),
@@ -815,7 +820,7 @@ export function buildToolShapes(z) {
       includeConfig: z.boolean().optional(),
       root: z.enum(['backend', 'frontend', 'extra']).optional(),
       extraRoot: z.string().optional(),
-      offset: z.number().int().min(0).max(10000).optional(),
+      offset: z.number().int().min(0).max(20000).optional(),
       limit: z.number().int().min(1).max(200).optional(),
     },
     read: {
@@ -829,12 +834,14 @@ export function buildToolShapes(z) {
     query_result: {
       file: z.string(),
       field: z.string().optional(),
-      offset: z.number().int().min(0).max(10000).optional(),
+      offset: z.number().int().min(0).max(20000).optional(),
       limit: z.number().int().min(1).max(200).optional(),
       filter: z.string().optional(),
     },
     list_java_processes: {
       port: z.number().int().min(1).max(65535).optional(),
+      offset: z.number().int().min(0).max(20000).optional(),
+      limit: z.number().int().min(1).max(200).optional(),
     },
     list_processes: {
       pid: z.number().int().min(1).optional(),
@@ -842,6 +849,7 @@ export function buildToolShapes(z) {
       name: z.string().optional(),
       commandContains: z.string().optional(),
       javaOnly: z.boolean().optional(),
+      offset: z.number().int().min(0).max(20000).optional(),
       limit: z.number().int().min(1).max(200).optional(),
     },
     list_dir: {
@@ -849,7 +857,8 @@ export function buildToolShapes(z) {
       extraRoot: z.string().optional(),
       path: z.string().optional(),
       depth: z.number().int().min(1).max(2).optional(),
-      limit: z.number().int().min(1).max(500).optional(),
+      offset: z.number().int().min(0).max(20000).optional(),
+      limit: z.number().int().min(1).max(200).optional(),
     },
     stat_file: {
       root: z.enum(['backend', 'frontend', 'extra']).optional(),
@@ -859,11 +868,14 @@ export function buildToolShapes(z) {
     git_status: {
       root: z.enum(['backend', 'frontend', 'extra']).optional(),
       extraRoot: z.string().optional(),
+      offset: z.number().int().min(0).max(20000).optional(),
+      limit: z.number().int().min(1).max(200).optional(),
     },
     git_log: {
       root: z.enum(['backend', 'frontend', 'extra']).optional(),
       extraRoot: z.string().optional(),
-      limit: z.number().int().min(1).max(50).optional(),
+      offset: z.number().int().min(0).max(20000).optional(),
+      limit: z.number().int().min(1).max(200).optional(),
       since: z.string().optional(),
       path: z.string().optional(),
     },
@@ -873,6 +885,8 @@ export function buildToolShapes(z) {
       path: z.string().optional(),
       staged: z.boolean().optional(),
       statOnly: z.boolean().optional(),
+      offset: z.number().int().min(0).max(20000).optional(),
+      limit: z.number().int().min(1).max(200).optional(),
     },
     runtime_facts: {
       pid: z.number().int().min(1).optional(),
@@ -881,7 +895,7 @@ export function buildToolShapes(z) {
       selectors: z.array(z.string()).optional(),
       comparePid: z.number().int().min(1).optional(),
       declaredFile: z.string().optional(),
-      offset: z.number().int().min(0).max(10000).optional(),
+      offset: z.number().int().min(0).max(20000).optional(),
       limit: z.number().int().min(1).max(200).optional(),
     },
     runtime_classpath: {

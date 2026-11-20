@@ -190,7 +190,7 @@ test('exposes list_processes through the in-process tool registry', async (t) =>
   });
   const { tools, calls } = createTools({ scenario, anchor: Date.now(), runDir: dir });
   const invalid = await tools.list_processes({ limit: 0 });
-  assert.equal(invalid.code, 'INVALID_LIMIT');
+  assert.equal(invalid.code, 'INVALID_PAGE');
   const missing = await tools.list_processes({ pid: 999999999 });
   assert.equal(missing.count, 0);
   assert.ok(calls.some((call) => call.name === 'list_processes'));
