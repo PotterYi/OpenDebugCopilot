@@ -15,6 +15,9 @@ const memoryKindEl = $('memory-kind');
 const memoryTextEl = $('memory-text');
 const memoryAddBtn = $('memory-add');
 const memoryMessageEl = $('memory-message');
+const memoryOpenBtn = $('memory-open');
+const memoryModal = $('memory-modal');
+const memoryCloseBtn = $('memory-close');
 const runsEl = $('runs');
 const reportEl = $('report');
 const historyMessageEl = $('history-message');
@@ -607,6 +610,9 @@ function renderProjectMemory(state) {
   memoryProjectEl.textContent = enabled
     ? `项目：${projectName} · ${notes.length} 条`
     : `未启用：${state?.reason ?? '请先配置后端源码目录或前端项目目录'}`;
+  if (memoryOpenBtn) {
+    memoryOpenBtn.textContent = enabled ? `项目记忆 (${notes.length})` : '项目记忆';
+  }
   if (!enabled && notes.length === 0) return;
   if (notes.length === 0) {
     memoryListEl.append(el('p', 'muted small', '暂无项目笔记；诊断完成后会自动沉淀日志格式与已排除假设。'));
@@ -656,6 +662,20 @@ async function loadProjectMemory() {
   } catch (error) {
     memoryProjectEl.textContent = `项目笔记不可用：${error.message}`;
   }
+}
+
+function openMemoryModal() {
+  if (!memoryModal) return;
+  memoryModal.hidden = false;
+  hideBrowserForModal();
+  memoryMessageEl.textContent = '';
+  loadProjectMemory().catch(() => {});
+}
+
+function closeMemoryModal() {
+  if (!memoryModal) return;
+  memoryModal.hidden = true;
+  restoreBrowserAfterModal();
 }
 
 async function loadConfig() {
@@ -3929,6 +3949,12 @@ memoryTextEl?.addEventListener('keydown', (event) => {
     event.preventDefault();
     memoryAddBtn?.click();
   }
+});
+
+memoryOpenBtn?.addEventListener('click', openMemoryModal);
+memoryCloseBtn?.addEventListener('click', closeMemoryModal);
+memoryModal?.addEventListener('click', (event) => {
+  if (event.target === memoryModal) closeMemoryModal();
 });
 
 profileSaveAsBtn.addEventListener('click', () => openProfileModal('create'));
