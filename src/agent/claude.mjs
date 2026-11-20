@@ -830,6 +830,8 @@ export function buildToolShapes(z) {
     },
     inspect_build_model: {
       root: z.enum(['backend']).optional(),
+      offset: z.number().int().min(0).max(20000).optional(),
+      limit: z.number().int().min(1).max(200).optional(),
     },
     query_result: {
       file: z.string(),

@@ -154,6 +154,8 @@ export function toolSpecs({ databases = [], runCommand = null } = {}) {
         type: 'object',
         properties: {
           root: { enum: ['backend'] },
+          offset: { type: 'integer', minimum: 0, maximum: 20000 },
+          limit: { type: 'integer', minimum: 1, maximum: 200 },
         },
         additionalProperties: false,
       },
@@ -833,7 +835,29 @@ export function createTools({
         probeRoot: probeRoot ?? path.dirname(root),
         rootLabel: 'backend',
       });
-      return spill('inspect_build_model', result);
+      const page = pageArgs({ offset: args.offset, limit: args.limit ?? 50 });
+      if (page.error) throw new AppError('INVALID_PAGE', page.error, { exitCode: 2 });
+      const poms = pageItems(result.poms, page);
+      const staleHints = pageItems(result.staleHints, page);
+      const stored = await spill('inspect_build_model', result, {
+        force: poms.truncated || staleHints.truncated,
+      });
+      return {
+        ...result,
+        poms: poms.items,
+        staleHints: staleHints.items,
+        totalCount: poms.total,
+        offset: page.offset,
+        limit: page.limit,
+        nextOffset: poms.nextOffset,
+        truncated: poms.truncated || staleHints.truncated,
+        capped: poms.capped || staleHints.capped,
+        droppedCount: poms.droppedCount + staleHints.droppedCount,
+        fields: ['poms', 'staleHints', 'ide.modules'],
+        pomsTotalCount: poms.total,
+        staleHintsTotalCount: staleHints.total,
+        ...(stored?.spilled ? { file: stored.file } : {}),
+      };
     }, args),
 
     query_result: (args = {}) => safe('query_result', async () => {
