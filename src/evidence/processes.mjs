@@ -4,7 +4,7 @@ import { promisify } from 'node:util';
 import iconv from 'iconv-lite';
 import { AppError } from '../core/errors.mjs';
 import { redactCommand } from '../core/redact.mjs';
-import { findPortPids } from './jvm.mjs';
+import { findPortPids, listJavaProcesses } from './jvm.mjs';
 
 const exec = promisify(execFile);
 const DEFAULT_LIMIT = 50;
@@ -258,13 +258,19 @@ function normalizeProcess(row) {
   };
 }
 
-function activeProcess(row) {
+function activeProcess(row, javaInfo = null) {
   return {
     pid: row.pid,
     ppid: row.ppid,
     name: row.name,
     startedAt: row.startedAt,
     command: truncateCommand(row._rawCommand),
+    ...(javaInfo
+      ? {
+          mainClass: javaInfo.mainClass ?? null,
+          launchedAsJar: Boolean(javaInfo.launchedAsJar),
+        }
+      : {}),
   };
 }
 
@@ -297,6 +303,7 @@ export async function listProcesses({
   javaOnly = false,
   limit = DEFAULT_LIMIT,
   includeAllUsers = false,
+  includeMainClass = false,
 } = {}) {
   validateFilters({ pid, port, limit, name, commandContains });
   const collected = process.platform === 'win32'
@@ -336,6 +343,16 @@ export async function listProcesses({
   }
   if (javaOnly) rows = rows.filter((row) => isJavaProcess(row));
 
+  let javaInfo = new Map();
+  if (includeMainClass) {
+    try {
+      const listed = await listJavaProcesses();
+      javaInfo = new Map((listed.processes ?? []).map((process) => [process.pid, process]));
+    } catch {
+      limitations.push('jps 不可用，未附加 mainClass');
+    }
+  }
+
   const timeOf = (row) => (row.startedAt ? Date.parse(row.startedAt) : 0);
   rows.sort((a, b) => (timeOf(b) - timeOf(a)) || (a.pid - b.pid));
 
@@ -348,7 +365,7 @@ export async function listProcesses({
   limitations.push('command 已脱敏并截断到 300 字符；脱敏为尽力而为');
 
   return {
-    processes: limited.map(activeProcess),
+    processes: limited.map((row) => activeProcess(row, includeMainClass ? javaInfo.get(row.pid) : null)),
     count: limited.length,
     totalCount,
     truncated: totalCount > limited.length,

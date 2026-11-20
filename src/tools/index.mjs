@@ -7,7 +7,7 @@ import { resolveScenarioPaths } from '../core/scenario.mjs';
 import { readLogs, listThreads, searchAll } from '../evidence/logs.mjs';
 import { readSource, searchSource } from '../evidence/source.mjs';
 import { queryDatabase, writeDatabase } from '../evidence/db.mjs';
-import { listJavaProcesses, runtimeClasspath } from '../evidence/jvm.mjs';
+import { runtimeClasspath } from '../evidence/jvm.mjs';
 import { listProcesses } from '../evidence/processes.mjs';
 import { listDirectory, statFile } from '../evidence/fs.mjs';
 import { inspectBuildModel } from '../evidence/build-model.mjs';
@@ -120,7 +120,7 @@ export function toolSpecs({ databases = [], runCommand = null } = {}) {
     },
     {
       name: 'query_result',
-      description: 'Page or filter a spilled JSON tool result under the run evidence directory. Use field=missing/versionMismatch/runtimeOnly/dependencies/processes/etc., offset and limit to retrieve items that were truncated from the first response. filter is a case-insensitive substring over each item.',
+      description: 'Page or filter a spilled JSON tool result under the run evidence directory. Use this for structured arrays instead of read: field=missing/versionMismatch/runtimeOnly/dependencies/processes/records/etc., offset/limit to retrieve items truncated from the first response. filter is a case-insensitive substring over each item. read is for arbitrary text/line slices.',
       input_schema: {
         type: 'object',
         properties: {
@@ -136,7 +136,7 @@ export function toolSpecs({ databases = [], runCommand = null } = {}) {
     },
     {
       name: 'list_java_processes',
-      description: 'Lightweight Java-only process view via jps (pid + main class). Use port to narrow the result to the Java process listening on a local TCP port. Use list_processes when you need ppid, start time, command line or non-Java processes.',
+      description: 'Compatibility Java-only view of list_processes: pid, mainClass and launchedAsJar. Use list_processes when you need ppid, start time, command line or non-Java processes.',
       input_schema: {
         type: 'object',
         properties: {
@@ -162,7 +162,7 @@ export function toolSpecs({ databases = [], runCommand = null } = {}) {
     },
     {
       name: 'list_processes',
-      description: 'List local OS processes with pid, ppid, name, start time and a redacted command line. Use it to identify which instance is actually running (IDE debug vs extracted jar vs stale process) before choosing a target. Defaults to the current user/session and 50 rows. Filters: pid, port, name, commandContains, javaOnly. command is redacted then truncated.',
+      description: 'List local OS processes with pid, ppid, name, start time and a redacted command line. Use it to identify which instance is actually running (IDE debug vs extracted jar vs stale process) before choosing a target. Defaults to the current user/session and 50 rows. Filters: pid, port, name, commandContains, javaOnly. With javaOnly it also includes mainClass/launchedAsJar; list_java_processes is a compatibility alias. command is redacted then truncated.',
       input_schema: {
         type: 'object',
         properties: {
@@ -919,7 +919,14 @@ export function createTools({
     }, args),
 
     list_java_processes: (args = {}) => safe('list_java_processes', async () => {
-      const result = await listJavaProcesses({ port: args.port });
+      // Compatibility view of list_processes: jps-style Java details without
+      // duplicating the process collection implementation.
+      const result = await listProcesses({
+        port: args.port,
+        javaOnly: true,
+        includeMainClass: true,
+        limit: 200,
+      });
       return paginateResult('list_java_processes', result, 'processes', args);
     }, args),
 
