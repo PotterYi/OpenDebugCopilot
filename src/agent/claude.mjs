@@ -246,6 +246,7 @@ const SYSTEM_PROMPT = `你是 DebugCopilot 的后端问题定位助手。你的�
 25. 源码与配置检索用 search_source：默认包含 POM/YAML/properties/JSON 等配置文件，可用 includeConfig=false 只看代码。需要正则时传 regex=true（≤200 字符，禁用反向引用/后顾/嵌套量词；在 worker 中执行，5 秒超时）。结果按 path+line 稳定排序，用 offset/nextOffset 翻页；标记 spilled/file 时用 query_result field=matches 取后续页，不要重复同一关键词。pom.xml、application-*.yml 等配置可直接用 read_source 按路径读取。
 26. 结论必须可证伪：在 rejectedHypotheses 中列出本轮认真考虑后排除的备选假设（建议 1-3 条，最多 5 条），每条写清 hypothesis、refutedBy（至少 1 条真实存在的证据引用）和 reason（为什么该证据否定它）。只把“被正面证据否定”的假设列入；仅有证据缺失时不要声称已排除。若确实没有可排除的备选假设，rejectedHypotheses 留空，并在 noRejectedHypothesesReason 中说明原因；不要为了填字段编造假设或引用。
 27. 用户 prompt 中的「工具积累的项目前提」是历史诊断/项目笔记，不是用户本次回答，也不是当前证据。把它当作待验证线索：必须用本次证据复核，不得写入 evidenceRefs，不得仅凭历史前提下结论；与本次回答冲突时并列说明。
+28. 结论必须交代日志关联依据：引用 evidence.logs.correlation 的 strategy/strength；当 strength 为 weak（time-window）时必须明确写“仅按时间窗关联，可能混入其他请求”，不要把弱关联日志当作精确证据。
 
 # 工具边界（先看这里，不要试探）
 - run_command：只允许项目构建/测试工具链（mvn/gradle/npm/pnpm/yarn/npx/pytest/go/dotnet/cargo/python），一次一条；禁止 ; | && $()、install/publish/run/dev server。不要用 python -V、echo、print 试探能力。
@@ -272,7 +273,8 @@ const FOLLOWUP_SYSTEM_PROMPT = `你是 DebugCopilot 的诊断助手，正在和�
 14. 列表结果标记 spilled/nextOffset/file 时用 query_result 分页/过滤，不要重复调用大列表工具。工程模型过期用 inspect_build_model，探针根只读，不读同级源码或 workspace.xml。运行时事实用 runtime_facts，按 selector 精确查询。源码/配置检索用 search_source（默认含配置，regex=true 走受控 worker），可按 offset/nextOffset 或 query_result field=matches 翻页。
 15. 不要直接修改文件。使用中文回答。
 16. 追问若重新定位了根因，必须同步更新 rejectedHypotheses（排除的备选假设 + 真实存在的否定证据 + 理由）；若只是解释、评估或修改建议，且没有重新定位根因，rejectedHypotheses 留空并在 noRejectedHypothesesReason 中说明“本轮为追问解释，未重新定位根因”。不要输出不存在的证据引用。
-17. 上一轮快照中的 memory 是当时注入的项目前提，不是当前证据，也不是用户本次回答；可用它理解上下文，但不得当作 evidenceRefs，冲突时以当前证据为准。`;
+17. 上一轮快照中的 memory 是当时注入的项目前提，不是当前证据，也不是用户本次回答；可用它理解上下文，但不得当作 evidenceRefs，冲突时以当前证据为准。
+18. 上一轮的 logs.correlation 只说明当时的关联档位；引用旧日志时说明关联强度，weak/time-window 需保留“可能混入其他请求”的限定。`;
 
 /** Build a system prompt array with a static cacheable prefix. */
 export function buildCachedSystemPrompt(staticPrompt, dynamicSuffix, boundary = '__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__') {
@@ -429,6 +431,7 @@ function sanitizeEvidence(evidence) {
     },
     marker: evidence.marker,
     logs: {
+      correlation: evidence.logs?.correlation,
       count: evidence.logs?.count,
       markerMatched: evidence.logs?.markerMatched,
       waitedMs: evidence.logs?.waitedMs,
@@ -617,6 +620,7 @@ export function buildFollowUpPrompt(question, previous = {}) {
       error: previous.response?.error,
     },
     logs: {
+      correlation: previous.logs?.correlation ?? null,
       count: previous.logs?.count ?? 0,
       parser: previous.logs?.parser,
       parserFallback: previous.logs?.parserFallback,

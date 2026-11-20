@@ -238,6 +238,8 @@ export function buildReport(result) {
       confidence: agent.confidence ?? null,
       correlation: result.logs?.correlation?.strategy ?? null,
       correlationId: result.logs?.correlation?.matchedId ?? null,
+      correlationStrength: result.logs?.correlation?.strength ?? null,
+      correlationCaveat: result.logs?.correlation?.caveat ?? null,
       frontendErrors: result.frontend?.errors?.length ?? 0,
       frontendSources: result.frontend?.files?.length ?? 0,
     },
@@ -269,6 +271,10 @@ export function buildReport(result) {
 
 function yesNo(value) {
   return value ? '通过' : '失败';
+}
+
+function correlationStrengthLabel(strength) {
+  return { strong: '强', medium: '中', weak: '弱', none: '无' }[strength] ?? strength ?? '未知';
 }
 
 function correlationText(report) {
@@ -409,6 +415,8 @@ export function renderMarkdown(report) {
           : [])),
     '',
     '## 结论',
+    '',
+    `> 日志关联：${correlationText(report)}（强度：${correlationStrengthLabel(report.summary.correlationStrength)}）${report.summary.correlationCaveat ? `；${report.summary.correlationCaveat}` : ''}`,
     '',
     report.conclusion || '(无结论)',
     ...(report.databaseNotice ? ['', `> ⚠ ${report.databaseNotice}`] : []),

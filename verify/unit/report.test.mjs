@@ -417,3 +417,20 @@ test('renders output suspicions without turning status red', () => {
   assert.match(markdown, /\[build\] 检测到 BUILD FAILURE：BUILD FAILURE/);
   assert.match(markdown, /测试自检[\s\S]*通过（0 个用例，存疑）/);
 });
+
+test('renders correlation strength in the conclusion basis', () => {
+  const withCorrelation = {
+    ...result,
+    logs: {
+      ...result.logs,
+      correlation: {
+        strategy: 'time-window',
+        matchedId: null,
+        strength: 'weak',
+        caveat: '仅按时间窗关联，可能混入其他请求',
+      },
+    },
+  };
+  const markdown = renderMarkdown(buildReport(withCorrelation));
+  assert.match(markdown, /日志关联：时间窗兜底（可能混入其他请求）（强度：弱）；仅按时间窗关联/);
+});

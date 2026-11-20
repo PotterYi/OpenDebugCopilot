@@ -38,6 +38,8 @@ test('layer 1: marker wins when present', async () => {
     marker: 'dcprobeaaa111',
   });
   assert.equal(result.strategy, 'marker');
+  assert.equal(result.strength, 'strong');
+  assert.equal(result.caveat, null);
   assert.equal(result.result.records.length, 1);
 });
 
@@ -50,6 +52,7 @@ test('layer 2: time window + thread', async () => {
     thread: 'http-nio-8080-exec-1',
   });
   assert.equal(result.strategy, 'window-thread');
+  assert.equal(result.strength, 'medium');
   assert.ok(result.result.records.every((record) => record.thread === 'http-nio-8080-exec-1'));
 });
 
@@ -62,6 +65,7 @@ test('layer 3: business id correlates across threads', async () => {
     businessIds: ['ORD123456'],
   });
   assert.equal(result.strategy, 'business-id');
+  assert.equal(result.strength, 'medium');
   assert.equal(result.matchedId, 'ORD123456');
   assert.deepEqual(
     result.result.records.map((record) => record.thread).sort(),
@@ -79,6 +83,7 @@ test('trace id is a fallback, not the primary path', async () => {
     traceId: 'trace-abc-123',
   });
   assert.equal(result.strategy, 'trace-id');
+  assert.equal(result.strength, 'strong');
   assert.equal(result.matchedId, 'trace-abc-123');
 });
 
@@ -90,6 +95,8 @@ test('falls back to time window and reports none when empty', async () => {
     window,
   });
   assert.equal(windowed.strategy, 'time-window');
+  assert.equal(windowed.strength, 'weak');
+  assert.match(windowed.caveat, /可能混入/);
   assert.ok(windowed.result.records.length > 0);
 
   const empty = await correlateLogs({
@@ -99,6 +106,8 @@ test('falls back to time window and reports none when empty', async () => {
     window,
   });
   assert.equal(empty.strategy, 'none');
+  assert.equal(empty.strength, 'none');
+  assert.ok(empty.caveat);
   assert.equal(empty.result.records.length, 0);
 });
 

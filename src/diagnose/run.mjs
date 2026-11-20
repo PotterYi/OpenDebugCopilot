@@ -399,7 +399,13 @@ async function diagnoseWithFired({
   const businessIds = extractBusinessIds({ request: fired.request, response: fired.response });
   const traceId = extractTraceId(fired.request?.headers, fired.response?.headers);
   const correlation = wait.matched
-    ? { strategy: 'marker', matchedId: marker, result: wait.result }
+    ? {
+        strategy: 'marker',
+        matchedId: marker,
+        strength: 'strong',
+        caveat: null,
+        result: wait.result,
+      }
     : await correlateLogs({
         logfiles: paths.logfiles,
         parser: scenario.parser,
@@ -645,6 +651,8 @@ async function diagnoseWithFired({
       correlation: {
         strategy: correlation.strategy,
         matchedId: correlation.matchedId ?? null,
+        strength: correlation.strength ?? 'none',
+        caveat: correlation.caveat ?? null,
         businessIds,
         traceId,
       },

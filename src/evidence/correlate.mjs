@@ -1,5 +1,14 @@
 import { readLogs, searchAll } from './logs.mjs';
 
+const CORRELATION_STRENGTH = {
+  marker: 'strong',
+  'window-thread': 'medium',
+  'business-id': 'medium',
+  'trace-id': 'strong',
+  'time-window': 'weak',
+  none: 'none',
+};
+
 const IGNORED_ID_KEY = /^(code|status|statuscode|httpcode|errorcode|resultcode|retcode|msg|message|page|pagenum|pageno|pagesize|total|totalnum|count|index|type|level)$/i;
 const SENSITIVE_HEADER = /^(authorization|cookie|set-cookie|x-api-key|proxy-authorization|x-auth-token)$/i;
 
@@ -167,13 +176,25 @@ export async function correlateLogs({
   if (marker) {
     const result = await readLogs({ ...base, marker });
     if (result.records.length > 0) {
-      return { strategy: 'marker', matchedId: marker, result };
+      return {
+        strategy: 'marker',
+        matchedId: marker,
+        strength: CORRELATION_STRENGTH.marker,
+        caveat: null,
+        result,
+      };
     }
   }
 
   const windowResult = await readLogs({ ...base, thread: thread ?? undefined });
   if (thread && windowResult.records.length > 0) {
-    return { strategy: 'window-thread', matchedId: thread, result: windowResult };
+    return {
+      strategy: 'window-thread',
+      matchedId: thread,
+      strength: CORRELATION_STRENGTH['window-thread'],
+      caveat: null,
+      result: windowResult,
+    };
   }
 
   for (const id of businessIds) {
@@ -183,6 +204,8 @@ export async function correlateLogs({
       return {
         strategy: 'business-id',
         matchedId: id,
+        strength: CORRELATION_STRENGTH['business-id'],
+        caveat: null,
         result: { ...result, records, matches: records },
       };
     }
@@ -195,14 +218,21 @@ export async function correlateLogs({
       return {
         strategy: 'trace-id',
         matchedId: traceId,
+        strength: CORRELATION_STRENGTH['trace-id'],
+        caveat: null,
         result: { ...result, records, matches: records },
       };
     }
   }
 
+  const strategy = windowResult.records.length > 0 ? 'time-window' : 'none';
   return {
-    strategy: windowResult.records.length > 0 ? 'time-window' : 'none',
+    strategy,
     matchedId: null,
+    strength: CORRELATION_STRENGTH[strategy],
+    caveat: strategy === 'time-window'
+      ? '仅按时间窗关联，可能混入其他请求'
+      : '未匹配到可用关联，日志仅作背景参考',
     result: windowResult,
   };
 }

@@ -1824,13 +1824,22 @@ function describeCorrelation(result) {
     'window-thread': '时间窗 + 线程',
     'time-window': '时间窗兜底',
   };
-  if (!strategy || strategy === 'none') return { label: '未匹配到日志', warning: null };
-  const label = `${labels[strategy] ?? strategy}${id ? `（${id}）` : ''}`;
+  const strength = result.logs?.correlation?.strength
+    ?? (strategy === 'time-window' ? 'weak' : (strategy ? 'medium' : 'none'));
+  const strengthLabels = { strong: '强', medium: '中', weak: '弱', none: '无' };
+  const caveat = result.logs?.correlation?.caveat;
+  if (!strategy || strategy === 'none') {
+    return {
+      label: `未匹配到日志（强度：${strengthLabels[strength] ?? strength}）`,
+      warning: caveat ?? '未匹配到可用的日志关联。',
+    };
+  }
+  const label = `${labels[strategy] ?? strategy}${id ? `（${id}）` : ''}（强度：${strengthLabels[strength] ?? strength}）`;
   return {
     label,
-    warning: strategy === 'time-window'
+    warning: caveat ?? (strategy === 'time-window'
       ? '当前仅按时间窗关联，命中的日志可能混入其他请求。'
-      : null,
+      : null),
   };
 }
 
@@ -2363,6 +2372,11 @@ function renderRunBody(container, result, agent, view, { readOnly = false, showH
     container.append(section('排除的假设', el('p', 'muted small', agent.noRejectedHypothesesReason)));
   }
 
+  container.append(el(
+    'p',
+    'muted small',
+    `日志关联：${correlationInfo.label}${correlationInfo.warning ? ` — ${correlationInfo.warning}` : ''}`,
+  ));
   container.append(section('结论', el('p', 'conclusion', agent?.conclusion ?? '(无结论)')));
   if (result.databases?.notice && agent === result.agent) {
     container.append(el('p', 'error-text small', `⚠ ${result.databases.notice}`));

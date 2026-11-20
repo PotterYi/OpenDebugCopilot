@@ -388,6 +388,7 @@ function printDiagnosis(result, runDir, root, { workspaceUndecided = false } = {
       ? result.agent.actions.map((action) => `  Action     : [${action.type}] ${action.summary}`)
       : []),
     `  Logs       : ${logs.count} record(s), marker ${logs.markerMatched ? 'matched' : `not matched (${logs.waitedMs}ms)`}`,
+    `  Correlation: ${result.logs?.correlation?.strategy ?? 'none'}${result.logs?.correlation?.matchedId ? ` (${result.logs.correlation.matchedId})` : ''} · strength=${result.logs?.correlation?.strength ?? 'none'}${result.logs?.correlation?.caveat ? ` · ${result.logs.correlation.caveat}` : ''}`,
     `  Recheck    : ${result.recheck ? `${result.recheck.verdict} (${result.recheck.runs} runs, 一致不等于正确)` : 'off'}`,
     ...(result.agent?.verification
       ? [
