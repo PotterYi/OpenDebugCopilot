@@ -486,6 +486,85 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
         note: payload.note ?? null,
       });
     }
+    if (payload.action === 'element-recheck') {
+      const runId = String(payload.runId ?? '');
+      const run = await service.getRun(runId);
+      const element = run.result?.element;
+      if (!element?.selector) throw new Error('该诊断没有可复检的元素');
+      const browser = getHost();
+      if (!browser?.captureElementBySelector) throw new Error('内嵌浏览器不可用');
+      const recheck = await browser.captureElementBySelector({
+        url: element.page?.url ?? null,
+        selector: element.selector,
+      });
+      const pick = (value) => ({
+        selector: value?.selector ?? null,
+        text: value?.text ?? null,
+        tag: value?.tag ?? null,
+        rect: value?.rect ? { width: value.rect.width, height: value.rect.height } : null,
+        styles: value?.styles
+          ? {
+              display: value.styles.display ?? null,
+              visibility: value.styles.visibility ?? null,
+              color: value.styles.color ?? null,
+              backgroundColor: value.styles.backgroundColor ?? null,
+              fontSize: value.styles.fontSize ?? null,
+              width: value.styles.width ?? null,
+              height: value.styles.height ?? null,
+            }
+          : null,
+      });
+      const before = pick(element);
+      const after = pick(recheck.info);
+      const fields = ['selector', 'text', 'tag', 'rect', 'styles'];
+      const diffs = [];
+      for (const field of fields) {
+        if (JSON.stringify(before[field]) !== JSON.stringify(after[field])) {
+          diffs.push({ field, before: before[field], after: after[field] });
+        }
+      }
+      const runDir = path.join(service.runsRoot, runId);
+      const evidenceDir = path.join(runDir, 'evidence');
+      await mkdir(evidenceDir, { recursive: true });
+      let afterScreenshot = null;
+      if (recheck.screenshotDataUrl) {
+        const match = /^data:image\/png;base64,(.+)$/s.exec(recheck.screenshotDataUrl);
+        if (match) {
+          afterScreenshot = 'evidence/element-recheck-after.png';
+          await writeFile(path.join(runDir, afterScreenshot), Buffer.from(match[1], 'base64'));
+        }
+      }
+      const evidence = {
+        beforeScreenshot: element.screenshot ?? null,
+        afterScreenshot,
+        json: 'evidence/element-recheck.json',
+      };
+      await writeFile(path.join(runDir, evidence.json), JSON.stringify({
+        selector: element.selector,
+        found: recheck.found,
+        before,
+        after,
+        diffs,
+        capturedAt: new Date().toISOString(),
+      }, null, 2), 'utf8');
+      const unchanged = recheck.found && diffs.length === 0;
+      const status = (!recheck.found || unchanged) ? 'failed' : 'pending';
+      const reason = !recheck.found
+        ? 'element-missing'
+        : (unchanged ? 'element-unchanged' : 'element-changed-needs-review');
+      const observed = !recheck.found
+        ? '重新打开页面后未找到原选择器'
+        : `重新渲染后检测到 ${diffs.length} 项变化`;
+      return service.updateRunSymptomCheck(runId, {
+        status,
+        method: 'element-recheck',
+        observed,
+        reason,
+        signature: { before, after, diffs },
+        evidence,
+        checkedAt: new Date().toISOString(),
+      });
+    }
     if (payload.action === 'delete') {
       return deleteRunWithWorkspacePolicy({
         service,
@@ -1039,6 +1118,12 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
         onMemory: payload.useMemory === false
           ? null
           : ({ candidates }) => service.mergeProjectMemory(candidates),
+        replayFetch: (url, init) => {
+          const browser = getHost();
+          return browser?.session?.fetch
+            ? browser.session.fetch(url, init)
+            : fetch(url, init);
+        },
         onProgress: sendProgress,
       };
       const outcome = element

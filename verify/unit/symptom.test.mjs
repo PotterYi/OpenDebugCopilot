@@ -70,3 +70,40 @@ test('persists a manual symptom confirmation to result.json and report.md', asyn
   assert.match(report, /已确认症状消失/);
   assert.match(report, /已验证（构建自检通过 \+ 症状确认）/);
 });
+
+test('persists an element recheck with before/after evidence', async (t) => {
+  const root = tempDir('symptom-element-recheck-test');
+  const runs = path.join(root, 'runs');
+  const runId = '20260101-000000-element';
+  const runDir = path.join(runs, runId);
+  await rm(root, { recursive: true, force: true });
+  await mkdir(runDir, { recursive: true });
+  await writeFile(path.join(runDir, 'result.json'), JSON.stringify({
+    meta: { runId, question: '元素错位', symptomStatus: 'pending' },
+    agent: { conclusion: 'ok', verification: { status: 'passed', mode: 'copy' } },
+    gates: { ok: true, checks: [] },
+    element: { selector: '#app', page: { url: 'http://localhost:5173/page' } },
+    symptomCheck: { status: 'pending', method: 'manual', steps: ['打开页面'], expected: '正常' },
+  }));
+  await writeFile(path.join(runDir, 'report.md'), '# old\n');
+  t.after(async () => { await rm(root, { recursive: true, force: true }); });
+  const service = createService({ root, runsDir: runs, configDir: path.join(root, 'configs') });
+  const updated = await service.updateRunSymptomCheck(runId, {
+    status: 'pending',
+    method: 'element-recheck',
+    observed: '重新渲染后检测到 2 项变化',
+    reason: 'element-changed-needs-review',
+    evidence: {
+      beforeScreenshot: 'evidence/element.png',
+      afterScreenshot: 'evidence/element-recheck-after.png',
+      json: 'evidence/element-recheck.json',
+    },
+    checkedAt: new Date().toISOString(),
+  });
+  assert.equal(updated.result.symptomCheck.method, 'element-recheck');
+  assert.equal(updated.result.symptomCheck.evidence.afterScreenshot, 'evidence/element-recheck-after.png');
+  assert.equal(updated.result.meta.verificationLevel, 'unverified');
+  const report = await readFile(path.join(runDir, 'report.md'), 'utf8');
+  assert.match(report, /浏览器元素复检/);
+  assert.match(report, /element-recheck-after\.png/);
+});

@@ -98,6 +98,10 @@ export const api = {
     if (dc?.invoke) return dc.invoke('dc:diagnose', payload);
     return http('/api/diagnose', { method: 'POST', body: JSON.stringify(payload) });
   },
+  async recheckElement(runId) {
+    if (dc?.invoke) return dc.invoke('dc:runs', { action: 'element-recheck', runId });
+    throw new Error('元素复检仅支持桌面版');
+  },
   async getProjectMemory() {
     if (dc?.invoke) return dc.invoke('dc:memory', { action: 'get' });
     return http('/api/memory');

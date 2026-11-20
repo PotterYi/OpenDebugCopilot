@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { redactSecrets } from './redact.mjs';
 
 const SAFE_DEFAULT_METHODS = ['GET', 'HEAD', 'OPTIONS'];
+const READ_METHODS = new Set(SAFE_DEFAULT_METHODS);
 const SENSITIVE_HEADER = /(?:authorization|cookie|token|secret|api[-_]?key|x-api-key)/i;
 const SAFE_RESPONSE_HEADERS = new Set(['content-type']);
 
@@ -25,6 +26,7 @@ export function replayConfig(workspace = {}) {
       ...(Array.isArray(raw.allowOrigins) ? raw.allowOrigins.map(normalizeOrigin) : []),
     ].filter(Boolean))],
     allowMethods: [...new Set(methods)],
+    allowCredentials: raw.allowCredentials === true,
     timeoutMs: Math.max(500, Math.min(30000, Number(raw.timeoutMs ?? 5000) || 5000)),
   };
 }
@@ -35,6 +37,7 @@ export function buildReplayFixture({ fired = null, workspace = {}, scenario = nu
   const request = fired?.request;
   if (!request?.url) return { ok: false, reason: 'no-request' };
   const method = String(request.method ?? 'GET').toUpperCase();
+  if (!READ_METHODS.has(method)) return { ok: false, reason: 'write-method-not-supported' };
   if (!config.allowMethods.includes(method)) return { ok: false, reason: 'method-not-allowed' };
   const origin = normalizeOrigin(request.url);
   if (!origin) return { ok: false, reason: 'invalid-url' };
@@ -44,7 +47,9 @@ export function buildReplayFixture({ fired = null, workspace = {}, scenario = nu
     return { ok: false, reason: 'sensitive-query' };
   }
   const headers = request.headers ?? {};
-  if (Object.keys(headers).some((key) => SENSITIVE_HEADER.test(key))) {
+  const sensitiveHeaders = Object.entries(headers)
+    .filter(([key]) => SENSITIVE_HEADER.test(key));
+  if (sensitiveHeaders.length > 0 && !config.allowCredentials) {
     return { ok: false, reason: 'auth-required' };
   }
   const safeHeaders = {};
@@ -53,11 +58,16 @@ export function buildReplayFixture({ fired = null, workspace = {}, scenario = nu
   }
   return {
     ok: true,
+    // Never persist these: they are handed to replayFixture only.
+    credentialHeaders: config.allowCredentials
+      ? Object.fromEntries(sensitiveHeaders.map(([key, value]) => [key, String(value)]))
+      : {},
     fixture: {
       method,
       url: String(request.url),
       origin,
       headers: safeHeaders,
+      credentials: config.allowCredentials ? 'session' : 'none',
       body: ['GET', 'HEAD'].includes(method) ? null : (request.body ?? null),
       resourceType: scenario?.capture?.resourceType ?? null,
       ruleId: scenario?.capture?.ruleId ?? null,
@@ -103,12 +113,13 @@ export function compareSymptom(before, after) {
 export async function replayFixture(fixture, {
   fetchImpl = globalThis.fetch,
   timeoutMs = 5000,
+  extraHeaders = {},
 } = {}) {
   if (typeof fetchImpl !== 'function') return { ok: false, reason: 'fetch-unavailable' };
   try {
     const response = await fetchImpl(fixture.url, {
       method: fixture.method,
-      headers: fixture.headers,
+      headers: { ...(fixture.headers ?? {}), ...(extraHeaders ?? {}) },
       body: fixture.body === null || fixture.body === undefined
         ? undefined
         : (typeof fixture.body === 'string' ? fixture.body : JSON.stringify(fixture.body)),

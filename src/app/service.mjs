@@ -163,6 +163,54 @@ export function createService({ root = process.cwd(), configDir, runsDir, secret
     return { runId, result, report };
   }
 
+  async function updateRunSymptomCheck(runId, patch = {}) {
+    if (!RUN_ID_PATTERN.test(String(runId))) {
+      throw new AppError('RUN_ID_INVALID', `Invalid run id: ${runId}`, { exitCode: 2 });
+    }
+    const dir = path.join(runsRoot, runId);
+    let result;
+    try {
+      result = JSON.parse(await readFile(path.join(dir, 'result.json'), 'utf8'));
+    } catch (err) {
+      throw new AppError('RUN_NOT_FOUND', `Run not found: ${runId}`, { exitCode: 3, cause: err });
+    }
+    const symptomCheck = normalizeSymptomCheck({
+      ...(result.symptomCheck ?? {}),
+      ...patch,
+      status: patch.status ?? result.symptomCheck?.status ?? 'pending',
+      method: patch.method ?? result.symptomCheck?.method ?? 'manual',
+    });
+    if (!symptomCheck) throw new AppError('SYMPTOM_INVALID', 'invalid symptom check', { exitCode: 2 });
+    result.symptomCheck = symptomCheck;
+    result.meta = result.meta ?? {};
+    result.meta.symptomStatus = symptomCheck.status;
+    result.meta.verificationLevel = verificationLevel({
+      verification: result.agent?.verification,
+      symptomCheck,
+    });
+    if (result.gates) {
+      result.gates.symptom = { status: symptomCheck.status, method: symptomCheck.method };
+      result.gates.level = result.meta.verificationLevel;
+    }
+    const tmp = path.join(dir, 'result.json.tmp');
+    await writeFile(tmp, JSON.stringify(result, null, 2), 'utf8');
+    await rename(tmp, path.join(dir, 'result.json'));
+    try {
+      const metaPath = path.join(dir, 'meta.json');
+      const meta = JSON.parse(await readFile(metaPath, 'utf8'));
+      meta.symptomStatus = symptomCheck.status;
+      meta.verificationLevel = result.meta.verificationLevel;
+      const metaTmp = `${metaPath}.tmp`;
+      await writeFile(metaTmp, JSON.stringify(meta, null, 2), 'utf8');
+      await rename(metaTmp, metaPath);
+    } catch {
+      // optional for old runs
+    }
+    const report = renderMarkdown(buildReport(result));
+    await writeFile(path.join(dir, 'report.md'), report, 'utf8');
+    return { runId, result, report };
+  }
+
   async function deleteRun(runId) {
     if (!RUN_ID_PATTERN.test(String(runId))) {
       throw new AppError('RUN_ID_INVALID', `Invalid run id: ${runId}`, { exitCode: 2 });
@@ -341,6 +389,7 @@ export function createService({ root = process.cwd(), configDir, runsDir, secret
     listRuns,
     getRun,
     updateRunSymptom,
+    updateRunSymptomCheck,
     deleteRun,
     getRunWorkspacePending,
     keepRunWorkspace,

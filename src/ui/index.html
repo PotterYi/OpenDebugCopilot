@@ -79,8 +79,11 @@
           <label class="inline" title="自动探测到测试命令时执行；前端 test 脚本只提示，不自动执行">
             <input name="verifyRunTests" type="checkbox" /> 自动执行探测到的后端测试命令
           </label>
-          <label class="inline" title="仅对本地/允许 origin 的捕获请求生效；默认只允许 GET/HEAD，带认证头的请求回退为人工确认">
-            <input name="replayEnabled" type="checkbox" /> 自动重放捕获请求以验证症状（仅安全方法和允许的 origin）
+          <label class="inline" title="仅对本地/允许 origin 的只读捕获请求生效；写方法仍不会自动重放">
+            <input name="replayEnabled" type="checkbox" /> 自动重放捕获请求以验证症状（仅只读方法和允许的 origin）
+          </label>
+          <label class="inline" title="使用本次浏览器会话 Cookie/认证头重放只读请求；凭据只在本机使用，不写入结果或发送给模型">
+            <input name="replayAllowCredentials" type="checkbox" /> 重放时复用本次会话凭据（仅只读）
           </label>
           <label>重放允许的 origin（每行一个，可选）
             <textarea name="replayAllowOrigins" rows="2" placeholder="默认包含后端地址；例如 http://127.0.0.1:8080"></textarea>

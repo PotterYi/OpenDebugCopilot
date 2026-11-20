@@ -33,6 +33,7 @@ export const DEFAULT_WORKSPACE = Object.freeze({
   window: { beforeMs: 3000, afterMs: 2000 },
   replay: {
     enabled: false,
+    allowCredentials: false,
     allowOrigins: [],
     allowMethods: ['GET', 'HEAD', 'OPTIONS'],
     timeoutMs: 5000,
@@ -119,6 +120,7 @@ export function validateWorkspace(value) {
       const timeout = Number(raw.timeoutMs ?? DEFAULT_WORKSPACE.replay.timeoutMs);
       return {
         enabled: raw.enabled === true,
+        allowCredentials: raw.allowCredentials === true,
         allowOrigins: Array.isArray(raw.allowOrigins)
           ? raw.allowOrigins.map(String).map((item) => item.trim()).filter(Boolean)
           : [],

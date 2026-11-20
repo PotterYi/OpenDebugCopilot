@@ -212,6 +212,7 @@ function fillForm(config) {
   form.elements.verifyCommands.value = (workspace.verifyCommands ?? []).map(formatVerifyCommand).join('\n');
   form.elements.verifyRunTests.checked = workspace.verifyRunTests !== false;
   form.elements.replayEnabled.checked = workspace.replay?.enabled === true;
+  form.elements.replayAllowCredentials.checked = workspace.replay?.allowCredentials === true;
   form.elements.replayAllowOrigins.value = (workspace.replay?.allowOrigins ?? []).join('\n');
   form.elements.replayAllowMethods.value = (workspace.replay?.allowMethods ?? ['GET', 'HEAD', 'OPTIONS']).join(',');
   form.elements.beforeMs.value = workspace.window?.beforeMs ?? 3000;
@@ -237,6 +238,7 @@ function readForm() {
       verifyRunTests: form.elements.verifyRunTests.checked,
       replay: {
         enabled: form.elements.replayEnabled.checked,
+        allowCredentials: form.elements.replayAllowCredentials.checked,
         allowOrigins: form.elements.replayAllowOrigins.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean),
         allowMethods: form.elements.replayAllowMethods.value.split(',').map((item) => item.trim().toUpperCase()).filter(Boolean),
         timeoutMs: configCache?.workspace?.replay?.timeoutMs ?? 5000,
@@ -1703,6 +1705,7 @@ function renderSymptomCheck(result, view) {
   const meta = symptomStatusMeta(check);
   summary.append(el('span', `badge ${meta.className}`.trim(), `症状验证：${meta.label}`));
   if (check.method === 'replay') summary.append(el('span', 'muted small', '自动重放'));
+  if (check.method === 'element-recheck') summary.append(el('span', 'muted small', '浏览器复检'));
   block.append(summary);
 
   if (Array.isArray(check.steps) && check.steps.length > 0) {
@@ -1713,6 +1716,9 @@ function renderSymptomCheck(result, view) {
   if (check.expected) block.append(el('p', 'muted small', `预期：${check.expected}`));
   if (check.reason) block.append(el('p', 'muted small', `说明：${check.reason}`));
   if (check.note) block.append(el('p', 'muted small', `备注：${check.note}`));
+  if (check.evidence) {
+    block.append(el('p', 'muted small', `复检证据：${[check.evidence.beforeScreenshot, check.evidence.afterScreenshot, check.evidence.json].filter(Boolean).join(' / ')}`));
+  }
 
   const runId = view.response?.runId ?? result.meta?.runId;
   if (runId) {
@@ -1738,6 +1744,27 @@ function renderSymptomCheck(result, view) {
       });
       actions.append(button);
     };
+    if (api.isDesktop && result.element?.selector) {
+      const recheck = el('button', 'secondary', '用浏览器重新检查元素');
+      recheck.type = 'button';
+      recheck.addEventListener('click', async () => {
+        recheck.disabled = true;
+        setStatus('正在重新渲染并检查元素…');
+        try {
+          const updated = await api.recheckElement(runId);
+          if (view.response) {
+            view.response.result = updated.result;
+            view.response.report = updated.report;
+          }
+          renderRunInto(view);
+          setStatus('元素复检完成，请查看前后证据', 'ok');
+        } catch (error) {
+          setStatus(`元素复检失败：${error.message}`, 'error');
+          recheck.disabled = false;
+        }
+      });
+      actions.append(recheck);
+    }
     addButton('我已复现，症状已消失', 'passed');
     addButton('我已复现，症状仍存在', 'failed');
     addButton('暂时无法验证', 'skipped');

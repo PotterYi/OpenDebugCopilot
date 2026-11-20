@@ -1367,6 +1367,7 @@ async function diagnoseWithFired({
       const replay = await replayFixture(fixtureResult.fixture, {
         fetchImpl: replayFetch ?? globalThis.fetch,
         timeoutMs: workspace.replay?.timeoutMs ?? 5000,
+        extraHeaders: fixtureResult.credentialHeaders ?? {},
       });
       if (!replay.ok) {
         symptomReason = replay.reason;
@@ -1379,7 +1380,13 @@ async function diagnoseWithFired({
         symptomReason = comparison.reason;
         symptomObserved = `HTTP ${after.httpStatus}${after.businessCode != null ? ` / code ${after.businessCode}` : ''}`;
         symptomSignature = { before, after };
-        replayInfo = { attempted: true, comparison, before, after };
+        replayInfo = {
+          attempted: true,
+          credentials: fixtureResult.fixture.credentials ?? 'none',
+          comparison,
+          before,
+          after,
+        };
         progress(
           'replay',
           comparison.status === 'passed'

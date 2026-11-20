@@ -28,12 +28,14 @@ async function initRepo(dir) {
 test('normalizes replay workspace defaults', () => {
   const defaults = validateWorkspace({});
   assert.equal(defaults.replay.enabled, false);
+  assert.equal(defaults.replay.allowCredentials, false);
   assert.deepEqual(defaults.replay.allowMethods, ['GET', 'HEAD', 'OPTIONS']);
   const custom = validateWorkspace({
     backendUrl: 'http://127.0.0.1:8080',
-    replay: { enabled: true, allowOrigins: ['http://127.0.0.1:8080'], allowMethods: ['get', 'head'], timeoutMs: 3000 },
+    replay: { enabled: true, allowCredentials: true, allowOrigins: ['http://127.0.0.1:8080'], allowMethods: ['get', 'head'], timeoutMs: 3000 },
   });
   assert.equal(custom.replay.enabled, true);
+  assert.equal(custom.replay.allowCredentials, true);
   assert.deepEqual(custom.replay.allowMethods, ['GET', 'HEAD']);
   assert.equal(custom.replay.timeoutMs, 3000);
 });
@@ -53,7 +55,7 @@ test('only builds fixtures for allowed origins and safe methods', () => {
   assert.equal(buildReplayFixture({
     fired: { request: { method: 'POST', url: 'http://127.0.0.1:8080/system/user' } },
     workspace,
-  }).reason, 'method-not-allowed');
+  }).reason, 'write-method-not-supported');
   assert.equal(buildReplayFixture({
     fired: { request: { method: 'GET', url: 'http://127.0.0.1:9090/other' } },
     workspace,
@@ -66,6 +68,22 @@ test('only builds fixtures for allowed origins and safe methods', () => {
     fired: { request: { method: 'GET', url: 'http://127.0.0.1:8080/x?token=secret' } },
     workspace,
   }).reason, 'sensitive-query');
+
+  const credentialed = buildReplayFixture({
+    fired: {
+      request: {
+        method: 'GET',
+        url: 'http://127.0.0.1:8080/private',
+        headers: { Authorization: 'Bearer secret', Cookie: 'sid=abc', accept: 'application/json' },
+      },
+    },
+    workspace: { ...workspace, replay: { ...workspace.replay, allowCredentials: true } },
+  });
+  assert.equal(credentialed.ok, true);
+  assert.equal(credentialed.fixture.credentials, 'session');
+  assert.equal(credentialed.fixture.headers.authorization, undefined);
+  assert.equal(credentialed.credentialHeaders.Authorization, 'Bearer secret');
+  assert.equal(credentialed.credentialHeaders.Cookie, 'sid=abc');
   assert.equal(buildReplayFixture({
     fired: { request: { method: 'GET', url: 'http://127.0.0.1:8080/x' } },
     workspace: { ...workspace, replay: { enabled: false } },
@@ -102,6 +120,20 @@ test('replays a fixture through an injected fetch', async () => {
   assert.equal(result.response.status, 200);
   assert.equal(received.url, 'http://127.0.0.1:8080/x');
   assert.equal(received.init.method, 'GET');
+
+  await replayFixture({
+    method: 'GET',
+    url: 'http://127.0.0.1:8080/x',
+    headers: { accept: 'application/json' },
+    body: null,
+  }, {
+    fetchImpl: async (url, init) => {
+      received = { url, init };
+      return { status: 200, statusText: 'OK', text: async () => '{}' };
+    },
+    extraHeaders: { Authorization: 'Bearer in-memory' },
+  });
+  assert.equal(received.init.headers.Authorization, 'Bearer in-memory');
 });
 
 test('marks the symptom passed after replaying a safe captured request', async (t) => {

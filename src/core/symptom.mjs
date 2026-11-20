@@ -1,6 +1,7 @@
 import { redactSecrets } from './redact.mjs';
 
 export const SYMPTOM_STATUSES = new Set(['pending', 'passed', 'failed', 'skipped']);
+export const SYMPTOM_METHODS = new Set(['manual', 'replay', 'element-recheck']);
 
 function requestPath(url) {
   try {
@@ -51,13 +52,15 @@ export function buildSymptomCheck({
   const normalizedStatus = SYMPTOM_STATUSES.has(status) ? status : 'pending';
   return {
     status: normalizedStatus,
-    method: method === 'replay' ? 'replay' : 'manual',
+    method: SYMPTOM_METHODS.has(method) ? method : 'manual',
     steps: buildSymptomSteps({ fired, element, scenario }),
     expected: '原始症状不再出现：同一请求/页面操作返回正常结果，且相关错误提示消失。',
     observed: observed ? redactSecrets(String(observed)).slice(0, 500) : null,
     note: note ? redactSecrets(String(note)).slice(0, 300) : null,
     reason: reason ? redactSecrets(String(reason)).slice(0, 300) : null,
     signature: signature ?? null,
+    evidence: null,
+    checkedAt: null,
     markedAt: normalizedStatus === 'pending' ? null : new Date().toISOString(),
   };
 }
@@ -66,13 +69,15 @@ export function normalizeSymptomCheck(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
   return {
     status: SYMPTOM_STATUSES.has(input.status) ? input.status : 'pending',
-    method: input.method === 'replay' ? 'replay' : 'manual',
+    method: SYMPTOM_METHODS.has(input.method) ? input.method : 'manual',
     steps: Array.isArray(input.steps) ? input.steps.filter((step) => typeof step === 'string').slice(0, 10) : [],
     expected: input.expected ? String(input.expected).slice(0, 500) : null,
     observed: input.observed ? String(input.observed).slice(0, 500) : null,
     note: input.note ? String(input.note).slice(0, 300) : null,
     reason: input.reason ? String(input.reason).slice(0, 300) : null,
     signature: input.signature ?? null,
+    evidence: input.evidence && typeof input.evidence === 'object' ? input.evidence : null,
+    checkedAt: typeof input.checkedAt === 'string' ? input.checkedAt : null,
     markedAt: typeof input.markedAt === 'string' ? input.markedAt : null,
   };
 }

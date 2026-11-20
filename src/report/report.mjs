@@ -85,6 +85,8 @@ export function buildReport(result) {
           observed: result.symptomCheck.observed ? scrubText(result.symptomCheck.observed) : null,
           note: result.symptomCheck.note ? scrubText(result.symptomCheck.note) : null,
           reason: result.symptomCheck.reason ? scrubText(result.symptomCheck.reason) : null,
+          evidence: result.symptomCheck.evidence ?? null,
+          checkedAt: result.symptomCheck.checkedAt ?? null,
           markedAt: result.symptomCheck.markedAt ?? null,
         }
       : null,
@@ -367,7 +369,16 @@ export function renderMarkdown(report) {
     '## 症状验证',
     '',
     `- 状态：${symptomStatusLabel(report.symptomCheck)}`,
-    ...(report.symptomCheck?.method ? [`- 方式：${report.symptomCheck.method === 'replay' ? '自动重放' : '人工确认'}`] : []),
+    ...(report.symptomCheck?.method
+      ? [`- 方式：${{
+          replay: '自动重放',
+          'element-recheck': '浏览器元素复检',
+          manual: '人工确认',
+        }[report.symptomCheck.method] ?? report.symptomCheck.method}`]
+      : []),
+    ...(report.symptomCheck?.evidence
+      ? [`- 复检证据：${[report.symptomCheck.evidence.beforeScreenshot, report.symptomCheck.evidence.afterScreenshot, report.symptomCheck.evidence.json].filter(Boolean).join(' / ')}`]
+      : []),
     ...(report.symptomCheck?.steps?.length
       ? ['- 复现步骤：', ...report.symptomCheck.steps.map((step) => `  - ${step}`)]
       : []),

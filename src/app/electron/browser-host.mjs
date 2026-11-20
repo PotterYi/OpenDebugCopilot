@@ -618,6 +618,68 @@ export class BrowserHost {
     }
   }
 
+  async waitForPageReady(timeoutMs = 15_000) {
+    const deadline = Date.now() + timeoutMs;
+    const contents = this.view.webContents;
+    while (Date.now() < deadline && contents.isLoading()) {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    return { url: contents.getURL(), loading: contents.isLoading() };
+  }
+
+  /**
+   * Reload a page and capture the same selector again. Used by the manual
+   * element recheck action; returns screenshots only as data URLs for the
+   * caller to persist, never as part of result.json.
+   */
+  async captureElementBySelector({ url = null, selector, reload = false } = {}) {
+    if (!selector) throw new Error('selector is required');
+    if (url) this.open(url);
+    else if (reload) this.reload();
+    await this.waitForPageReady();
+    const script = `(() => {
+      const fn = ${ELEMENT_EXTRACT_SOURCE};
+      const el = document.querySelector(${JSON.stringify(String(selector))});
+      if (!el) return null;
+      return fn.call(el);
+    })()`;
+    const info = await this.view.webContents.executeJavaScript(script).catch(() => null);
+    if (!info || typeof info !== 'object') {
+      return { found: false, selector, url: this.view.webContents.getURL(), screenshotDataUrl: null };
+    }
+    let screenshotDataUrl = null;
+    try {
+      const rect = info.rect ?? {};
+      const padding = 24;
+      const hasRect = Number(rect.width) > 0 && Number(rect.height) > 0;
+      const clip = hasRect
+        ? {
+            x: Math.max(0, Math.round((rect.left ?? rect.x ?? 0) - padding)),
+            y: Math.max(0, Math.round((rect.top ?? rect.y ?? 0) - padding)),
+            width: Math.max(16, Math.round(rect.width + padding * 2)),
+            height: Math.max(16, Math.round(rect.height + padding * 2)),
+          }
+        : undefined;
+      const image = await withTimeout(this.view.webContents.capturePage(clip), 2000, 'capturePage timeout');
+      if (image && !image.isEmpty()) {
+        const png = image.toPNG();
+        if (png.length <= 2 * 1024 * 1024) {
+          screenshotDataUrl = `data:image/png;base64,${png.toString('base64')}`;
+        }
+      }
+    } catch (error) {
+      this.elementLastScreenshotError = error?.message ?? String(error);
+    }
+    return {
+      found: true,
+      selector,
+      url: this.view.webContents.getURL(),
+      info,
+      screenshotDataUrl,
+    };
+  }
+
   /**
    * CDP paused a request to a local target: answer CORS preflights ourselves so the
    * backend never sees OPTIONS (avoiding e.g. DefaultOptionsMethodException); continue
