@@ -79,6 +79,10 @@
           <label class="inline" title="自动探测到测试命令时执行；前端 test 脚本只提示，不自动执行">
             <input name="verifyRunTests" type="checkbox" /> 自动执行探测到的后端测试命令
           </label>
+          <label title="在内置凭据/许可证/内网前缀之外追加禁读键前缀；命中后不返回值或指纹">
+            运行时事实额外禁读前缀（每行一个，可选）
+            <textarea name="runtimeFactsDenyPrefixes" rows="2" placeholder="例如 license. / internal. / 项目自定义密钥前缀"></textarea>
+          </label>
           <label class="inline" title="仅对本地/允许 origin 的只读捕获请求生效；写方法仍不会自动重放">
             <input name="replayEnabled" type="checkbox" /> 自动重放捕获请求以验证症状（仅只读方法和允许的 origin）
           </label>

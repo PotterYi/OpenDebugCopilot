@@ -10,6 +10,41 @@ const MAX_SELECTORS = 20;
 const MAX_SELECTED = 200;
 const MAX_VALUE = 200;
 const SENSITIVE_KEY = /(?:password|passwd|pwd|secret|token|credential|api[-_]?key|access[-_]?key|private[-_]?key|authorization|cookie|session)/i;
+export const DEFAULT_DENY_PREFIXES = Object.freeze([
+  'password', 'passwd', 'pwd', 'secret', 'token', 'credential',
+  'apikey', 'api_key', 'api.key', 'accesskey', 'access_key', 'privatekey', 'private_key',
+  'authorization', 'cookie', 'session', 'jwt', 'oauth', 'refresh_token',
+  'license', 'licence', 'activation', 'serial', 'entitlement',
+  'internal', 'intranet', 'corp',
+]);
+
+function denySegments(value) {
+  return String(value ?? '').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+}
+
+function normalizeDenyPrefixes(values = []) {
+  const out = [...DEFAULT_DENY_PREFIXES];
+  for (const value of Array.isArray(values) ? values : []) {
+    const text = String(value ?? '').trim().toLowerCase().replace(/[^a-z0-9._-]/g, '').slice(0, 80);
+
+    if (text && !out.includes(text)) out.push(text);
+    if (out.length >= 60) break;
+  }
+  return out;
+}
+
+function isDeniedKey(key, prefixes) {
+  const segments = denySegments(key);
+  if (segments.length === 0) return false;
+  for (const prefix of prefixes) {
+    const wanted = denySegments(prefix);
+    if (wanted.length === 0 || wanted.length > segments.length) continue;
+    for (let start = 0; start <= segments.length - wanted.length; start += 1) {
+      if (wanted.every((part, index) => segments[start + index] === part)) return true;
+    }
+  }
+  return false;
+}
 const VIEWS = new Map([
   ['system_properties', 'VM.system_properties'],
   ['classloader', 'VM.classloader_stats'],
@@ -95,12 +130,17 @@ export function normalizeSelectors(value) {
     .map((item) => item.replace(/[\r\n]/g, '').slice(0, 200));
 }
 
-function selectProperties(entries, selectors) {
+function selectProperties(entries, selectors, denyPrefixes = []) {
   const all = new Map(entries);
-  const wildcard = selectors.some((selector) => selector.includes('*'));
+  const wildcard = selectors.some((selector) => selector.includes('*') || selector.endsWith('.'));
   if (selectors.length === 0) {
     const groups = new Map();
+    let deniedCount = 0;
     for (const [key] of entries) {
+      if (isDeniedKey(key, denyPrefixes)) {
+        deniedCount += 1;
+        continue;
+      }
       const group = key.split('.')[0] || '(root)';
       groups.set(group, (groups.get(group) ?? 0) + 1);
     }
@@ -109,13 +149,20 @@ function selectProperties(entries, selectors) {
       totalKeys: entries.length,
       selectedCount: 0,
       valuesHidden: true,
+      deniedCount,
       groups: [...groups.entries()].sort((a, b) => b[1] - a[1]).slice(0, 20).map(([group, count]) => ({ group, count })),
-      sampleKeys: [...all.keys()].slice(0, 10),
+      sampleKeys: [...all.keys()].filter((key) => !isDeniedKey(key, denyPrefixes)).slice(0, 10),
     };
   }
   const items = [];
+  let deniedCount = 0;
   for (const [key, value] of entries) {
     if (!selectors.some((selector) => matchesSelector(key, selector))) continue;
+    if (isDeniedKey(key, denyPrefixes)) {
+      deniedCount += 1;
+      if (!wildcard) items.push({ key, present: true, denied: true });
+      continue;
+    }
     const sensitive = SENSITIVE_KEY.test(key);
     items.push({
       key,
@@ -130,17 +177,23 @@ function selectProperties(entries, selectors) {
     totalKeys: entries.length,
     selectedCount: items.length,
     valuesHidden: wildcard,
+    deniedCount,
   };
 }
 
-function diffProperties(aEntries, bEntries, selectors) {
+function diffProperties(aEntries, bEntries, selectors, denyPrefixes = []) {
   const a = new Map(aEntries);
   const b = new Map(bEntries);
   const hide = selectors.some((selector) => selector.includes('*'));
   const keys = new Set([...a.keys(), ...b.keys()].filter((key) => selectors.some((selector) => matchesSelector(key, selector))));
   const items = [];
   let sameCount = 0;
+  let deniedCount = 0;
   for (const key of keys) {
+    if (isDeniedKey(key, denyPrefixes)) {
+      deniedCount += 1;
+      continue;
+    }
     const hasA = a.has(key);
     const hasB = b.has(key);
     const sensitive = SENSITIVE_KEY.test(key);
@@ -163,7 +216,7 @@ function diffProperties(aEntries, bEntries, selectors) {
       });
     }
   }
-  return { items, sameCount, selectedCount: keys.size };
+  return { items, sameCount, selectedCount: keys.size, deniedCount };
 }
 
 async function resolvePid({ pid = null, port = null } = {}) {
@@ -240,6 +293,7 @@ export async function runtimeFacts({
   port = null,
   view = 'system_properties',
   selectors = [],
+  denyPrefixes = [],
   comparePid = null,
   declaredFile = null,
   allowRoots = [],
@@ -247,6 +301,7 @@ export async function runtimeFacts({
 } = {}) {
   if (!VIEWS.has(view)) throw new AppError('INVALID_VIEW', `view must be one of ${[...VIEWS.keys()].join(', ')}`, { exitCode: 2 });
   const normalizedSelectors = normalizeSelectors(selectors);
+  const effectiveDenyPrefixes = normalizeDenyPrefixes(denyPrefixes);
   const target = await resolvePid({ pid, port });
   if (target.candidates) return target;
   const main = await readView(target.pid, view);
@@ -262,12 +317,13 @@ export async function runtimeFacts({
       const other = await resolvePid({ pid: comparePid });
       if (other.candidates) return other;
       const otherView = await readView(other.pid, view);
-      const diff = diffProperties(main.entries, otherView.entries, normalizedSelectors);
+      const diff = diffProperties(main.entries, otherView.entries, normalizedSelectors, effectiveDenyPrefixes);
       items = diff.items;
       meta = {
         compared: { pidA: target.pid, pidB: other.pid },
         sameCount: diff.sameCount,
         selectedCount: diff.selectedCount,
+        deniedCount: diff.deniedCount,
         totalKeysA: main.entries.length,
         totalKeysB: otherView.entries.length,
         selectors: normalizedSelectors,
@@ -278,23 +334,25 @@ export async function runtimeFacts({
       }
       const absolute = await resolveDeclaredFile(declaredFile, allowRoots, cwd);
       const declared = parseDeclaredText(await readFile(absolute, 'utf8'));
-      const diff = diffProperties(main.entries, [...declared.entries()], normalizedSelectors);
+      const diff = diffProperties(main.entries, [...declared.entries()], normalizedSelectors, effectiveDenyPrefixes);
       items = diff.items;
       meta = {
         comparedWith: 'declaredFile',
         declaredFile: path.basename(absolute),
         sameCount: diff.sameCount,
         selectedCount: diff.selectedCount,
+        deniedCount: diff.deniedCount,
         totalKeys: main.entries.length,
         selectors: normalizedSelectors,
       };
     } else {
-      const selected = selectProperties(main.entries, normalizedSelectors);
+      const selected = selectProperties(main.entries, normalizedSelectors, effectiveDenyPrefixes);
       items = selected.items;
       meta = {
         totalKeys: selected.totalKeys,
         selectedCount: selected.selectedCount,
         valuesHidden: selected.valuesHidden,
+        deniedCount: selected.deniedCount ?? 0,
         ...(selected.groups ? { groups: selected.groups } : {}),
         ...(selected.sampleKeys ? { sampleKeys: selected.sampleKeys } : {}),
         selectors: normalizedSelectors,

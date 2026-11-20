@@ -75,13 +75,16 @@ test('reads selected system properties and redacts sensitive values', {
   const foo = selected.items.find((item) => item.key === 'test.foo');
   const password = selected.items.find((item) => item.key === 'db.password');
   assert.equal(foo.value, 'one');
-  assert.equal(password.value, '<redacted>');
+  assert.equal(password.denied, true);
+  assert.equal(password.value, undefined);
   assert.doesNotMatch(JSON.stringify(selected), /secret-value/);
 
   const summary = await runtimeFacts({ pid: first.pid, view: 'system_properties' });
   assert.ok(summary.totalKeys > 0);
   assert.deepEqual(summary.items, []);
   assert.ok(Array.isArray(summary.sampleKeys));
+  assert.equal(summary.sampleKeys.includes('db.password'), false);
+  assert.ok(summary.deniedCount >= 1);
 
   const wildcard = await runtimeFacts({
     pid: first.pid,
@@ -90,6 +93,15 @@ test('reads selected system properties and redacts sensitive values', {
   });
   assert.equal(wildcard.valuesHidden, true);
   assert.equal(wildcard.items[0].value, '<redacted>');
+
+  const customDeny = await runtimeFacts({
+    pid: first.pid,
+    view: 'system_properties',
+    selectors: ['test.foo'],
+    denyPrefixes: ['test.foo'],
+  });
+  assert.equal(customDeny.items[0].denied, true);
+  assert.equal(customDeny.items[0].value, undefined);
 
   const compared = await runtimeFacts({
     pid: first.pid,

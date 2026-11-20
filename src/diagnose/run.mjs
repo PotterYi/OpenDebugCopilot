@@ -596,6 +596,7 @@ async function diagnoseWithFired({
       configured: workspace.buildProbeRoot,
       root: scenario.dir ?? process.cwd(),
     }),
+    runtimeFactsConfig: workspace.runtimeFacts,
     window: timeWindow,
     onCall: (call) => {
       const label = TOOL_LABELS[call.name] ?? call.name;

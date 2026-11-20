@@ -256,7 +256,7 @@ export function toolSpecs({ databases = [], runCommand = null } = {}) {
     },
     {
       name: 'runtime_facts',
-      description: 'Read parameterized runtime facts from a local JVM: system_properties, classloader (VM.classloader_stats), flags or command_line. Use selectors (exact, prefix or simple glob) to choose property/classloader keys; with comparePid or declaredFile only differences are returned. Sensitive values are always redacted, wildcard selectors return key names only, and results are paged/spilled.',
+      description: 'Read parameterized runtime facts from a local JVM: system_properties, classloader (VM.classloader_stats), flags or command_line. Use selectors (exact, prefix or simple glob) to choose property/classloader keys; with comparePid or declaredFile only differences are returned. Credential/license/internal keys are denied by default and configurable deny prefixes cannot be bypassed by selectors; sensitive values are always redacted, wildcard selectors return key names only, and results are paged/spilled.',
       input_schema: {
         type: 'object',
         properties: {
@@ -393,6 +393,7 @@ export function createTools({
   runCommand = null,
   toolMode = null,
   buildProbeRoot = null,
+  runtimeFactsConfig = {},
   window,
   limitBytes = DEFAULT_MAX_RESULT_BYTES,
   onCall = null,
@@ -990,6 +991,7 @@ export function createTools({
         selectors: args.selectors,
         comparePid: args.comparePid,
         declaredFile: args.declaredFile,
+        denyPrefixes: runtimeFactsConfig?.denyPrefixes ?? [],
         allowRoots: declaredRoots,
       });
       if (result.candidates) return result;

@@ -1387,6 +1387,7 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
             configured: workspace.buildProbeRoot,
             root: ROOT,
           }),
+          runtimeFactsConfig: workspace.runtimeFacts,
           window: followWindow,
           onCall: (call) => sendProgress({
             id: `tool-${call.id}`,

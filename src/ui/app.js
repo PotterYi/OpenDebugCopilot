@@ -211,6 +211,7 @@ function fillForm(config) {
   form.elements.verifyCommand.value = workspace.verifyCommand ?? '';
   form.elements.verifyCommands.value = (workspace.verifyCommands ?? []).map(formatVerifyCommand).join('\n');
   form.elements.verifyRunTests.checked = workspace.verifyRunTests !== false;
+  form.elements.runtimeFactsDenyPrefixes.value = (workspace.runtimeFacts?.denyPrefixes ?? []).join(String.fromCharCode(10));
   form.elements.replayEnabled.checked = workspace.replay?.enabled === true;
   form.elements.replayAllowCredentials.checked = workspace.replay?.allowCredentials === true;
   form.elements.replayAllowOrigins.value = (workspace.replay?.allowOrigins ?? []).join('\n');
@@ -236,6 +237,9 @@ function readForm() {
       verifyCommand: form.elements.verifyCommand.value.trim(),
       verifyCommands: parseVerifyCommands(form.elements.verifyCommands.value),
       verifyRunTests: form.elements.verifyRunTests.checked,
+      runtimeFacts: {
+        denyPrefixes: form.elements.runtimeFactsDenyPrefixes.value.split(String.fromCharCode(10)).map((line) => line.trim()).filter(Boolean),
+      },
       replay: {
         enabled: form.elements.replayEnabled.checked,
         allowCredentials: form.elements.replayAllowCredentials.checked,

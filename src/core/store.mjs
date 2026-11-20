@@ -15,6 +15,7 @@ export const DEFAULT_WORKSPACE = Object.freeze({
   verifyCommand: '',
   verifyCommands: [],
   verifyRunTests: true,
+  runtimeFacts: { denyPrefixes: [] },
   buildProbeRoot: '',
   agent: {
     model: '',
@@ -114,6 +115,14 @@ export function validateWorkspace(value) {
       })
       .filter(Boolean),
     verifyRunTests: value.verifyRunTests !== false,
+    runtimeFacts: (() => {
+      const raw = isObject(value.runtimeFacts) ? value.runtimeFacts : {};
+      return {
+        denyPrefixes: Array.isArray(raw.denyPrefixes)
+          ? raw.denyPrefixes.map((item) => String(item ?? '').trim()).filter(Boolean).slice(0, 40)
+          : [],
+      };
+    })(),
     buildProbeRoot: String(value.buildProbeRoot ?? '').trim(),
     replay: (() => {
       const raw = isObject(value.replay) ? value.replay : {};
