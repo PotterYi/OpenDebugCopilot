@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { actionTypeLabel, normalizeActionList } from '../../src/core/actions.mjs';
+import { actionCommandAllowed, actionTypeLabel, normalizeActionList } from '../../src/core/actions.mjs';
+import { createService } from '../../src/app/service.mjs';
 import { runCaptureDiagnosis } from '../../src/diagnose/run.mjs';
 import { buildReport, renderMarkdown } from '../../src/report/report.mjs';
 import { tempDir } from './tmp.mjs';
@@ -29,7 +30,10 @@ test('normalizes non-code actions, commands and verification', () => {
   assert.equal(actions[0].commands.length, 2);
   assert.equal(actions[0].commands[1].label, '检查进程');
   assert.equal(actions[0].verification.kind, 'symptom');
+  assert.equal(actions[0].execution.status, 'pending');
   assert.equal(actionTypeLabel('dependency'), '依赖');
+  assert.equal(actionCommandAllowed('mvn -q -DskipTests compile'), true);
+  assert.equal(actionCommandAllowed('rm -rf /'), false);
   assert.doesNotMatch(JSON.stringify(actions), /abcdefghijklmnopqrstuvwxyz/);
 });
 
@@ -118,4 +122,44 @@ test('carries actions through the diagnosis result and renders them', async (t) 
   assert.equal(outcome.result.gates.remediation.actions, 1);
   assert.equal(outcome.result.meta.actionsCount, 1);
   assert.match(renderMarkdown(outcome.report), /非代码修复动作/);
+});
+
+test('tracks action execution status and writes it to result/report', async (t) => {
+  const root = tempDir('actions-status-test');
+  const runs = path.join(root, 'runs');
+  const runId = '20260101-000000-actions';
+  const runDir = path.join(runs, runId);
+  await rm(root, { recursive: true, force: true });
+  await mkdir(runDir, { recursive: true });
+  await writeFile(path.join(runDir, 'result.json'), JSON.stringify({
+    meta: { runId, question: 'q', agent: 'claude', mode: 'live' },
+    agent: {
+      conclusion: 'ok',
+      actions: [{
+        id: 'act-1',
+        type: 'config',
+        summary: '设置环境变量',
+        steps: ['设置', '重启'],
+        verification: { kind: 'inspection', description: '检查配置' },
+        risk: 'low',
+      }],
+    },
+    gates: { ok: true, checks: [] },
+  }));
+  await writeFile(path.join(runDir, 'report.md'), '# old\n');
+  t.after(async () => { await rm(root, { recursive: true, force: true }); });
+  const service = createService({ root, runsDir: runs, configDir: path.join(root, 'configs') });
+  const updated = await service.updateRunActionExecution(runId, 'act-1', {
+    status: 'confirmed',
+    method: 'manual',
+    note: '已在测试环境执行',
+  });
+  assert.equal(updated.action.execution.status, 'confirmed');
+  assert.equal(updated.result.meta.actionStatus.confirmed, 1);
+  assert.equal(updated.result.gates.actions.confirmed, 1);
+  const persisted = JSON.parse(await readFile(path.join(runDir, 'result.json'), 'utf8'));
+  assert.equal(persisted.agent.actions[0].execution.status, 'confirmed');
+  const report = await readFile(path.join(runDir, 'report.md'), 'utf8');
+  assert.match(report, /执行状态：已执行（未验证）/);
+  assert.match(report, /已在测试环境执行/);
 });

@@ -10,6 +10,7 @@ import { checkDatabases } from '../evidence/db.mjs';
 import { getLogFile } from '../core/logger.mjs';
 import { buildReport, renderMarkdown } from '../report/report.mjs';
 import { normalizeSymptomCheck, verificationLevel } from '../core/symptom.mjs';
+import { actionStatusCounts, normalizeActionExecution } from '../core/actions.mjs';
 
 const RUN_ID_PATTERN = /^[A-Za-z0-9._-]+$/;
 const DB_QUERY_DIR = 'db-queries';
@@ -211,6 +212,48 @@ export function createService({ root = process.cwd(), configDir, runsDir, secret
     return { runId, result, report };
   }
 
+  async function updateRunActionExecution(runId, actionId, patch = {}) {
+    if (!RUN_ID_PATTERN.test(String(runId))) {
+      throw new AppError('RUN_ID_INVALID', `Invalid run id: ${runId}`, { exitCode: 2 });
+    }
+    const dir = path.join(runsRoot, runId);
+    let result;
+    try {
+      result = JSON.parse(await readFile(path.join(dir, 'result.json'), 'utf8'));
+    } catch (err) {
+      throw new AppError('RUN_NOT_FOUND', `Run not found: ${runId}`, { exitCode: 3, cause: err });
+    }
+    const actions = result.agent?.actions;
+    if (!Array.isArray(actions)) throw new AppError('ACTION_NOT_FOUND', 'run has no actions', { exitCode: 3 });
+    const action = actions.find((item) => item?.id === actionId);
+    if (!action) throw new AppError('ACTION_NOT_FOUND', `action not found: ${actionId}`, { exitCode: 3 });
+    action.execution = normalizeActionExecution({
+      ...(action.execution ?? {}),
+      ...patch,
+      confirmedAt: patch.status === 'pending' ? null : (patch.confirmedAt ?? new Date().toISOString()),
+    });
+    const counts = actionStatusCounts(actions);
+    result.meta = result.meta ?? {};
+    result.meta.actionStatus = counts;
+    if (result.gates) result.gates.actions = counts;
+    const tmp = path.join(dir, 'result.json.tmp');
+    await writeFile(tmp, JSON.stringify(result, null, 2), 'utf8');
+    await rename(tmp, path.join(dir, 'result.json'));
+    try {
+      const metaPath = path.join(dir, 'meta.json');
+      const meta = JSON.parse(await readFile(metaPath, 'utf8'));
+      meta.actionStatus = counts;
+      const metaTmp = `${metaPath}.tmp`;
+      await writeFile(metaTmp, JSON.stringify(meta, null, 2), 'utf8');
+      await rename(metaTmp, metaPath);
+    } catch {
+      // optional
+    }
+    const report = renderMarkdown(buildReport(result));
+    await writeFile(path.join(dir, 'report.md'), report, 'utf8');
+    return { runId, result, report, action };
+  }
+
   async function deleteRun(runId) {
     if (!RUN_ID_PATTERN.test(String(runId))) {
       throw new AppError('RUN_ID_INVALID', `Invalid run id: ${runId}`, { exitCode: 2 });
@@ -390,6 +433,7 @@ export function createService({ root = process.cwd(), configDir, runsDir, secret
     getRun,
     updateRunSymptom,
     updateRunSymptomCheck,
+    updateRunActionExecution,
     deleteRun,
     getRunWorkspacePending,
     keepRunWorkspace,

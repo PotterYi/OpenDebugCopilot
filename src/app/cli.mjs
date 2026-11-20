@@ -385,7 +385,7 @@ function printDiagnosis(result, runDir, root, { workspaceUndecided = false } = {
         ]),
     `  Actions    : ${result.agent.actions?.length ?? 0}`,
     ...(Array.isArray(result.agent.actions) && result.agent.actions.length
-      ? result.agent.actions.map((action) => `  Action     : [${action.type}] ${action.summary}`)
+      ? result.agent.actions.map((action) => `  Action     : [${action.type}] ${action.summary} · ${action.execution?.status ?? 'pending'}`)
       : []),
     `  Logs       : ${logs.count} record(s), marker ${logs.markerMatched ? 'matched' : `not matched (${logs.waitedMs}ms)`}`,
     `  Correlation: ${result.logs?.correlation?.strategy ?? 'none'}${result.logs?.correlation?.matchedId ? ` (${result.logs.correlation.matchedId})` : ''} · strength=${result.logs?.correlation?.strength ?? 'none'}${result.logs?.correlation?.caveat ? ` · ${result.logs.correlation.caveat}` : ''}`,

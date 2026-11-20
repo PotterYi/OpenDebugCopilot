@@ -1,4 +1,5 @@
 import { redactSecrets } from './redact.mjs';
+import { isSafeBashCommand } from './bash-policy.mjs';
 
 export const ACTION_TYPES = Object.freeze({
   config: '配置',
@@ -19,6 +20,9 @@ export const ACTION_VERIFICATION_KINDS = Object.freeze({
 });
 
 const RISKS = new Set(['low', 'medium', 'high']);
+export const ACTION_EXECUTION_STATUSES = Object.freeze([
+  'pending', 'confirmed', 'passed', 'failed', 'skipped', 'not-applicable',
+]);
 const MAX_ACTIONS = 5;
 
 function text(value, max = 500) {
@@ -31,6 +35,17 @@ function textList(value, maxItems, maxLength = 500) {
     .map((item) => text(item, maxLength))
     .filter(Boolean)
     .slice(0, maxItems);
+}
+
+export function normalizeActionExecution(value = {}) {
+  const raw = value && typeof value === 'object' ? value : {};
+  return {
+    status: ACTION_EXECUTION_STATUSES.includes(raw.status) ? raw.status : 'pending',
+    method: ['command', 'symptom', 'manual'].includes(raw.method) ? raw.method : null,
+    confirmedAt: typeof raw.confirmedAt === 'string' ? raw.confirmedAt : null,
+    note: raw.note ? text(raw.note, 300) : null,
+    result: raw.result && typeof raw.result === 'object' ? raw.result : null,
+  };
 }
 
 function normalizeVerification(value) {
@@ -94,6 +109,7 @@ export function normalizeActionList(input, { limit = MAX_ACTIONS } = {}) {
       confirmationRequired: typeof item.confirmationRequired === 'boolean'
         ? item.confirmationRequired
         : risk !== 'low',
+      execution: normalizeActionExecution(item.execution),
     });
     if (output.length >= limit) break;
   }
@@ -106,6 +122,32 @@ export function actionTypeLabel(type) {
 
 export function actionVerificationLabel(kind) {
   return ACTION_VERIFICATION_KINDS[kind] ?? kind ?? '验证';
+}
+
+export function actionExecutionLabel(status) {
+  return {
+    pending: '待执行',
+    confirmed: '已执行（未验证）',
+    passed: '验证通过',
+    failed: '验证失败',
+    skipped: '已跳过',
+    'not-applicable': '不适用',
+  }[status] ?? status ?? '待执行';
+}
+
+export function actionStatusCounts(actions = []) {
+  const counts = { pending: 0, confirmed: 0, passed: 0, failed: 0, skipped: 0, 'not-applicable': 0 };
+  for (const action of Array.isArray(actions) ? actions : []) {
+    const status = ACTION_EXECUTION_STATUSES.includes(action?.execution?.status)
+      ? action.execution.status
+      : 'pending';
+    counts[status] += 1;
+  }
+  return counts;
+}
+
+export function actionCommandAllowed(command) {
+  return isSafeBashCommand(command);
 }
 
 export function actionSummaryLine(action) {

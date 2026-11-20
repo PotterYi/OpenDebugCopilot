@@ -11,6 +11,8 @@ import { startLocalProxy } from './local-proxy.mjs';
 import { createDevServerManager, killProcessTreeSync } from './dev-server.mjs';
 import { applyFix, revertFix } from '../../core/fix-apply.mjs';
 import { buildFixPreviews, mergeExtractedFixes } from '../../core/fixes.mjs';
+import { actionCommandAllowed } from '../../core/actions.mjs';
+import { redactSecrets } from '../../core/redact.mjs';
 import {
   applyVerificationGate,
   detectCompileCommands,
@@ -484,6 +486,58 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
       return service.updateRunSymptom(payload.runId, {
         status: payload.status,
         note: payload.note ?? null,
+      });
+    }
+    if (payload.action === 'action-status') {
+      if (!['pending', 'confirmed', 'passed', 'failed', 'skipped', 'not-applicable'].includes(payload.status)) {
+        throw new Error('无效的动作状态');
+      }
+      return service.updateRunActionExecution(payload.runId, payload.actionId, {
+        status: payload.status,
+        note: payload.note ?? null,
+        method: payload.status === 'pending' ? null : 'manual',
+        confirmedAt: payload.status === 'pending' ? null : new Date().toISOString(),
+      });
+    }
+    if (payload.action === 'run-action-verification') {
+      const runId = String(payload.runId ?? '');
+      const run = await service.getRun(runId);
+      const actions = Array.isArray(run.result?.agent?.actions) ? run.result.agent.actions : [];
+      const action = actions.find((item) => item?.id === payload.actionId);
+      if (!action) throw new Error('动作不存在');
+      const command = String(action.verification?.command ?? '').trim();
+      if (action.verification?.kind !== 'command' || !command) {
+        throw new Error('该动作没有可执行的验证命令');
+      }
+      if (!actionCommandAllowed(command)) {
+        throw new Error('动作验证命令不在构建/测试白名单内，请手工执行后标记');
+      }
+      if (!smoke) {
+        const ok = await confirmFixDialog(BrowserWindow.fromWebContents(event.sender) ?? mainWindow, {
+          title: '运行动作验证命令',
+          message: command,
+          detail: '仅在构建/测试白名单内执行，输出会记录到本次诊断。',
+        });
+        if (!ok) return { cancelled: true };
+      }
+      const config = await service.getConfig();
+      const sourceRoot = config.workspace?.sourceRoot
+        ? path.resolve(ROOT, config.workspace.sourceRoot)
+        : ROOT;
+      const result = await runVerifyCommand({ command, cwd: sourceRoot, timeoutMs: 180_000 });
+      return service.updateRunActionExecution(runId, action.id, {
+        status: result.ok ? 'passed' : 'failed',
+        method: 'command',
+        confirmedAt: new Date().toISOString(),
+        note: result.ok ? '验证命令通过' : (result.timedOut ? '验证命令超时' : '验证命令失败'),
+        result: {
+          command,
+          ok: result.ok,
+          exitCode: result.exitCode ?? null,
+          timedOut: Boolean(result.timedOut),
+          durationMs: result.durationMs ?? 0,
+          outputTail: redactSecrets(String(result.output ?? '').slice(-4000)),
+        },
       });
     }
     if (payload.action === 'element-recheck') {

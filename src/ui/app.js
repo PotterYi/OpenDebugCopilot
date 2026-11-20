@@ -1337,16 +1337,28 @@ const ACTION_VERIFY_LABELS = {
   log: '日志检查',
   runtime: '运行态检查',
 };
+const ACTION_EXECUTION_LABELS = {
+  pending: '待执行',
+  confirmed: '已执行（未验证）',
+  passed: '验证通过',
+  failed: '验证失败',
+  skipped: '已跳过',
+  'not-applicable': '不适用',
+};
+function actionExecutionLabel(status) { return ACTION_EXECUTION_LABELS[status] ?? status ?? '待执行'; }
 
-function renderActions(actions) {
+function renderActions(actions, view, { readOnly = false } = {}) {
   if (!Array.isArray(actions) || actions.length === 0) return null;
+  const runId = view ? runIdOf(view) : null;
   const block = el('section', 'card-section');
   block.append(el('div', 'card-title', `非代码修复动作 (${actions.length})`));
   const list = el('ul', 'fix-list');
   for (const action of actions) {
     const card = el('li', 'fix-card action-card');
     const head = el('div', 'fix-card-head');
+    const execution = action.execution ?? { status: 'pending' };
     head.append(el('span', `badge action-type ${action.risk === 'high' ? 'error' : ''}`.trim(), ACTION_TYPE_LABELS[action.type] ?? action.type ?? '动作'));
+    head.append(el('span', `badge ${execution.status === 'passed' ? 'ok' : execution.status === 'failed' ? 'error' : ''}`.trim(), actionExecutionLabel(execution.status)));
     head.append(el('strong', null, action.summary ?? ''));
     head.append(el('span', 'muted small', `风险：${action.risk ?? 'unknown'}${action.reversible === true ? ' · 可逆' : action.reversible === false ? ' · 不可逆' : ''}`));
     card.append(head);
@@ -1390,6 +1402,53 @@ function renderActions(actions) {
         row.append(el('code', 'action-command-text', action.verification.command));
         card.append(row);
       }
+    }
+    if (action.execution?.note) card.append(el('p', 'muted small', `执行备注：${action.execution.note}`));
+    if (action.execution?.result?.command) {
+      card.append(el('p', 'muted small', `验证结果：${action.execution.result.ok ? '通过' : action.execution.result.timedOut ? '超时' : '失败'}（exit ${action.execution.result.exitCode ?? '?'}）`));
+      if (action.execution.result.outputTail) card.append(el('pre', 'verify-log', String(action.execution.result.outputTail).slice(-2000)));
+    }
+    if (!readOnly && api.isDesktop && runId) {
+      const actionsRow = el('div', 'modal-actions');
+      const setStatus = async (status, label) => {
+        try {
+          const updated = await api.setActionStatus(runId, action.id, status);
+          if (view.response) { view.response.result = updated.result; view.response.report = updated.report; }
+          renderRunInto(view);
+          setStatus(`动作已标记为：${label}`, 'ok');
+        } catch (error) {
+          setStatus(`更新动作状态失败：${error.message}`, 'error');
+        }
+      };
+      const button = (label, status, className = 'secondary') => {
+        const node = el('button', className, label);
+        node.type = 'button';
+        node.addEventListener('click', () => setStatus(status, label));
+        actionsRow.append(node);
+      };
+      if (action.verification?.kind === 'command' && action.verification.command) {
+        const runButton = el('button', 'secondary', '运行验证命令');
+        runButton.type = 'button';
+        runButton.addEventListener('click', async () => {
+          runButton.disabled = true;
+          try {
+            const updated = await api.runActionVerification(runId, action.id);
+            if (updated?.cancelled) { runButton.disabled = false; return; }
+            if (view.response) { view.response.result = updated.result; view.response.report = updated.report; }
+            renderRunInto(view);
+            setStatus('动作验证命令已执行', 'ok');
+          } catch (error) {
+            setStatus(`动作验证失败：${error.message}`, 'error');
+            runButton.disabled = false;
+          }
+        });
+        actionsRow.append(runButton);
+      }
+      if (execution.status !== 'confirmed') button('我已执行', 'confirmed');
+      if (execution.status !== 'failed') button('验证失败', 'failed');
+      if (execution.status !== 'skipped') button('跳过', 'skipped');
+      if (execution.status !== 'pending') button('改回待执行', 'pending');
+      card.append(actionsRow);
     }
     list.append(card);
   }
@@ -2505,7 +2564,7 @@ function renderRunBody(container, result, agent, view, { readOnly = false, showH
     container.append(renderFixValidation(agent.fixesValidation));
   }
 
-  const actionsBlock = renderActions(agent?.actions);
+  const actionsBlock = renderActions(agent?.actions, view, { readOnly });
   if (actionsBlock) container.append(actionsBlock);
   if ((!Array.isArray(agent?.fixes) || agent.fixes.length === 0)
     && Array.isArray(agent?.actions) && agent.actions.length > 0) {

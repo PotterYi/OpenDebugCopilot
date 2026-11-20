@@ -6,6 +6,7 @@ import { buildEvidenceRefIndex, validateEvidenceRefs } from '../core/evidence-re
 import { newRunId } from '../core/ids.mjs';
 import { resolveScenarioPaths } from '../core/scenario.mjs';
 import { normalizeTriage } from '../core/triage.mjs';
+import { actionStatusCounts } from '../core/actions.mjs';
 import { buildMemoryCandidates, selectPromptNotes } from '../core/diagnosis-memory.mjs';
 import {
   applySymptomToGates,
@@ -1429,6 +1430,7 @@ async function diagnoseWithFired({
     fixes: Array.isArray(agentResult.fixes) ? agentResult.fixes.length : 0,
     actions: Array.isArray(agentResult.actions) ? agentResult.actions.length : 0,
   };
+  gates.actions = actionStatusCounts(agentResult.actions);
   const recheckInfo = recheck > 1
     ? (() => {
         const evaluation = evaluateRecheck(agentRuns, { responseStatus: fired.response?.status ?? null });
@@ -1518,6 +1520,7 @@ async function diagnoseWithFired({
       symptomStatus: symptomCheck.status,
       verificationLevel: gates.level,
       actionsCount: Array.isArray(agentResult.actions) ? agentResult.actions.length : 0,
+      actionStatus: actionStatusCounts(agentResult.actions),
       runLog: 'run.log',
       incomplete: Boolean(agentResult.incomplete),
       incompleteReason: agentResult.incompleteReason ?? null,

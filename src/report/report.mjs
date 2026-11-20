@@ -1,7 +1,7 @@
 import { normalizeFixList } from '../core/fixes.mjs';
 import { redactSecrets } from '../core/redact.mjs';
 import { TRIAGE_FIELDS, triageSummary } from '../core/triage.mjs';
-import { actionTypeLabel, actionVerificationLabel } from '../core/actions.mjs';
+import { actionExecutionLabel, actionTypeLabel, actionVerificationLabel } from '../core/actions.mjs';
 
 /**
  * Whitelist projection + Markdown rendering for the redacted report.
@@ -208,6 +208,23 @@ export function buildReport(result) {
             expected: action.verification.expected ? scrubText(action.verification.expected) : null,
           }
         : null,
+      execution: {
+        status: action.execution?.status ?? 'pending',
+        statusLabel: actionExecutionLabel(action.execution?.status),
+        method: action.execution?.method ?? null,
+        note: action.execution?.note ? scrubText(action.execution.note) : null,
+        confirmedAt: action.execution?.confirmedAt ?? null,
+        result: action.execution?.result
+          ? {
+              command: scrubText(action.execution.result.command ?? ''),
+              ok: Boolean(action.execution.result.ok),
+              exitCode: action.execution.result.exitCode ?? null,
+              timedOut: Boolean(action.execution.result.timedOut),
+              durationMs: action.execution.result.durationMs ?? null,
+              outputTail: action.execution.result.outputTail ? scrubText(action.execution.result.outputTail) : null,
+            }
+          : null,
+      },
       risk: action.risk ?? null,
       reversible: action.reversible ?? null,
       confirmationRequired: Boolean(action.confirmationRequired),
@@ -265,6 +282,7 @@ export function buildReport(result) {
       incomplete: Boolean(result.meta?.incomplete),
       incompleteReason: result.meta?.incompleteReason ?? null,
       startedAt: result.meta?.startedAt ?? null,
+      actionStatus: result.meta?.actionStatus ?? null,
     },
   };
 }
@@ -438,7 +456,13 @@ export function renderMarkdown(report) {
       if (action.verification) {
         lines.push('', `- 验证（${action.verification.kindLabel}）：${action.verification.description}`);
         if (action.verification.expected) lines.push(`  - 预期：${action.verification.expected}`);
-        if (action.verification.command) lines.push(`  - 验证命令：\`${action.verification.command}\``);
+        if (action.verification.command) lines.push(`  - 验证命令：${action.verification.command}`);
+      }
+      lines.push(`- 执行状态：${action.execution?.statusLabel ?? '待执行'}`);
+      if (action.execution?.note) lines.push(`  - 备注：${action.execution.note}`);
+      if (action.execution?.result?.command) {
+        lines.push(`  - 实际验证：${action.execution.result.ok ? '通过' : action.execution.result.timedOut ? '超时' : '失败'}（exit ${action.execution.result.exitCode ?? '?'}）`);
+        if (action.execution.result.outputTail) lines.push(`  - 输出尾部：${action.execution.result.outputTail.slice(-1000)}`);
       }
       if (action.risk) lines.push(`- 风险：${action.risk}${action.reversible === true ? '；可逆' : action.reversible === false ? '；不可逆' : ''}${action.confirmationRequired ? '；需用户确认' : ''}`);
       lines.push('');

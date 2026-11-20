@@ -98,6 +98,14 @@ export const api = {
     if (dc?.invoke) return dc.invoke('dc:diagnose', payload);
     return http('/api/diagnose', { method: 'POST', body: JSON.stringify(payload) });
   },
+  async setActionStatus(runId, actionId, status, note = null) {
+    if (dc?.invoke) return dc.invoke('dc:runs', { action: 'action-status', runId, actionId, status, note });
+    throw new Error('动作状态更新仅支持桌面版');
+  },
+  async runActionVerification(runId, actionId) {
+    if (dc?.invoke) return dc.invoke('dc:runs', { action: 'run-action-verification', runId, actionId });
+    throw new Error('动作验证仅支持桌面版');
+  },
   async recheckElement(runId) {
     if (dc?.invoke) return dc.invoke('dc:runs', { action: 'element-recheck', runId });
     throw new Error('元素复检仅支持桌面版');
