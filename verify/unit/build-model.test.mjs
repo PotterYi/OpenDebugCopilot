@@ -102,3 +102,51 @@ test('exposes inspect_build_model through the tool registry', async (t) => {
   assert.ok(model.poms.length >= 1);
   assert.equal(model.ide.modules[0].name, 'module-a');
 });
+
+test('parses Gradle modules and compares them with IDE modules', async (t) => {
+  const root = tempDir('build-model-gradle');
+  const project = path.join(root, 'gradle-project');
+  await rm(root, { recursive: true, force: true });
+  await mkdir(path.join(project, '.idea'), { recursive: true });
+  await mkdir(path.join(project, 'app'), { recursive: true });
+  await mkdir(path.join(project, 'lib'), { recursive: true });
+  await writeFile(path.join(project, 'settings.gradle'), "include ':app', ':lib'\n");
+  await writeFile(path.join(project, 'build.gradle'), 'plugins { id "java" }\n');
+  await writeFile(path.join(project, '.idea/modules.xml'), [
+    '<project version="4"><component name="ProjectModuleManager"><modules>',
+    '  <module fileurl="file://$PROJECT_DIR$/app/app.iml" filepath="$PROJECT_DIR$/app/app.iml" />',
+    '</modules></component></project>',
+  ].join('\n'));
+  const old = new Date('2026-01-01T00:00:00Z');
+  const now = new Date('2026-06-01T00:00:00Z');
+  await utimes(path.join(project, '.idea/modules.xml'), old, old);
+  await utimes(path.join(project, 'settings.gradle'), now, now);
+  t.after(async () => { await rm(root, { recursive: true, force: true }); });
+  const model = await inspectBuildModel({ sourceRoot: project, probeRoot: project, mode: 'backend' });
+  assert.equal(model.buildSystem, 'gradle');
+  assert.deepEqual(model.gradle.modules.sort(), ['app', 'lib']);
+  assert.ok(model.staleHints.some((hint) => hint.kind === 'ide-older-than-gradle'));
+  assert.ok(model.staleHints.some((hint) => hint.kind === 'gradle-module-missing-in-ide' && hint.detail === 'lib'));
+});
+
+test('detects frontend lock/node_modules staleness', async (t) => {
+  const root = tempDir('build-model-frontend');
+  const project = path.join(root, 'frontend');
+  await rm(root, { recursive: true, force: true });
+  await mkdir(path.join(project, 'node_modules'), { recursive: true });
+  await writeFile(path.join(project, 'package.json'), JSON.stringify({ name: 'demo', dependencies: { vue: '^3' } }));
+  await writeFile(path.join(project, 'package-lock.json'), '{}');
+  await writeFile(path.join(project, 'node_modules/.package-lock.json'), '{}');
+  const old = new Date('2026-01-01T00:00:00Z');
+  const mid = new Date('2026-03-01T00:00:00Z');
+  const now = new Date('2026-06-01T00:00:00Z');
+  await utimes(path.join(project, 'node_modules/.package-lock.json'), old, old);
+  await utimes(path.join(project, 'package-lock.json'), mid, mid);
+  await utimes(path.join(project, 'package.json'), now, now);
+  t.after(async () => { await rm(root, { recursive: true, force: true }); });
+  const model = await inspectBuildModel({ sourceRoot: project, probeRoot: project, mode: 'frontend' });
+  assert.equal(model.buildSystem, 'frontend');
+  assert.equal(model.frontend.dependencyCount, 1);
+  assert.ok(model.frontend.staleHints.some((hint) => hint.kind === 'package-json-newer-than-lock'));
+  assert.ok(model.frontend.staleHints.some((hint) => hint.kind === 'lockfile-newer-than-node-modules'));
+});

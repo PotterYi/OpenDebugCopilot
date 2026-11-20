@@ -50,6 +50,7 @@ const VIEWS = new Map([
   ['classloader', 'VM.classloader_stats'],
   ['flags', 'VM.flags'],
   ['command_line', 'VM.command_line'],
+  ['environment', null],
 ]);
 
 function fingerprint(value) {
@@ -270,7 +271,41 @@ function selectLines(lines, selectors) {
   return selected.slice(0, MAX_SELECTED).map((line) => redactSecrets(line).slice(0, 300));
 }
 
+async function readEnvironment(pid) {
+  if (process.platform === 'win32') {
+    return {
+      entries: [],
+      unsupported: true,
+      limitation: 'Windows 无法在不注入调试器的情况下读取目标 JVM 的环境变量；请使用 list_processes / runtime_classpath 继续排查',
+    };
+  }
+  if (process.platform !== 'linux') {
+    return {
+      entries: [],
+      unsupported: true,
+      limitation: '当前平台暂不支持读取目标进程环境变量（仅 Linux /proc/<pid>/environ）',
+    };
+  }
+  try {
+    const raw = await readFile(`/proc/${Number(pid)}/environ`);
+    const entries = [];
+    for (const item of raw.toString('utf8').split(' ')) {
+      const index = item.indexOf('=');
+      if (index <= 0) continue;
+      entries.push([item.slice(0, index), item.slice(index + 1)]);
+    }
+    return { entries };
+  } catch (error) {
+    return {
+      entries: [],
+      unsupported: true,
+      limitation: `无法读取进程环境变量（${error?.code ?? error?.message ?? 'permission denied'}）`,
+    };
+  }
+}
+
 async function readView(pid, view) {
+  if (view === 'environment') return readEnvironment(pid);
   const command = VIEWS.get(view);
   if (!command) throw new AppError('INVALID_VIEW', `view must be one of ${[...VIEWS.keys()].join(', ')}`, { exitCode: 2 });
   const stdout = await runJvmTool('jcmd', [String(pid), command]);
@@ -309,7 +344,58 @@ export async function runtimeFacts({
   let items = [];
   let meta = {};
 
-  if (view === 'system_properties') {
+  if (view === 'environment') {
+    if (main.unsupported) {
+      limitations.push(main.limitation);
+      items = [];
+      meta = { selectors: normalizedSelectors, totalKeys: 0 };
+    } else if (comparePid !== null && comparePid !== undefined && comparePid !== '') {
+      if (normalizedSelectors.length === 0) {
+        throw new AppError('SELECTORS_REQUIRED', 'comparePid requires at least one selector', { exitCode: 2 });
+      }
+      const other = await resolvePid({ pid: comparePid });
+      if (other.candidates) return other;
+      const otherView = await readView(other.pid, view);
+      const diff = diffProperties(main.entries, otherView.entries, normalizedSelectors, effectiveDenyPrefixes);
+      items = diff.items;
+      meta = {
+        compared: { pidA: target.pid, pidB: other.pid },
+        sameCount: diff.sameCount,
+        selectedCount: diff.selectedCount,
+        deniedCount: diff.deniedCount,
+        selectors: normalizedSelectors,
+      };
+    } else if (declaredFile) {
+      if (normalizedSelectors.length === 0) {
+        throw new AppError('SELECTORS_REQUIRED', 'declaredFile requires at least one selector', { exitCode: 2 });
+      }
+      const absolute = await resolveDeclaredFile(declaredFile, allowRoots, cwd);
+      const declared = parseDeclaredText(await readFile(absolute, 'utf8'));
+      const diff = diffProperties(main.entries, [...declared.entries()], normalizedSelectors, effectiveDenyPrefixes);
+      items = diff.items;
+      meta = {
+        comparedWith: 'declaredFile',
+        declaredFile: path.basename(absolute),
+        sameCount: diff.sameCount,
+        selectedCount: diff.selectedCount,
+        deniedCount: diff.deniedCount,
+        selectors: normalizedSelectors,
+      };
+    } else {
+      const selected = selectProperties(main.entries, normalizedSelectors, effectiveDenyPrefixes);
+      items = selected.items;
+      meta = {
+        totalKeys: selected.totalKeys,
+        selectedCount: selected.selectedCount,
+        valuesHidden: selected.valuesHidden,
+        deniedCount: selected.deniedCount ?? 0,
+        ...(selected.groups ? { groups: selected.groups } : {}),
+        ...(selected.sampleKeys ? { sampleKeys: selected.sampleKeys } : {}),
+        selectors: normalizedSelectors,
+      };
+      if (selected.valuesHidden) limitations.push('通配 selector 只返回键名，不返回值');
+    }
+  } else if (view === 'system_properties') {
     if (comparePid !== null && comparePid !== undefined && comparePid !== '') {
       if (normalizedSelectors.length === 0) {
         throw new AppError('SELECTORS_REQUIRED', 'comparePid requires at least one selector', { exitCode: 2 });

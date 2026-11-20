@@ -5,6 +5,7 @@ import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { readSource, searchSource, validateRegexPattern } from '../../src/evidence/source.mjs';
 import { tempDir } from './tmp.mjs';
+import iconv from 'iconv-lite';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SOURCE = path.resolve(HERE, '../fixtures/source');
@@ -140,4 +141,18 @@ test('reads frontend asset files directly', async () => {
   const result = await readSource({ sourceRoot: SOURCE, target: 'public/index.html' });
   assert.equal(result.found, true);
   assert.match(result.content, /frontend index/);
+});
+
+test('reads and searches GBK source files', async (t) => {
+  const dir = tempDir('source-gbk-test');
+  await rm(dir, { recursive: true, force: true });
+  await mkdir(dir, { recursive: true });
+  t.after(async () => { await rm(dir, { recursive: true, force: true }); });
+  const content = 'class GbkService { String message = "订单不存在"; }';
+  await writeFile(path.join(dir, 'GbkService.java'), iconv.encode(content, 'gbk'));
+  const read = await readSource({ sourceRoot: dir, target: 'GbkService.java' });
+  assert.equal(read.found, true);
+  assert.match(read.content, /订单不存在/);
+  const search = await searchSource({ sourceRoot: dir, keyword: '订单不存在' });
+  assert.equal(search.matches.length, 1);
 });

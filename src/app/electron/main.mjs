@@ -1387,6 +1387,10 @@ function registerIpc(service, getHost, getRouter, setRules, getDevServer) {
             configured: workspace.buildProbeRoot,
             root: ROOT,
           }),
+          buildProbeRoots: workspace.buildProbeRoots,
+          frontendProjectRoot: workspace.frontendProjectRoot
+            ? path.resolve(ROOT, workspace.frontendProjectRoot)
+            : (logContext.frontendSourceRoot ?? null),
           runtimeFactsConfig: workspace.runtimeFacts,
           window: followWindow,
           onCall: (call) => sendProgress({

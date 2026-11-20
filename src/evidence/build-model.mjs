@@ -110,7 +110,9 @@ async function safeRead(probeRoot, relative) {
   const allowed = lower.endsWith('/pom.xml')
     || lower === 'pom.xml'
     || lower === '.idea/modules.xml'
-    || lower.endsWith('.iml');
+    || lower.endsWith('.iml')
+    || ['settings.gradle', 'settings.gradle.kts', 'build.gradle', 'build.gradle.kts', 'gradle.properties', 'gradle/libs.versions.toml', 'gradle/wrapper/gradle-wrapper.properties'].includes(lower)
+    || ['package.json', 'package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', 'node_modules/.package-lock.json', 'tsconfig.json'].includes(lower);
   if (!allowed) return null;
   try {
     const resolved = await resolveWithinRoot(probeRoot, normalized, { allowMissing: true });
@@ -139,7 +141,107 @@ async function realpathOr(value) {
   }
 }
 
-export async function inspectBuildModel({ sourceRoot, probeRoot, rootLabel = 'backend' } = {}) {
+function parseGradleModules(text) {
+  const modules = new Set();
+  for (const line of String(text ?? '').split(/\r?\n/)) {
+    if (!/\binclude\b/.test(line)) continue;
+    for (const match of line.matchAll(/['"]([^'"]+)['"]/g)) {
+      const name = match[1].replace(/^:/, '').replace(/:/g, '/');
+      if (name) modules.add(name);
+    }
+  }
+  return [...modules].slice(0, MAX_MODULES);
+}
+
+async function readGradleProbe(realProbe) {
+  const settings = await safeRead(realProbe, 'settings.gradle')
+    ?? await safeRead(realProbe, 'settings.gradle.kts');
+  const build = await safeRead(realProbe, 'build.gradle')
+    ?? await safeRead(realProbe, 'build.gradle.kts');
+  if (!settings && !build) return null;
+  const properties = await safeRead(realProbe, 'gradle.properties');
+  const catalog = await safeRead(realProbe, 'gradle/libs.versions.toml');
+  const wrapper = await safeRead(realProbe, 'gradle/wrapper/gradle-wrapper.properties');
+  const wrapperScript = (await fileInfo(realProbe, 'gradlew')) ?? (await fileInfo(realProbe, 'gradlew.bat'));
+  const modules = settings ? parseGradleModules(settings.text) : [];
+  const mtimes = [settings?.mtime, build?.mtime, properties?.mtime, catalog?.mtime, wrapper?.mtime]
+    .filter(Boolean)
+    .map((value) => Date.parse(value))
+    .filter((value) => Number.isFinite(value));
+  return {
+    type: 'gradle',
+    settingsFile: settings?.path ?? null,
+    settingsMtime: settings?.mtime ?? null,
+    buildFile: build?.path ?? null,
+    buildMtime: build?.mtime ?? null,
+    modules,
+    wrapper: wrapper || wrapperScript
+      ? { properties: wrapper?.path ?? null, mtime: wrapper?.mtime ?? null, script: Boolean(wrapperScript) }
+      : null,
+    properties: properties ? { path: properties.path, mtime: properties.mtime } : null,
+    versionCatalog: catalog ? { path: catalog.path, mtime: catalog.mtime } : null,
+    mtime: mtimes.length > 0 ? new Date(Math.max(...mtimes)).toISOString() : null,
+  };
+}
+
+async function readFrontendProbe(realProbe) {
+  const pkg = await safeRead(realProbe, 'package.json');
+  if (!pkg) return null;
+  let data = null;
+  try {
+    data = JSON.parse(pkg.text);
+  } catch {
+    data = null;
+  }
+  const lockCandidates = await Promise.all([
+    fileInfo(realProbe, 'package-lock.json'),
+    fileInfo(realProbe, 'pnpm-lock.yaml'),
+    fileInfo(realProbe, 'yarn.lock'),
+  ]);
+  const lockNames = ['package-lock.json', 'pnpm-lock.yaml', 'yarn.lock'];
+  let lockfile = null;
+  for (let index = 0; index < lockCandidates.length; index += 1) {
+    const info = lockCandidates[index];
+    if (info?.exists) {
+      lockfile = { path: lockNames[index], mtime: info.mtime };
+      break;
+    }
+  }
+  const nodeModules = await fileInfo(realProbe, 'node_modules');
+  const nodeModulesLock = await fileInfo(realProbe, 'node_modules/.package-lock.json');
+  const tsconfig = await fileInfo(realProbe, 'tsconfig.json');
+  const packageTime = Date.parse(pkg.mtime);
+  const lockTime = lockfile ? Date.parse(lockfile.mtime) : null;
+  const installTime = nodeModulesLock ? Date.parse(nodeModulesLock.mtime) : null;
+  const staleHints = [];
+  if (lockfile && Number.isFinite(packageTime) && Number.isFinite(lockTime) && packageTime > lockTime) {
+    staleHints.push({ kind: 'package-json-newer-than-lock', detail: 'package.json 晚于 lockfile' });
+  }
+  if (lockfile && Number.isFinite(lockTime) && nodeModules?.isDirectory
+    && installTime && Number.isFinite(installTime) && lockTime > installTime) {
+    staleHints.push({ kind: 'lockfile-newer-than-node-modules', detail: 'lockfile 晚于 node_modules 安装记录' });
+  }
+  if (!nodeModules?.isDirectory) {
+    staleHints.push({ kind: 'node-modules-missing', detail: 'node_modules 不存在' });
+  }
+  return {
+    type: 'frontend',
+    packageFile: pkg.path,
+    packageMtime: pkg.mtime,
+    name: data?.name ?? null,
+    packageManager: data?.packageManager ?? null,
+    workspaces: Array.isArray(data?.workspaces) ? data.workspaces.length : 0,
+    dependencyCount: data?.dependencies ? Object.keys(data.dependencies).length : 0,
+    devDependencyCount: data?.devDependencies ? Object.keys(data.devDependencies).length : 0,
+    lockfile,
+    nodeModules: nodeModules?.isDirectory ?? false,
+    nodeModulesLockMtime: nodeModulesLock?.mtime ?? null,
+    tsconfig: Boolean(tsconfig?.exists),
+    staleHints,
+  };
+}
+
+export async function inspectBuildModel({ sourceRoot, probeRoot, rootLabel = 'backend', mode = 'auto' } = {}) {
   if (!sourceRoot) throw new AppError('SOURCE_ROOT_REQUIRED', 'source root is not configured', { exitCode: 3 });
   const realSource = await realpathOr(sourceRoot);
   const realProbe = probeRoot ? await realpathOr(probeRoot) : path.dirname(realSource);
@@ -189,25 +291,43 @@ export async function inspectBuildModel({ sourceRoot, probeRoot, rootLabel = 'ba
     ide = { type: 'intellij', modulesFile: ideFile.path, mtime: ideFile.mtime, modules: moduleDetails };
   }
 
+  const gradle = mode === 'frontend' ? null : await readGradleProbe(realProbe);
+  const frontend = mode === 'backend' ? null : await readFrontendProbe(realProbe);
+  const staleHints = [];
   const latestPomMtime = poms.reduce((latest, pom) => {
     const time = Date.parse(pom.mtime);
     return Number.isFinite(time) && time > latest ? time : latest;
   }, 0);
-  const staleHints = [];
-  if (ide && latestPomMtime > 0 && Date.parse(ide.mtime) < latestPomMtime) {
-    staleHints.push({ kind: 'ide-older-than-pom', detail: '.idea/modules.xml 早于最新 pom.xml' });
+  const latestGradleMtime = gradle?.mtime ? Date.parse(gradle.mtime) : 0;
+  const latestBuildMtime = Math.max(latestPomMtime, Number.isFinite(latestGradleMtime) ? latestGradleMtime : 0);
+  if (ide && latestBuildMtime > 0 && Date.parse(ide.mtime) < latestBuildMtime) {
+    const gradleNewest = gradle && latestGradleMtime >= latestPomMtime;
+    staleHints.push({
+      kind: gradleNewest ? 'ide-older-than-gradle' : 'ide-older-than-pom',
+      detail: gradleNewest ? '.idea/modules.xml 早于最新 Gradle 构建文件' : '.idea/modules.xml 早于最新 pom.xml',
+    });
   }
   const pomModuleNames = new Set();
   for (const pom of poms) {
     for (const module of pom.modules) pomModuleNames.add(path.posix.basename(module.replace(/\\/g, '/')));
   }
+  const gradleModuleNames = new Set((gradle?.modules ?? []).map((module) => path.posix.basename(module)));
+  const buildModuleNames = new Set([...pomModuleNames, ...gradleModuleNames]);
   if (ide) {
     const ideNames = new Set(ide.modules.map((module) => module.name));
     for (const name of pomModuleNames) {
       if (!ideNames.has(name)) staleHints.push({ kind: 'pom-module-missing-in-ide', detail: name });
     }
+    for (const name of gradleModuleNames) {
+      if (!ideNames.has(name)) staleHints.push({ kind: 'gradle-module-missing-in-ide', detail: name });
+    }
     for (const module of ide.modules) {
-      if (!pomModuleNames.has(module.name)) staleHints.push({ kind: 'ide-module-missing-in-pom', detail: module.name });
+      if (!buildModuleNames.has(module.name)) {
+        staleHints.push({
+          kind: poms.length > 0 ? 'ide-module-missing-in-pom' : 'ide-module-missing-in-build',
+          detail: module.name,
+        });
+      }
       const info = await fileInfo(realProbe, module.path);
       if (!info) staleHints.push({ kind: 'module-path-missing', detail: module.path });
       for (const folder of module.sourceFolders) {
@@ -220,13 +340,24 @@ export async function inspectBuildModel({ sourceRoot, probeRoot, rootLabel = 'ba
       staleHints.push({ kind: 'source-root-missing-in-ide', detail: sourceRelative });
     }
   }
-  limitations.push('P0 只解析 Maven POM 与 IntelliJ modules.xml/iml；未执行 mvn help:effective-pom');
+  if (frontend) staleHints.push(...frontend.staleHints);
+  const buildSystems = [
+    poms.length > 0 ? 'maven' : null,
+    gradle ? 'gradle' : null,
+    frontend ? 'frontend' : null,
+  ].filter(Boolean);
+  limitations.push('P0 静态解析 POM/Gradle/package.json 与 IntelliJ modules.xml/iml；不执行构建命令');
+  if (!gradle && mode !== 'frontend') limitations.push('未发现 Gradle settings/build 文件');
+  if (!frontend && mode !== 'backend') limitations.push('未发现前端 package.json');
   limitations.push('不读取 .idea/workspace.xml 或同级其他源码');
   return {
     root: rootLabel,
     sourceRoot: sourceRelative,
     probeRoot: '.',
+    buildSystem: buildSystems.length === 0 ? 'unknown' : (buildSystems.length === 1 ? buildSystems[0] : 'mixed'),
     poms,
+    gradle,
+    frontend,
     ide,
     staleHints,
     limitations,

@@ -149,11 +149,11 @@ export function toolSpecs({ databases = [], runCommand = null } = {}) {
     },
     {
       name: 'inspect_build_model',
-      description: 'Read-only build/IDE model probe: parses Maven POM modules, parent coordinates, IntelliJ .idea/modules.xml and .iml source folders, plus timestamps and stale-model hints. Uses the configured build probe root (default: the parent of the source root) and never reads sibling source files or .idea/workspace.xml.',
+      description: 'Read-only build/IDE model probe: parses Maven POM, Gradle settings/build files, frontend package.json/lockfiles, IntelliJ .idea/modules.xml and .iml source folders, plus timestamps and stale-model hints. Use root=backend or root=frontend. Uses configured build probe roots and never reads sibling source files or .idea/workspace.xml.',
       input_schema: {
         type: 'object',
         properties: {
-          root: { enum: ['backend'] },
+          root: { enum: ['backend', 'frontend'] },
           offset: { type: 'integer', minimum: 0, maximum: 20000 },
           limit: { type: 'integer', minimum: 1, maximum: 200 },
         },
@@ -256,13 +256,13 @@ export function toolSpecs({ databases = [], runCommand = null } = {}) {
     },
     {
       name: 'runtime_facts',
-      description: 'Read parameterized runtime facts from a local JVM: system_properties, classloader (VM.classloader_stats), flags or command_line. Use selectors (exact, prefix or simple glob) to choose property/classloader keys; with comparePid or declaredFile only differences are returned. Credential/license/internal keys are denied by default and configurable deny prefixes cannot be bypassed by selectors; sensitive values are always redacted, wildcard selectors return key names only, and results are paged/spilled.',
+      description: 'Read parameterized runtime facts from a local JVM: system_properties, classloader (VM.classloader_stats), flags, command_line or environment (Linux only; Windows reports unsupported). Use selectors (exact, prefix or simple glob) to choose property/classloader keys; with comparePid or declaredFile only differences are returned. Credential/license/internal keys are denied by default and configurable deny prefixes cannot be bypassed by selectors; sensitive values are always redacted, wildcard selectors return key names only, and results are paged/spilled.',
       input_schema: {
         type: 'object',
         properties: {
           pid: { type: 'integer', minimum: 1 },
           port: { type: 'integer', minimum: 1, maximum: 65535 },
-          view: { enum: ['system_properties', 'classloader', 'flags', 'command_line'] },
+          view: { enum: ['system_properties', 'classloader', 'flags', 'command_line', 'environment'] },
           selectors: { type: 'array', items: { type: 'string' } },
           comparePid: { type: 'integer', minimum: 1 },
           declaredFile: { type: 'string' },
@@ -308,7 +308,7 @@ export function toolSpecs({ databases = [], runCommand = null } = {}) {
           input_schema: {
             type: 'object',
             properties: {
-              root: { enum: ['backend'] },
+              root: { enum: ['backend', 'frontend'] },
               scope: { enum: ['runtime', 'compile', 'test', 'provided', 'all'] },
               includes: { type: 'array', items: { type: 'string' } },
               excludes: { type: 'array', items: { type: 'string' } },
@@ -393,6 +393,8 @@ export function createTools({
   runCommand = null,
   toolMode = null,
   buildProbeRoot = null,
+  buildProbeRoots = {},
+  frontendProjectRoot = null,
   runtimeFactsConfig = {},
   window,
   limitBytes = DEFAULT_MAX_RESULT_BYTES,
@@ -825,16 +827,22 @@ export function createTools({
     }, args),
 
     inspect_build_model: (args = {}) => safe('inspect_build_model', async () => {
-      if (!root) {
-        throw new AppError('SOURCE_ROOT_REQUIRED', 'inspect_build_model requires a configured source root', { exitCode: 3 });
+      const targetRoot = args.root === 'frontend' ? (frontendProjectRoot || frontendSourceRoot) : root;
+      if (!targetRoot) {
+        throw new AppError(
+          args.root === 'frontend' ? 'FRONTEND_SOURCE_ROOT_REQUIRED' : 'SOURCE_ROOT_REQUIRED',
+          'inspect_build_model requires a configured source root',
+          { exitCode: 3 },
+        );
       }
-      if (args.root && args.root !== 'backend') {
-        throw new AppError('BUILD_PROBE_ROOT_UNSUPPORTED', 'inspect_build_model currently supports root=backend only', { exitCode: 2 });
-      }
+      const targetProbe = args.root === 'frontend'
+        ? (buildProbeRoots?.frontend || targetRoot)
+        : (buildProbeRoots?.backend || probeRoot || path.dirname(targetRoot));
       const result = await inspectBuildModel({
-        sourceRoot: root,
-        probeRoot: probeRoot ?? path.dirname(root),
-        rootLabel: 'backend',
+        sourceRoot: targetRoot,
+        probeRoot: targetProbe,
+        rootLabel: args.root === 'frontend' ? 'frontend' : 'backend',
+        mode: args.root === 'frontend' ? 'frontend' : 'backend',
       });
       const page = pageArgs({ offset: args.offset, limit: args.limit ?? 50 });
       if (page.error) throw new AppError('INVALID_PAGE', page.error, { exitCode: 2 });

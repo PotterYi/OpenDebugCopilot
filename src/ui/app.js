@@ -202,6 +202,7 @@ function fillForm(config) {
   form.elements.logfiles.value = (workspace.logfiles ?? []).join('\n');
   form.elements.sourceRoot.value = workspace.sourceRoot ?? '';
   form.elements.buildProbeRoot.value = workspace.buildProbeRoot ?? '';
+  form.elements.frontendBuildProbeRoot.value = workspace.buildProbeRoots?.frontend ?? '';
   form.elements.extraSourceRoots.value = (workspace.extraSourceRoots ?? []).join('\n');
   form.elements.logParser.value = workspace.logParser ?? 'auto';
   if (logParser) logParser.value = workspace.logParser ?? 'auto';
@@ -229,6 +230,10 @@ function readForm() {
       logfiles: form.elements.logfiles.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean),
       sourceRoot: form.elements.sourceRoot.value.trim(),
       buildProbeRoot: form.elements.buildProbeRoot.value.trim(),
+      buildProbeRoots: {
+        backend: form.elements.buildProbeRoot.value.trim(),
+        frontend: form.elements.frontendBuildProbeRoot.value.trim(),
+      },
       extraSourceRoots: form.elements.extraSourceRoots.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean),
       logParser: form.elements.logParser.value,
       frontendSourceRoot: form.elements.frontendSourceRoot.value.trim(),

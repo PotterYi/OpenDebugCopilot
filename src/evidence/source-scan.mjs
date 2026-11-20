@@ -1,5 +1,6 @@
 import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
+import { decodeTextBuffer } from '../core/text-decode.mjs';
 
 export const MAX_FILE_BYTES = 2 * 1024 * 1024;
 export const MAX_MATCH_TEXT = 300;
@@ -47,7 +48,7 @@ export async function scanFiles({
     if (!info.isFile() || info.size > maxFileBytes) continue;
     let text;
     try {
-      text = await readFile(file, 'utf8');
+      text = decodeTextBuffer(await readFile(file)).text;
     } catch {
       continue;
     }

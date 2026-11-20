@@ -126,6 +126,14 @@ test('reads selected system properties and redacts sensitive values', {
   assert.equal(declared.items[0].a, 'one');
   assert.equal(declared.items[0].b, 'three');
 
+  const env = await runtimeFacts({ pid: first.pid, view: 'environment' });
+  if (process.platform === 'linux') {
+    assert.ok(env.items.length > 0);
+  } else {
+    assert.deepEqual(env.items, []);
+    assert.ok(env.limitations.length > 0);
+  }
+
   const classloaders = await runtimeFacts({ pid: first.pid, view: 'classloader' });
   assert.ok(classloaders.items.length > 0);
   assert.ok(classloaders.limitations.some((item) => /jar URL/.test(item)));

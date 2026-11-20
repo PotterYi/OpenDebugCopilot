@@ -41,8 +41,11 @@
         <label>后端源码目录
           <input name="sourceRoot" placeholder="../backend-project" />
         </label>
-        <label>构建模型探针根（可选，只读）
-          <input name="buildProbeRoot" placeholder="留空默认使用源码根上一级；仅读取 POM/IDE 模块，不搜索源码" />
+        <label>构建模型探针根（后端，可选，只读）
+          <input name="buildProbeRoot" placeholder="留空默认使用源码根上一级；仅读取 POM/Gradle/IDE 模块，不搜索源码" />
+        </label>
+        <label>前端构建模型探针根（可选，只读）
+          <input name="frontendBuildProbeRoot" placeholder="留空默认使用前端项目目录；仅读取 package/lock/tsconfig，不搜索源码" />
         </label>
         <label>前端项目目录（含 package.json）
           <input name="frontendProjectRoot" placeholder="如 ../frontend-project；留空则从前端源码目录向上推断" />

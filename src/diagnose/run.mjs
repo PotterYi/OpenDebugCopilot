@@ -596,6 +596,8 @@ async function diagnoseWithFired({
       configured: workspace.buildProbeRoot,
       root: scenario.dir ?? process.cwd(),
     }),
+    buildProbeRoots: workspace.buildProbeRoots,
+    frontendProjectRoot: scenario.frontendProjectRoot ?? null,
     runtimeFactsConfig: workspace.runtimeFacts,
     window: timeWindow,
     onCall: (call) => {

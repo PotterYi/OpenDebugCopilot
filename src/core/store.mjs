@@ -17,6 +17,7 @@ export const DEFAULT_WORKSPACE = Object.freeze({
   verifyRunTests: true,
   runtimeFacts: { denyPrefixes: [] },
   buildProbeRoot: '',
+  buildProbeRoots: { backend: '', frontend: '' },
   agent: {
     model: '',
     maxTurns: 60,
@@ -124,6 +125,13 @@ export function validateWorkspace(value) {
       };
     })(),
     buildProbeRoot: String(value.buildProbeRoot ?? '').trim(),
+    buildProbeRoots: (() => {
+      const raw = isObject(value.buildProbeRoots) ? value.buildProbeRoots : {};
+      return {
+        backend: String(raw.backend ?? '').trim(),
+        frontend: String(raw.frontend ?? '').trim(),
+      };
+    })(),
     replay: (() => {
       const raw = isObject(value.replay) ? value.replay : {};
       const timeout = Number(raw.timeoutMs ?? DEFAULT_WORKSPACE.replay.timeoutMs);

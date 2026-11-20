@@ -827,7 +827,7 @@ export function buildToolShapes(z) {
       endLine: z.number().int().min(1).optional(),
     },
     inspect_build_model: {
-      root: z.enum(['backend']).optional(),
+      root: z.enum(['backend', 'frontend']).optional(),
       offset: z.number().int().min(0).max(20000).optional(),
       limit: z.number().int().min(1).max(200).optional(),
     },
@@ -891,7 +891,7 @@ export function buildToolShapes(z) {
     runtime_facts: {
       pid: z.number().int().min(1).optional(),
       port: z.number().int().min(1).max(65535).optional(),
-      view: z.enum(['system_properties', 'classloader', 'flags', 'command_line']).optional(),
+      view: z.enum(['system_properties', 'classloader', 'flags', 'command_line', 'environment']).optional(),
       selectors: z.array(z.string()).optional(),
       comparePid: z.number().int().min(1).optional(),
       declaredFile: z.string().optional(),

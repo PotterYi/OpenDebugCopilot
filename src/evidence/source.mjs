@@ -5,6 +5,7 @@ import { AppError } from '../core/errors.mjs';
 import { DEFAULT_IGNORED_DIRS, isSensitivePath, resolveWithinRoot } from '../core/path-policy.mjs';
 import { MAX_TOTAL_ITEMS } from '../core/list-result.mjs';
 import { MAX_FILE_BYTES, scanFiles } from './source-scan.mjs';
+import { decodeTextBuffer } from '../core/text-decode.mjs';
 
 const SOURCE_EXTS = new Set([
   '.java', '.kt', '.scala', '.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx',
@@ -99,7 +100,7 @@ async function readFileRange(file, root, startLine, endLine, maxLines) {
   if (info.size > MAX_FILE_BYTES) {
     return { found: false, reason: 'file-too-large', path: path.relative(root, file), bytes: info.size };
   }
-  const text = await readFile(file, 'utf8');
+  const text = decodeTextBuffer(await readFile(file)).text;
   const lines = text.split(/\r?\n/);
   const from = Math.max(1, startLine ?? 1);
   const to = Math.min(lines.length, endLine ?? from + maxLines - 1);
